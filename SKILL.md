@@ -1,23 +1,15 @@
 ---
 name: skill-reviewer
 description: >-
-  Rigorously review, audit, grade, and improve an Agent Skill / Codex Skill /
-  ChatGPT Skill / Claude Skill. Use whenever the user asks to review,
-  evaluate, audit, grade, critique, improve, debug, accept, or
-  "production-check" an existing skill; when they paste a SKILL.md and ask how
-  it looks; when they ask why a skill is over-triggering or not triggering;
-  when they want to optimize the name, description, instructions, references,
-  scripts, assets, or evals of a skill; or when they ask whether a skill is
-  ready to install, ready to merge, or production-ready. Do NOT trigger when
-  the user only wants to create a brand-new skill from scratch (use
-  skill-creator), only wants to execute the skill's underlying business task,
-  only wants generic prompt rewriting that is not about skill structure, or
-  is asking for traditional software code review unrelated to agent-skill
-  packaging. This reviewer behaves like a senior skill architecture auditor
-  — it surfaces structural defects (over/under-triggering, conflicting
-  instructions, missing negative examples, resource misuse, unnecessary
-  scripts, thin evals) and emits concrete, copy-pasteable rewrites rather
-  than vague advice.
+  Audit and improve an existing agent skill (Claude / Codex / ChatGPT / Agent
+  Skill). Use when the user asks to review, grade, critique, debug, or
+  production-check a skill; pastes a SKILL.md; asks why it over- or
+  under-triggers; wants to tighten its name, description, instructions,
+  references, scripts, assets, or evals; or asks if it is ready to ship. Do
+  NOT trigger for creating a new skill from scratch (use skill-creator),
+  running the skill's underlying task, generic prompt rewriting, or ordinary
+  code review. Acts as a strict skill-architecture auditor that surfaces
+  structural defects and returns copy-pasteable rewrites.
 ---
 
 # Skill Reviewer
