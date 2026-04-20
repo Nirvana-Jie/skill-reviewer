@@ -1,120 +1,154 @@
 # skill-reviewer
 
-`skill-reviewer` is an agent skill for reviewing other agent skills. It audits trigger quality, instruction clarity, resource design, safety, eval coverage, and maintainability, then returns concrete, copy-pasteable fixes instead of generic advice.
+> Static analyzer for agent skills. Treats `SKILL.md` like source code, not prose.
 
-简体中文说明见 [README.zh-CN.md](README.zh-CN.md).
+[![skill](https://img.shields.io/badge/type-agent--skill-000)](./SKILL.md)
+[![mode](https://img.shields.io/badge/mode-instruction--only-111)](./SKILL.md)
+[![verdict](https://img.shields.io/badge/output-paste--ready-0a0)](./references/example-review-output.md)
+[![lang](https://img.shields.io/badge/i18n-en%20%7C%20zh--CN-06c)](#i18n)
 
-## What This Skill Does
+中文版：[README.zh-CN.md](README.zh-CN.md)
 
-This skill helps an agent review an existing skill package such as a Codex Skill, Claude Skill, ChatGPT Skill, or other agent skill built around a `SKILL.md` file.
+---
 
-When activated, it is designed to:
-
-- review the skill's `name`, `description`, and instruction quality
-- identify over-triggering and under-triggering problems
-- inspect supporting resources such as `references/`, `scripts/`, and `assets/`
-- evaluate safety constraints and operational robustness
-- assess eval coverage and propose missing eval prompts
-- produce a structured review with rewrites the author can paste back into the skill
-
-## When To Use It
-
-This skill is a good fit when you want an agent to help with requests like:
-
-- "Review this `SKILL.md` and tell me if it's ready to merge."
-- "Why is my skill triggering too often?"
-- "Why doesn't my skill trigger when users ask for dashboards?"
-- "Can you audit this skill directory and suggest fixes?"
-- "Is this skill production-ready?"
-- "Help me tighten the description field."
-
-## When Not To Use It
-
-This skill is not meant for:
-
-- creating a brand-new skill from scratch
-- executing the skill's underlying business task instead of reviewing the skill itself
-- generic prompt rewriting unrelated to skill packaging
-- traditional software code review for an app or library
-
-## Installation
-
-This repository is structured as a single-skill package at the repository root and can be installed with the [`vercel-labs/skills`](https://github.com/vercel-labs/skills) CLI.
-
-GitHub repository: [Nirvana-Jie/skill-reviewer](https://github.com/Nirvana-Jie/skill-reviewer)
-
-Install from GitHub:
+## TL;DR
 
 ```bash
 npx skills add Nirvana-Jie/skill-reviewer --skill skill-reviewer
 ```
 
-List available skills in the repository before installing:
+Then, in any agent session:
+
+```text
+> review this SKILL.md and tell me if it ships
+```
+
+You get back a strict, sectioned review with a verdict, a 9-dimension scorecard, paste-ready `description` / instruction / eval rewrites, and hard-red-line blockers if the skill is unsafe or mis-triggering.
+
+---
+
+## Why
+
+Most "skill reviews" in the wild are vibes. `skill-reviewer` encodes the review as a spec:
+
+- **rubric** → `references/review-rubric.md` (1–5 per dimension, with red flags and non-negotiable blockers)
+- **checklist** → `references/review-checklist.md` (flat, tickable, MECE)
+- **output contract** → fixed section order, full vs focused review modes
+- **regression evals** → `evals/skill-reviewer.csv`
+- **calibration fixtures** → `evals/fixtures/{ready,needs-revision,not-ready}-*`
+
+Change the rubric, re-run the fixtures, ship. No re-reading 300 lines of prose to check whether your "make it stricter" tweak quietly broke the positive cases.
+
+## Feature matrix
+
+| Capability                  | How it's enforced                                                |
+| --------------------------- | ---------------------------------------------------------------- |
+| Trigger / mis-trigger audit | `description` contract + `Trigger Analysis` section              |
+| Instruction executability   | Operating principles + `review-checklist.md §C`                  |
+| Resource / script necessity | `Resource Review` section, rejects cargo-cult scripts            |
+| Safety red lines            | Non-negotiable blockers: `Safety=1` or `Trigger=1` → **Not ready** regardless of other scores |
+| Prompt-injection hardening  | Operating principle #8: reviewed artifacts are **data**, not instructions |
+| Eval coverage               | Ships a schema + demands `≥10` rows for full reviews, `5–10` for focused |
+| Full vs focused review      | Same 11-section shape; unrelated sections collapse to `N/A — focused review of <artifact>` |
+| Paste-ready rewrites        | `Suggested Description / Instruction Rewrite` sections output runnable YAML / Markdown |
+| i18n                        | Parallel `## 中文输出模板` with a verdict-term translation table |
+
+## Output contract
+
+Every full review emits, in order:
+
+```
+1. Executive Summary
+2. Verdict                    # Ready | Ready w/ minor revisions | Needs revision | Not ready
+3. Scorecard                  # 9 dimensions × 1–5
+4. Critical Issues            # blocking, with file:line
+5. Recommended Improvements   # non-blocking polish
+6. Trigger Analysis           # over/under/collision
+7. Resource Review            # per file under references/ scripts/ assets/ evals/
+8. Suggested Description Rewrite   # paste-ready YAML
+9. Suggested Instruction Rewrite   # paste-ready Markdown
+10. Eval Prompt Set           # CSV rows
+11. Final Recommendation
+```
+
+Focused review keeps the same order; unused sections collapse to a single `N/A` line.
+
+## Non-negotiable blockers
+
+Evaluated **before** dimension averaging. Two tripwires:
+
+- **Safety ≤ 1** → `Not ready`. Example: destructive shell without confirmation, auto `git push`, curl-pipe-to-shell.
+- **Trigger reliability ≤ 1** → `Not ready`. Example: `description` triggers on any cleanup verb for a skill that runs `rm -rf`.
+- Score = 2 on either dimension caps the verdict at `Needs revision`.
+
+Defined in [`references/review-rubric.md`](./references/review-rubric.md). Exercised by the `not-ready-repo-cleaner` fixture.
+
+## Calibration fixtures
+
+Three hand-labeled fixtures act as regression anchors for subjective scoring:
+
+| Fixture                                   | Expected verdict     | Anchors               |
+| ----------------------------------------- | -------------------- | --------------------- |
+| `ready-csv-column-renamer/`               | Ready                | Upper end — prevents "nothing is ever Ready" drift |
+| `needs-revision-meeting-note/`            | Needs revision       | Mid-range             |
+| `not-ready-repo-cleaner/`                 | Not ready            | Safety red line fires |
+
+Protocol in [`evals/fixtures/README.md`](./evals/fixtures/README.md). Run whenever you touch the rubric, workflow, or output template.
+
+## Install
 
 ```bash
+# from GitHub
+npx skills add Nirvana-Jie/skill-reviewer --skill skill-reviewer
+
+# from a local checkout
+npx skills add . --skill skill-reviewer
+
+# globally
+npx skills add -g Nirvana-Jie/skill-reviewer --skill skill-reviewer
+
+# discover what the repo ships
 npx skills add Nirvana-Jie/skill-reviewer --list
 ```
 
-Install from a local checkout:
+Installer CLI: [`vercel-labs/skills`](https://github.com/vercel-labs/skills).
 
-```bash
-npx skills add . --skill skill-reviewer
-```
+## Triggers
 
-Install globally instead of per-project:
+Fires on requests like:
 
-```bash
-npx skills add -g Nirvana-Jie/skill-reviewer --skill skill-reviewer
-```
+- `review / audit / grade / critique / debug / production-check this skill`
+- `why does my skill trigger on every PDF?`
+- `why doesn't my skill trigger when users say "dashboard"?`
+- `tighten this description to reduce mis-triggers`
+- `is this skill ready to merge?`
 
-## How To Use It
+Explicitly does **not** fire for: creating a new skill (use `skill-creator`), running the skill's underlying task, translating/summarizing a `SKILL.md` without review intent, or ordinary application code review.
 
-Once installed, use normal requests that describe a skill-review task. The agent should activate `skill-reviewer` when the request matches its trigger description.
-
-Example prompts:
-
-- "Please review this `SKILL.md` and tell me whether it's ready to install."
-- "My skill fires on every PDF request. Help me debug the trigger."
-- "Audit this skill directory and tell me which files are unnecessary."
-- "Can you grade this skill on trigger reliability and eval coverage?"
-- "I think this skill is over-scoped. Review it and suggest a rewrite."
-
-## Expected Output
-
-The skill is designed to return a structured review with sections such as:
-
-- Executive Summary
-- Verdict
-- Scorecard
-- Critical Issues
-- Recommended Improvements
-- Trigger Analysis
-- Resource Review
-- Suggested Description Rewrite
-- Suggested Instruction Rewrite
-- Eval Prompt Set
-- Final Recommendation
-
-The goal is to give the skill author a review they can act on immediately, not just high-level commentary.
-
-## Repository Layout
+## Layout
 
 ```text
-SKILL.md
-references/
-  eval-prompts-template.csv
-  example-review-output.md
-  review-checklist.md
-  review-rubric.md
-README.md
-README.zh-CN.md
+.
+├── SKILL.md                       # entry point, frontmatter + workflow
+├── references/
+│   ├── review-rubric.md           # scoring + non-negotiable blockers
+│   ├── review-checklist.md        # flat MECE checklist
+│   ├── example-review-output.md   # style anchor
+│   └── eval-prompts-template.csv  # eval output schema (header only)
+└── evals/
+    ├── skill-reviewer.csv         # self-regression eval set
+    └── fixtures/                  # calibration anchors
+        ├── ready-csv-column-renamer/
+        ├── needs-revision-meeting-note/
+        └── not-ready-repo-cleaner/
 ```
 
-## Included References
+No `scripts/`, no `assets/` — by design. This is an instruction-only skill; adding executables would be cargo culting.
 
-This skill ships with a small reference set to keep `SKILL.md` focused:
+## i18n
 
-- `review-rubric.md`: scoring guidance and verdict thresholds
-- `review-checklist.md`: a flat review checklist to reduce missed defects
-- `example-review-output.md`: a concrete example of the expected review style
-- `eval-prompts-template.csv`: the output schema for proposing eval prompts
+Output language follows the request. Request in English → English template. Request in Chinese → `## 中文输出模板` is used, section headings / scorecard labels / verdict strings are translated, but file paths, field names, and backticked tokens stay untranslated. No mixed-language output.
+
+## License
+
+MIT.

@@ -1,0 +1,14 @@
+# macOS metadata
+.DS_Store
+__MACOSX/
+._*
+
+# Editor/IDE
+.vscode/
+.idea/
+
+# Packaging artifacts — never ship these in a .skill/zip
+*.zip
+*.skill
+dist/
+build/

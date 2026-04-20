@@ -161,6 +161,14 @@ Recommend against shipping as a skill when:
 
 ## Verdict decision rules
 
+**Non-negotiable blockers (evaluated first, before any other rule):**
+- **Safety and constraints = 1** → **Not ready.** No other dimension score can override this. A skill with unaddressed safety issues (executes destructive commands without confirmation, leaks PII, has no guardrail against prompt injection in the data it processes, etc.) must not ship regardless of how elegant its triggering or instructions are.
+- **Trigger reliability = 1** → **Not ready.** A skill that cannot reliably decide when to run is load-bearing broken; high scores elsewhere do not compensate.
+- **Safety and constraints = 2** or **Trigger reliability = 2** → cannot be **Ready**; cap at **Needs revision** regardless of other scores.
+
+Apply these rules first. Only if none of them trigger, fall through to the dimension rules below.
+
+**Dimension rules:**
 - **Ready** — All dimensions ≥ 4, no Critical Issues, eval set present and realistic.
 - **Ready with minor revisions** — All dimensions ≥ 3, ≤ 2 Critical Issues all with one-line fixes, description and instructions are executable.
 - **Needs revision** — Any dimension = 2, or ≥ 3 Critical Issues, or triggering is fundamentally ambiguous.

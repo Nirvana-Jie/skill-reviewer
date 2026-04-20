@@ -4,7 +4,7 @@ Walk this top-to-bottom. Tick each item. If an item cannot be assessed from the 
 
 ## A. Intake
 
-- [ ] SKILL.md is present and readable.
+- [ ] SKILL.md is present and readable (or marked `N/A — focused review` / `N/A — not provided` if the request is intentionally scoped to one artifact).
 - [ ] YAML front matter parses.
 - [ ] `name` is present, kebab-case, unique-looking.
 - [ ] `description` is present and non-trivial.
@@ -104,6 +104,9 @@ Walk this top-to-bottom. Tick each item. If an item cannot be assessed from the 
 - [ ] Each Critical Issue has: Problem, Why it matters, Suggested fix, Example rewrite.
 - [ ] Suggested Description Rewrite is a paste-ready YAML value (or justified as "no change").
 - [ ] Suggested Instruction Rewrite is paste-ready.
-- [ ] Eval Prompt Set has ≥ 10 rows in the CSV columns.
+- [ ] Eval Prompt Set:
+  - Full review: has ≥ 10 rows in the CSV columns.
+  - Focused review on trigger / description / eval coverage: has 5–10 targeted rows.
+  - Focused review on other dimensions: marked `N/A — focused review of <artifact/dimension>`.
 - [ ] Final Recommendation is an ordered action list, not prose.
 - [ ] Any unassessable items are explicitly listed.
