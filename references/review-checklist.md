@@ -2,6 +2,22 @@
 
 Walk this top-to-bottom. Tick each item. If an item cannot be assessed from the provided material, mark it `N/A — missing input` and list it at the end of the review.
 
+## Table of Contents
+
+- [A. Intake](#a-intake)
+- [B. Job-to-be-done](#b-job-to-be-done)
+- [C. Name](#c-name)
+- [D. Description](#d-description)
+- [E. Instructions](#e-instructions)
+- [F. References](#f-references)
+- [G. Scripts](#g-scripts)
+- [H. Assets](#h-assets)
+- [I. Safety](#i-safety)
+- [J. Output quality](#j-output-quality)
+- [K. Evals](#k-evals)
+- [L. Maintainability](#l-maintainability)
+- [M. Review emission](#m-review-emission)
+
 ## A. Intake
 
 - [ ] SKILL.md is present and readable (or marked `N/A — focused review` / `N/A — not provided` if the request is intentionally scoped to one artifact).

@@ -2,6 +2,22 @@
 
 Reference example showing the expected depth, tone, and rewrite quality of a skill-reviewer output. The target is a **fictional** `meeting-summarizer` skill. Treat this purely as a style guide; do not copy its findings.
 
+## Table of Contents
+
+- [Input under review (abridged)](#input-under-review-abridged)
+- [Emitted review](#emitted-review)
+  - [Executive Summary](#executive-summary)
+  - [Verdict](#verdict)
+  - [Scorecard](#scorecard)
+  - [Critical Issues](#critical-issues)
+  - [Recommended Improvements](#recommended-improvements)
+  - [Trigger Analysis](#trigger-analysis)
+  - [Resource Review](#resource-review)
+- [Suggested Description Rewrite](#suggested-description-rewrite)
+- [Suggested Instruction Rewrite](#suggested-instruction-rewrite)
+- [Eval Prompt Set](#eval-prompt-set)
+- [Final Recommendation](#final-recommendation)
+
 ---
 
 ## Input under review (abridged)

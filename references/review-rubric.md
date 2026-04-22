@@ -2,6 +2,23 @@
 
 This rubric defines what "good" looks like for each dimension scored in the review. Use it to justify every score and to decide the final verdict. Scores are 1–5.
 
+## Table of Contents
+
+- [Scoring scale (applies to every dimension)](#scoring-scale-applies-to-every-dimension)
+- [1. Trigger reliability](#1-trigger-reliability)
+- [2. Description quality](#2-description-quality)
+- [3. Instruction clarity](#3-instruction-clarity)
+- [4. Resource design](#4-resource-design)
+  - [References](#references)
+  - [Assets](#assets)
+- [5. Script necessity](#5-script-necessity)
+- [6. Safety and constraints](#6-safety-and-constraints)
+- [7. Output quality](#7-output-quality)
+- [8. Eval coverage](#8-eval-coverage)
+- [9. Maintainability](#9-maintainability)
+- [When a skill should NOT exist](#when-a-skill-should-not-exist)
+- [Verdict decision rules](#verdict-decision-rules)
+
 ## Scoring scale (applies to every dimension)
 
 - **5 — Production-ready.** No material issues. Could be installed by a stranger today.
