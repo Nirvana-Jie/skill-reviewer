@@ -14,7 +14,7 @@ Walk this top-to-bottom. Tick each item. If an item cannot be assessed from the 
 - [H. Assets](#h-assets)
 - [I. Safety](#i-safety)
 - [J. Output quality](#j-output-quality)
-- [K. Evals](#k-evals)
+- [K. Evals (optional)](#k-evals-optional)
 - [L. Maintainability](#l-maintainability)
 - [M. Review emission](#m-review-emission)
 
@@ -26,7 +26,7 @@ Walk this top-to-bottom. Tick each item. If an item cannot be assessed from the 
 - [ ] `description` is present and non-trivial.
 - [ ] Body (markdown instructions) is present.
 - [ ] Directory tree known (references / scripts / assets / evals).
-- [ ] Eval set known or confirmed absent.
+- [ ] Eval set noted if present; absence is not a defect.
 
 ## B. Job-to-be-done
 
@@ -100,12 +100,15 @@ Walk this top-to-bottom. Tick each item. If an item cannot be assessed from the 
 - [ ] At least one example of the output is provided.
 - [ ] Output separates narration from data.
 
-## K. Evals
+## K. Evals (optional)
 
-- [ ] ≥ 10 eval prompts present or proposed.
-- [ ] Coverage includes: explicit / implicit / negative / boundary / adjacent-not-trigger / complex-realistic.
-- [ ] Each prompt has: prompt, should_trigger, expected_behavior, failure_modes_to_watch.
-- [ ] Negative prompts are genuinely near-miss, not trivially unrelated.
+Evals are not scored and their absence is never a blocker. Only propose them when they would materially reduce risk for this skill.
+
+- [ ] Decided whether evals are worth recommending for this skill (or deferring).
+- [ ] If recommended: 5–10 prompts covering explicit / implicit / negative / boundary / adjacent-not-trigger.
+- [ ] If recommended: each prompt has prompt, should_trigger, expected_behavior, failure_modes_to_watch.
+- [ ] If recommended: negative prompts are genuinely near-miss, not trivially unrelated.
+- [ ] If deferring: reason stated in one line (e.g. rapid iteration, unambiguous trigger surface).
 
 ## L. Maintainability
 
@@ -116,13 +119,10 @@ Walk this top-to-bottom. Tick each item. If an item cannot be assessed from the 
 
 ## M. Review emission
 
-- [ ] Emitted all 11 sections of the output format.
-- [ ] Each Critical Issue has: Problem, Why it matters, Suggested fix, Example rewrite.
-- [ ] Suggested Description Rewrite is a paste-ready YAML value (or justified as "no change").
-- [ ] Suggested Instruction Rewrite is paste-ready.
-- [ ] Eval Prompt Set:
-  - Full review: has ≥ 10 rows in the CSV columns.
-  - Focused review on trigger / description / eval coverage: has 5–10 targeted rows.
-  - Focused review on other dimensions: marked `N/A — focused review of <artifact/dimension>`.
+- [ ] Emitted every section of the output format (Executive Summary, Verdict, Scorecard, Critical Issues, Recommended Improvements, Trigger Analysis, Resource Review, Suggested Rewrites, Suggested Evals, Final Recommendation). Empty sections explicitly marked (e.g. "None" or "N/A — focused review of <artifact>").
+- [ ] Scorecard has 8 dimensions, each with a one-line justification.
+- [ ] Each Critical Issue has: Problem, Why it matters, Fix (copy-pasteable).
+- [ ] Suggested Rewrites block is paste-ready (YAML `description:` value and/or instruction blocks), or explicitly marked "No change recommended".
+- [ ] Suggested Evals: either 5–10 targeted rows with the CSV column schema, or a one-line `Not recommended — <reason>` / `Deferred — <reason>`.
 - [ ] Final Recommendation is an ordered action list, not prose.
 - [ ] Any unassessable items are explicitly listed.

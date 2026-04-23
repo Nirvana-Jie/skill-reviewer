@@ -14,7 +14,7 @@ This rubric defines what "good" looks like for each dimension scored in the revi
 - [5. Script necessity](#5-script-necessity)
 - [6. Safety and constraints](#6-safety-and-constraints)
 - [7. Output quality](#7-output-quality)
-- [8. Eval coverage](#8-eval-coverage)
+- [8. Eval coverage (optional, not scored)](#8-eval-coverage-optional-not-scored)
 - [9. Maintainability](#9-maintainability)
 - [When a skill should NOT exist](#when-a-skill-should-not-exist)
 - [Verdict decision rules](#verdict-decision-rules)
@@ -138,19 +138,19 @@ Warranted when the file is consumed as-is in the skill's output (templates, fixt
 - Every run invents a new format.
 - Output mixes narration and data with no delimiter.
 
-## 8. Eval coverage
+## 8. Eval coverage (optional, not scored)
 
-**Good looks like:**
-- 10–20 prompts covering explicit, implicit, negative, boundary, adjacent-not-trigger, and complex-realistic cases.
+Evals are **not a scorecard dimension** and their absence is never a blocker. Do not dock a skill for lacking evals. Only recommend them when they would materially reduce risk for this specific skill (fuzzy triggers, sibling collisions, or post-iteration regression risk).
+
+**When evals are worth proposing, good looks like:**
+- 5–10 prompts covering explicit, implicit, negative, boundary, adjacent-not-trigger, and complex-realistic cases.
 - Each prompt has: `prompt`, `should_trigger`, `expected_behavior`, `failure_modes_to_watch`.
 - Negative cases are genuinely tricky (share keywords with the skill), not trivial.
-- Triggers tested at realistic prompt length, not toy one-liners.
 
-**Red flags:**
-- Only positive prompts.
-- Negative prompts are obviously unrelated ("write a fibonacci function" for a PDF skill).
-- All prompts are one-word queries.
-- No expected-behavior column, so pass/fail is a vibe.
+**When to explicitly defer/decline:**
+- Skill is in rapid prototyping — description still churning.
+- Trigger surface is unambiguous (e.g. tied to a specific file extension).
+- The added maintenance cost clearly exceeds the regression risk.
 
 ## 9. Maintainability
 
@@ -186,7 +186,7 @@ Recommend against shipping as a skill when:
 Apply these rules first. Only if none of them trigger, fall through to the dimension rules below.
 
 **Dimension rules:**
-- **Ready** — All dimensions ≥ 4, no Critical Issues, eval set present and realistic.
+- **Ready** — All dimensions ≥ 4, no Critical Issues, description and instructions executable.
 - **Ready with minor revisions** — All dimensions ≥ 3, ≤ 2 Critical Issues all with one-line fixes, description and instructions are executable.
 - **Needs revision** — Any dimension = 2, or ≥ 3 Critical Issues, or triggering is fundamentally ambiguous.
 - **Not ready** — Any dimension = 1, or safety issues unaddressed, or the skill should not exist as a skill.

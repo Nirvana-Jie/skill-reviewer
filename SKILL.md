@@ -104,17 +104,13 @@ Check the body of SKILL.md for:
 - Refusal / escalation / human-review rules for high-risk branches.
 - Idempotency and retry behavior.
 
-### 7. Eval coverage audit
+### 7. Eval suggestions (optional, not scored)
 
-Require (or propose) 10–20 eval prompts covering:
-- Explicit triggers.
-- Implicit triggers (right intent, different phrasing).
-- Negative cases (should NOT trigger).
-- Boundary/edge cases.
-- Adjacent tasks that look similar but should not trigger.
-- Complex realistic tasks.
+Evals are **not a scored dimension** and their absence is **never a blocker**. Do not dock the skill for lacking an eval set.
 
-Each prompt must have: `prompt`, `should_trigger`, `expected_behavior`, `failure_modes_to_watch`. A template is in `references/eval-prompts-template.csv`.
+Only propose evals when they would materially reduce risk for *this* skill — typically when the description has fuzzy trigger boundaries, competes with sibling skills, or has been iterated enough that regressions are a real concern. For skills in rapid prototyping, or skills with an unambiguous trigger surface (e.g. a specific file extension), recommend deferring evals.
+
+When you do propose them, aim for 5–10 prompts covering explicit / implicit / negative / boundary / adjacent-not-trigger cases, using the columns from `references/eval-prompts-template.csv` (`prompt`, `should_trigger`, `expected_behavior`, `failure_modes_to_watch`).
 
 ### 8. Choose review mode
 
@@ -139,13 +135,13 @@ Always use this exact structure:
 # Skill Review: <skill name>
 
 ## Executive Summary
-<3–6 sentences: overall quality, top risks, install/merge recommendation.>
+2–4 sentences: overall quality, top risks, install/merge recommendation.
 
 ## Verdict
 One of: Ready | Ready with minor revisions | Needs revision | Not ready
 
 ## Scorecard
-Score each 1–5 using the scale below. Include a one-line justification per row.
+Score each 1–5 with a one-line justification.
 - Trigger reliability:
 - Description quality:
 - Instruction clarity:
@@ -153,43 +149,31 @@ Score each 1–5 using the scale below. Include a one-line justification per row
 - Script necessity:
 - Safety and constraints:
 - Output quality:
-- Eval coverage:
 - Maintainability:
 
 ## Critical Issues
-Numbered list. For each:
-- Problem:
-- Why it matters:
-- Suggested fix:
-- Example rewrite: (code/text block, copy-pasteable)
+Numbered. Each entry: **Problem** / **Why it matters** / **Fix** (copy-pasteable). Skip the section if there are none.
 
 ## Recommended Improvements
-Non-blocking but high-value improvements.
+Non-blocking but high-value. Bullets are fine. Skip if none.
 
 ## Trigger Analysis
-- Will trigger when: ...
-- May over-trigger on: ...
-- May miss: ...
-- Collisions with likely sibling skills: ...
+- Will trigger when:
+- May over-trigger on:
+- May miss:
+- Likely sibling-skill collisions:
 
 ## Resource Review
-Per-file verdict on SKILL.md / references/ / scripts/ / assets/. Call out unused, duplicated, or missing resources.
+Per-file verdict on `SKILL.md` / `references/` / `scripts/` / `assets/`. Flag unused, duplicated, or missing items. One line per file is fine.
 
-## Suggested Description Rewrite
-If the description is weak, output a replacement YAML `description:` value as a fenced block. If not needed, say "No change recommended" with one-line justification.
+## Suggested Rewrites
+Paste-ready replacement(s) for the YAML `description:` value and/or instruction blocks. Use fenced code blocks. Omit either sub-block if no change is needed and say so in one line.
 
-## Suggested Instruction Rewrite
-Either a full replacement or targeted before/after blocks. Must be copy-pasteable.
-
-## Eval Prompt Set
-For a **full review**, include at least 10 entries using the columns from `references/eval-prompts-template.csv`: id, prompt, should_trigger, expected_behavior, failure_modes_to_watch. Copy the column schema, not the example row content.
-
-For a **focused review**:
-- If the focus is trigger reliability, description quality, or eval coverage, give 5–10 targeted eval prompts.
-- Otherwise, write: `N/A — focused review of <artifact/dimension>`.
+## Suggested Evals (optional)
+Include **only** if evals would materially reduce risk for this skill (fuzzy triggers, sibling collisions, post-iteration regression risk). If so, give 5–10 targeted prompts using the columns from `references/eval-prompts-template.csv`. Otherwise write a single line: `Not recommended — <reason>` or `Deferred — <reason>`.
 
 ## Final Recommendation
-Concrete next actions in priority order (e.g., "1. Rewrite description. 2. Remove scripts/foo.py. 3. Add 6 negative evals.").
+Ordered action list (e.g., "1. Rewrite description. 2. Remove `scripts/foo.py`. 3. Add negative-trigger guard.").
 ```
 
 ### Scoring scale
@@ -210,7 +194,7 @@ Always justify scores with at least one concrete observation from the skill unde
 # Skill 评审：<skill 名称>
 
 ## 总体结论
-<3–6 句：整体质量、主要风险、是否建议安装/合入。>
+2–4 句：整体质量、主要风险、是否建议安装/合入。
 
 ## 判定
 四选一：可发布 | 小幅修订后可发布 | 需修订 | 不可发布
@@ -224,43 +208,31 @@ Always justify scores with at least one concrete observation from the skill unde
 - 脚本必要性：
 - 安全与约束：
 - 输出质量：
-- 评测覆盖：
 - 可维护性：
 
 ## 关键问题
-按编号列出。每条包含：
-- 问题：
-- 为何重要：
-- 建议修复：
-- 示例改写：（代码/文本块，可直接粘贴）
+按编号列出。每条包含：**问题** / **为何重要** / **修复**（可直接粘贴）。无则省略此节。
 
 ## 推荐改进
-非阻塞但价值高的改进项。
+非阻塞但价值高的改进项，可直接用要点列出。无则省略。
 
 ## 触发分析
-- 会触发于：…
-- 可能过度触发于：…
-- 可能漏触发于：…
-- 与可能的同族 skill 冲突：…
+- 会触发于：
+- 可能过度触发于：
+- 可能漏触发于：
+- 与可能的同族 skill 冲突：
 
 ## 资源审查
-逐文件结论：SKILL.md / references/ / scripts/ / assets/。指出未使用、重复、缺失的资源。
+逐文件结论：`SKILL.md` / `references/` / `scripts/` / `assets/`。指出未使用、重复、缺失项，每文件一行即可。
 
-## description 改写建议
-若 description 较弱，输出替换后的 YAML `description:` 值（代码块）。不需要时写"无需改动"并附一句理由。
+## 改写建议
+针对 YAML `description:` 值和/或指令段落，给出可直接粘贴的替换（代码块）。任一子项无需改动时用一句话说明。
 
-## 指令改写建议
-整体替换或定点 before/after 块，必须可直接粘贴。
-
-## 评测用例集
-**完整评审**：至少 10 条，使用 `references/eval-prompts-template.csv` 的列结构（id, prompt, should_trigger, expected_behavior, failure_modes_to_watch）。复用列结构，不要复用示例行内容。
-
-**focused review**：
-- 若聚焦触发、description 或 eval 覆盖，给 5–10 条定向评测。
-- 其他聚焦维度写：`N/A — focused review of <artifact/dimension>`。
+## 建议评测（可选）
+**仅当**评测能显著降低该 skill 的风险（触发边界模糊、与同族 skill 冲突、已多轮迭代需防回归）时才输出。若有，给 5–10 条定向评测，使用 `references/eval-prompts-template.csv` 的列结构。否则写一行：`不建议 — <理由>` 或 `暂缓 — <理由>`。
 
 ## 最终建议
-按优先级列出下一步行动（例如："1. 重写 description。2. 删除 scripts/foo.py。3. 增加 6 条负向评测。"）。
+按优先级列出下一步行动（例如："1. 重写 description。2. 删除 `scripts/foo.py`。3. 增加负向触发护栏。"）。
 ```
 
 判定词对照：Ready = 可发布；Ready with minor revisions = 小幅修订后可发布；Needs revision = 需修订；Not ready = 不可发布。
