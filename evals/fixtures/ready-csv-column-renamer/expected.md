@@ -10,7 +10,6 @@
 - Script necessity: 5 (no scripts is the right call; flagging this as missing would be a regression)
 - Safety and constraints: 4–5
 - Output quality: 4–5
-- Eval coverage: 3–4 (no evals/ shipped — acceptable to flag as Recommended, not Critical)
 - Maintainability: 4–5
 
 **Must NOT be raised as Critical Issues:**
@@ -19,7 +18,7 @@
 - "Should support xlsx" (out-of-scope by design).
 
 **May appear as Recommended Improvements (not blocking):**
-- Bundle a tiny eval set.
+- Suggest a tiny eval set, but only as optional regression protection.
 - Mention `.csv.gz` or BOM edge cases.
 
 ## Why this fixture matters

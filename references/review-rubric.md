@@ -5,6 +5,7 @@ This rubric defines what "good" looks like for each dimension scored in the revi
 ## Table of Contents
 
 - [Scoring scale (applies to every dimension)](#scoring-scale-applies-to-every-dimension)
+- [AI-friendly skill design (applies across dimensions)](#ai-friendly-skill-design-applies-across-dimensions)
 - [1. Trigger reliability](#1-trigger-reliability)
 - [2. Description quality](#2-description-quality)
 - [3. Instruction clarity](#3-instruction-clarity)
@@ -14,8 +15,9 @@ This rubric defines what "good" looks like for each dimension scored in the revi
 - [5. Script necessity](#5-script-necessity)
 - [6. Safety and constraints](#6-safety-and-constraints)
 - [7. Output quality](#7-output-quality)
-- [8. Eval coverage (optional, not scored)](#8-eval-coverage-optional-not-scored)
-- [9. Maintainability](#9-maintainability)
+- [Suggested evals (optional, not scored)](#suggested-evals-optional-not-scored)
+  - [Local snapshot-style evals](#local-snapshot-style-evals)
+- [8. Maintainability](#8-maintainability)
 - [When a skill should NOT exist](#when-a-skill-should-not-exist)
 - [Verdict decision rules](#verdict-decision-rules)
 
@@ -28,6 +30,25 @@ This rubric defines what "good" looks like for each dimension scored in the revi
 - **1 — Do not install.** Likely to misfire, leak, or cause harm.
 
 Never hand out a 5 without at least one concrete positive observation. Never hand out a 1 without naming the specific failure mode.
+
+---
+
+## AI-friendly skill design (applies across dimensions)
+
+A skill is AI-friendly when the model that loads it can reliably decide when to use it, what to read, what to do next, and what shape to return. Judge this across the existing dimensions; do not add a separate score.
+
+**Good looks like:**
+- The job-to-be-done is narrow enough that a model can decide when to load it.
+- The workflow is executable by an agent at runtime: inspect, ask, act, stop, or emit a known output.
+- Resources use progressive disclosure and give "read when" cues instead of dumping context.
+- Outputs are stable enough for a user, evaluator, or downstream skill to consume.
+- Any scripts are deterministic helpers, not a substitute for clear instructions.
+
+**Red flags:**
+- The package is mostly human advice with no triggerable agent behavior.
+- It asks the model to "use judgment" at load-bearing forks without criteria.
+- README, rubric, fixtures, or examples describe a different contract than `SKILL.md`.
+- The skill claims to be a reusable dependency, but its output shape or scoring dimensions drift across files.
 
 ---
 
@@ -66,6 +87,7 @@ A good `description:` contains **all four**:
 - Boundaries specified: when to stop, when to ask, when to proceed best-effort.
 - A defined output format (schema / template / file layout).
 - Failure handling for missing or invalid input.
+- AI-friendly decision points: the agent can tell whether to inspect, ask, act, or stop without hidden human interpretation.
 - Explanations of *why* rules exist, not walls of MUST/NEVER.
 
 **Red flags:**
@@ -138,7 +160,7 @@ Warranted when the file is consumed as-is in the skill's output (templates, fixt
 - Every run invents a new format.
 - Output mixes narration and data with no delimiter.
 
-## 8. Eval coverage (optional, not scored)
+## Suggested evals (optional, not scored)
 
 Evals are **not a scorecard dimension** and their absence is never a blocker. Do not dock a skill for lacking evals. Only recommend them when they would materially reduce risk for this specific skill (fuzzy triggers, sibling collisions, or post-iteration regression risk).
 
@@ -152,7 +174,24 @@ Evals are **not a scorecard dimension** and their absence is never a blocker. Do
 - Trigger surface is unambiguous (e.g. tied to a specific file extension).
 - The added maintenance cost clearly exceeds the regression risk.
 
-## 9. Maintainability
+### Local snapshot-style evals
+
+For local skill evaluation, snapshot-style coverage is warranted when the skill's output contract must stay stable across edits, especially for reviewer, grader, formatter, or file-producing skills.
+
+**Good looks like:**
+- Trigger/router evals are separate from output snapshots.
+- Fixtures have human-readable expectations and machine-readable assertions.
+- Snapshots compare structured fields (verdict, score ranges, required sections, must-flag issues, forbidden actions) before prose.
+- The workspace saves artifacts (`review.md`, extracted JSON, `grading.json`, benchmark data) so regressions can be inspected.
+- There is an explicit update policy: snapshots change only when the contract changes, not because wording drifted.
+
+**Red flags:**
+- Full natural-language output is treated as a byte-for-byte snapshot.
+- A single prompt with no baseline is called a benchmark.
+- Snapshot files do not identify the input fixture, model/run context, expected verdict, or forbidden actions.
+- Fixture `expected.md`, JSON snapshots, and README describe different dimensions or section names.
+
+## 8. Maintainability
 
 **Good looks like:**
 - Clear versioning, changelog, or at least a stable structure.
@@ -175,6 +214,7 @@ Recommend against shipping as a skill when:
 - The skill is narrower than a single user would use repeatedly (one-shot job).
 - The "skill" is really a library and would be better as a CLI or package.
 - The workflow depends on mutable private infrastructure the skill cannot describe.
+- The artifact is only static documentation or reviewer philosophy, with no clear trigger, executable workflow, or stable output contract for an agent.
 
 ## Verdict decision rules
 

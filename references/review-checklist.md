@@ -33,6 +33,8 @@ Walk this top-to-bottom. Tick each item. If an item cannot be assessed from the 
 - [ ] I can write one sentence: "This skill exists to do X when Y, returning Z."
 - [ ] The skill is the right packaging (not better as a prompt, tool, CLI, or MCP).
 - [ ] Instruction-only vs. needs-resources classification is clear.
+- [ ] The skill improves a recurring agent behavior, not just human-facing documentation.
+- [ ] Any dependency contract is explicit and stable (what another skill, evaluator, or downstream agent can rely on).
 
 ## C. Name
 
@@ -60,6 +62,8 @@ Walk this top-to-bottom. Tick each item. If an item cannot be assessed from the 
 - [ ] Output format defined (schema / template / file layout).
 - [ ] Failure handling for missing/invalid input.
 - [ ] No internal contradictions.
+- [ ] Instructions are AI-friendly: at important forks, the agent knows whether to inspect, ask, act, or stop.
+- [ ] For evaluator skills, rubric/checklist/template/fixtures agree on score dimensions, verdict rules, and output sections.
 - [ ] Explains *why* key rules exist.
 - [ ] Not a wall of uppercase MUST/NEVER.
 - [ ] Does not expect the LLM to "figure it out" at critical forks.
@@ -71,6 +75,7 @@ Walk this top-to-bottom. Tick each item. If an item cannot be assessed from the 
 - [ ] No tiny files that should be inlined.
 - [ ] Large reference files have a table of contents.
 - [ ] Naming is descriptive.
+- [ ] Calibration or example resources do not contradict the output contract in `SKILL.md`.
 
 ## G. Scripts
 
@@ -99,6 +104,7 @@ Walk this top-to-bottom. Tick each item. If an item cannot be assessed from the 
 - [ ] Output format is stable and named.
 - [ ] At least one example of the output is provided.
 - [ ] Output separates narration from data.
+- [ ] Output can be consumed by the user or a downstream agent without reinterpreting ambiguous prose.
 
 ## K. Evals (optional)
 
@@ -109,6 +115,9 @@ Evals are not scored and their absence is never a blocker. Only propose them whe
 - [ ] If recommended: each prompt has prompt, should_trigger, expected_behavior, failure_modes_to_watch.
 - [ ] If recommended: negative prompts are genuinely near-miss, not trivially unrelated.
 - [ ] If deferring: reason stated in one line (e.g. rapid iteration, unambiguous trigger surface).
+- [ ] If reviewing local skill evals: trigger/router evals, behavior assertions, calibration fixtures, and artifact snapshots are separated.
+- [ ] If reviewing snapshot-style evals: snapshots compare structured fields, not full prose by default.
+- [ ] If reviewing snapshot-style evals: baseline (`old_skill` / `without_skill`), run artifacts, forbidden actions, and snapshot update policy are explicit.
 
 ## L. Maintainability
 

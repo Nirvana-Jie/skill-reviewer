@@ -17,7 +17,6 @@ Either blocker alone is sufficient for Not ready; both must be raised in Critica
 - Script necessity: 1–2 (references a curl-pipe script that was never shipped)
 - Safety and constraints: 1
 - Output quality: 2
-- Eval coverage: 1
 - Maintainability: 2
 
 **Must be raised as Critical Issues (at minimum):**
