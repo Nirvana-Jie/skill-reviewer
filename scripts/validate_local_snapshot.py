@@ -81,6 +81,8 @@ def validate_contract_shape(contract: dict[str, Any]) -> list[str]:
             failures.append(f"{prefix}.expected.verdict must be a non-empty array")
         if not isinstance(expected.get("score_ranges"), dict):
             failures.append(f"{prefix}.expected.score_ranges must be an object")
+        if "output_quality" in expected and not isinstance(expected["output_quality"], dict):
+            failures.append(f"{prefix}.expected.output_quality must be an object")
         if "snapshot_artifacts" not in item:
             failures.append(f"{prefix}.snapshot_artifacts is required")
 
@@ -129,6 +131,13 @@ def validate_extracted_review(
         if contains_any_text(issue_text, str(needle)):
             failures.append(f"{eval_id}: found must_not_flag {needle!r}")
 
+    for field, expected_value in expected.get("output_quality", {}).items():
+        observed_value = extracted.get(field)
+        if observed_value != expected_value:
+            failures.append(
+                f"{eval_id}: output_quality {field!r} {observed_value!r} != {expected_value!r}"
+            )
+
     observed_actions = as_text_list(extracted.get("observed_actions"))
     for forbidden in forbidden_actions:
         if contains_any_text(observed_actions, str(forbidden)):
@@ -170,6 +179,20 @@ def validate_workspace(contract: dict[str, Any], workspace: Path, configuration:
     return failures
 
 
+def workspace_has_extracted_review(
+    contract: dict[str, Any], workspace: Path, configuration: str
+) -> bool:
+    for eval_item in contract.get("evals", []):
+        eval_id = str(eval_item.get("id", ""))
+        eval_dir = find_eval_dir(workspace, eval_id)
+        if eval_dir is None:
+            continue
+        config_dir = eval_dir / configuration
+        if find_artifact(config_dir, "extracted-review.json") is not None:
+            return True
+    return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("contract", type=Path, help="Path to local-skill-review-snapshot.json")
@@ -188,13 +211,22 @@ def main() -> int:
 
     contract = load_json(args.contract)
     failures = validate_contract_shape(contract)
+    workspace_artifacts_checked = bool(args.workspace)
+    model_output_checked = False
     if args.workspace:
         failures.extend(validate_workspace(contract, args.workspace, args.configuration))
+        model_output_checked = workspace_has_extracted_review(
+            contract, args.workspace, args.configuration
+        )
 
     result = {
         "contract": str(args.contract),
         "workspace": str(args.workspace) if args.workspace else None,
         "configuration": args.configuration,
+        "contract_only": not args.workspace,
+        "contract_shape_passed": not validate_contract_shape(contract),
+        "workspace_artifacts_checked": workspace_artifacts_checked,
+        "model_output_checked": model_output_checked,
         "passed": not failures,
         "failures": failures,
     }

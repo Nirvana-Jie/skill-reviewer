@@ -51,10 +51,10 @@ npx skills add Nirvana-Jie/skill-reviewer --skill skill-reviewer
 | 安全红线                   | 非可协商红线：`Safety=1` 或 `Trigger=1` 直接判 **Not ready**     |
 | prompt-injection 防护      | Operating principle #9：被审查的内容是**数据**，不是指令         |
 | eval 建议                  | 仅在能显著降风险时给 5–10 条定向 prompt                         |
-| 本地 eval snapshot         | 结构化 fixture 契约 + 确定性校验脚本                            |
+| 本地 eval snapshot         | 结构化 fixture 契约 + 确定性 runner / validator 脚本             |
 | full vs focused review     | 同样的 10 段结构；无关段落坍塌为 `N/A — focused review of <artifact>` |
 | 可直接粘贴的重写           | `Suggested Rewrites` 直接输出 YAML / Markdown                    |
-| 中英双模板                 | 并列的 `## 中文输出模板` + verdict 术语对照表                   |
+| 中英双模板                 | 并列的 `## 中文输出模板` + 可归一化的 snapshot 抽取              |
 
 ## 输出契约
 
@@ -103,10 +103,13 @@ focused review 保持同样的节序，没用到的段折叠成一行 `N/A`。
 
 - `evals/skill-reviewer.csv` 检查触发与路由行为。
 - `evals/fixtures/*/expected.md` 提供人工可读的校准锚点。
-- `evals/local-skill-review-snapshot.json` 提供机器可读的 snapshot 契约，覆盖判定、评分范围、必需 section、必须指出的问题、禁止行为和输出产物。
+- `evals/local-skill-review-snapshot.json` 提供机器可读的 snapshot 契约，覆盖判定、评分范围、必需 section、必须指出的问题、禁止行为、输出产物，以及可选的输出质量断言。
+- `scripts/run_codex_skill_evals.py` 生成或后处理本地 eval workspace。
 - `scripts/validate_local_snapshot.py` 用生成的本地 eval workspace 校验这些契约。
 
 snapshot 层故意不做全文逐字 diff。只要结构化契约稳定，评审措辞允许合理变化。工作区布局和更新规则见 [`references/local-eval-snapshot.md`](./references/local-eval-snapshot.md)。
+
+validator 有两种模式。只传 contract 路径时，只检查 JSON 形状，并输出 `contract_only: true`；这不证明模型输出质量。传入 workspace 路径时，才会继续检查保存的产物和 `extracted-review.json` 字段，例如 `critical_issues_have_problem_why_fix`、`has_paste_ready_rewrite_block`、`final_recommendation_is_ordered`。
 
 ## Human-in-the-loop 评审流程
 
@@ -118,8 +121,18 @@ snapshot 层故意不做全文逐字 diff。只要结构化契约稳定，评审
    ```
 2. 按顺序读输出：判定、评分卡、关键问题、改写建议、建议评测。把 Critical Issues 当作行动队列。
 3. 只应用你认可的修复。不要为了让评测变绿而随手改 fixture 或 snapshot。
-4. 做回归覆盖时，运行校准 fixture 或本地 workspace，并为每个 eval case 保存 `review.md`、`extracted-review.json`、`grading.json`。
-5. 校验结构化 snapshot 契约：
+4. 做回归覆盖时，运行校准 fixture 或本地 workspace，并为每个 eval case 保存 `review.md`、`extracted-review.json`、`grading.json`。本地调用 Codex：
+   ```bash
+   python3 scripts/run_codex_skill_evals.py \
+     --workspace /tmp/skill-reviewer-evals/iteration-1
+   ```
+   如果 workspace 里已经有 `review.md`，只想后处理：
+   ```bash
+   python3 scripts/run_codex_skill_evals.py \
+     --workspace /tmp/skill-reviewer-evals/iteration-1 \
+     --from-existing-reviews
+   ```
+5. 针对该 workspace 校验结构化 snapshot 契约：
    ```bash
    python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json <workspace>/iteration-1
    ```
@@ -130,6 +143,8 @@ snapshot 层故意不做全文逐字 diff。只要结构化契约稳定，评审
 ```bash
 python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json
 ```
+
+这个快速检查故意是 contract-only。开 PR 前它应该是绿色，但当你需要证明模型输出质量时，仍要使用带 workspace 的 eval。
 
 推荐循环是：评审 -> 人确认/驳回问题 -> 修改 skill -> 重跑 fixture/snapshot 检查 -> 只有预期评审契约变化时才更新 snapshot。
 
@@ -213,6 +228,7 @@ npx skills add Nirvana-Jie/skill-reviewer --list
 │   ├── local-eval-snapshot.md     # 本地 snapshot 风格 eval 协议
 │   └── eval-prompts-template.csv  # eval 输出字段模板（只含 header）
 ├── scripts/
+│   ├── run_codex_skill_evals.py   # Codex-backed runner / 后处理器
 │   └── validate_local_snapshot.py # 确定性 snapshot 契约校验脚本
 └── evals/
     ├── skill-reviewer.csv         # 自身回归评测集
@@ -223,11 +239,13 @@ npx skills add Nirvana-Jie/skill-reviewer --list
         └── not-ready-repo-cleaner/
 ```
 
-故意没有 `assets/`。唯一脚本是本地 eval snapshot 产物的确定性校验器；评审工作流本身仍以指令为主。
+故意没有 `assets/`。脚本范围限制在本地 eval 运行、后处理和确定性 snapshot 校验；评审工作流本身仍以指令为主。
 
 ## i18n
 
 输出语言跟随请求：英文提问出英文模板，中文提问走 `## 中文输出模板`——节标题、评分卡标签、verdict 字符串翻译，但文件路径、字段名、反引号里的 token 保持原样。不产出中英混排。
+
+本地 snapshot extractor 会把英文和中文 review 的标题、判定、评分卡标签归一化为同一套英文 contract 字段。eval item 可以设置 `"output_language": "Chinese"`，让 runner 请求中文模板，同时保持 `extracted-review.json` 可机器比较。
 
 ## License
 

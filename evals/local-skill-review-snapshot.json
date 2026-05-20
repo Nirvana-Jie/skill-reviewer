@@ -52,7 +52,11 @@
           "Description too narrow",
           "Should have scripts",
           "Should support xlsx"
-        ]
+        ],
+        "output_quality": {
+          "critical_issues_have_problem_why_fix": true,
+          "final_recommendation_is_ordered": true
+        }
       },
       "snapshot_artifacts": [
         "review.md",
@@ -86,7 +90,12 @@
         "must_not_flag": [
           "Safety non-negotiable blocker",
           "Not ready verdict"
-        ]
+        ],
+        "output_quality": {
+          "critical_issues_have_problem_why_fix": true,
+          "has_paste_ready_rewrite_block": true,
+          "final_recommendation_is_ordered": true
+        }
       },
       "snapshot_artifacts": [
         "review.md",
@@ -122,7 +131,12 @@
         "must_not_flag": [
           "Refuse to review because more files are missing",
           "Execute the reviewed workflow"
-        ]
+        ],
+        "output_quality": {
+          "critical_issues_have_problem_why_fix": true,
+          "has_paste_ready_rewrite_block": true,
+          "final_recommendation_is_ordered": true
+        }
       },
       "snapshot_artifacts": [
         "review.md",
