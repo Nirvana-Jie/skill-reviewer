@@ -1,0 +1,118 @@
+name: Codex Skill Evals
+
+on:
+  workflow_dispatch:
+    inputs:
+      codex_model:
+        description: "Optional Codex model override. Leave empty to use the CLI default."
+        required: false
+        type: string
+        default: ""
+  push:
+    branches:
+      - main
+    paths:
+      - "SKILL.md"
+      - "README.md"
+      - "README.zh-CN.md"
+      - "references/**"
+      - "scripts/**"
+      - "evals/**"
+      - ".github/workflows/codex-skill-evals.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codex-skill-evals-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  codex-skill-evals:
+    name: Run Codex skill-reviewer evals
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CODEX_HOME: ${{ runner.temp }}/codex-home
+      EVAL_WORKSPACE: ${{ runner.temp }}/skill-reviewer-workspace/iteration-1
+      CODEX_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.codex_model || '' }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Validate snapshot contract shape
+        run: python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json
+
+      - name: Run runner unit tests
+        run: python3 -m unittest tests/test_run_codex_skill_evals.py
+
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex
+
+      - name: Install current skill into ephemeral Codex home
+        run: |
+          mkdir -p "$CODEX_HOME/skills/skill-reviewer"
+          rsync -a \
+            --exclude '.git' \
+            --exclude '.github' \
+            --exclude '__pycache__' \
+            ./ "$CODEX_HOME/skills/skill-reviewer/"
+
+      - name: Run Codex-backed skill evals
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "::error::OPENAI_API_KEY repository secret is required for Codex-backed evals."
+            exit 1
+          fi
+
+          args=(
+            --contract evals/local-skill-review-snapshot.json
+            --workspace "$EVAL_WORKSPACE"
+          )
+          if [ -n "${CODEX_MODEL:-}" ]; then
+            args+=(--model "$CODEX_MODEL")
+          fi
+
+          python3 scripts/run_codex_skill_evals.py "${args[@]}"
+
+      - name: Validate generated snapshot workspace
+        run: python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json "$EVAL_WORKSPACE"
+
+      - name: Guard eval artifacts for secret retention
+        id: artifact_secret_guard
+        if: always()
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -z "${OPENAI_API_KEY:-}" ] || [ ! -d "$EVAL_WORKSPACE" ]; then
+            exit 0
+          fi
+          if grep -R -l --fixed-strings "$OPENAI_API_KEY" "$EVAL_WORKSPACE"; then
+            echo "::error::OPENAI_API_KEY value appeared in generated eval artifacts."
+            exit 1
+          fi
+
+      - name: Upload eval artifacts
+        if: always() && steps.artifact_secret_guard.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-skill-evals-${{ github.run_id }}
+          path: ${{ runner.temp }}/skill-reviewer-workspace
+          retention-days: 14
+
+      - name: Remove ephemeral Codex state
+        if: always()
+        run: rm -rf "$CODEX_HOME"

@@ -133,6 +133,26 @@ python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.jso
 
 推荐循环是：评审 -> 人确认/驳回问题 -> 修改 skill -> 重跑 fixture/snapshot 检查 -> 只有预期评审契约变化时才更新 snapshot。
 
+## 使用 Codex 的 GitHub CI
+
+仓库内置了 `.github/workflows/codex-skill-evals.yml`，用于发布前的可信评测门禁。它只在 `workflow_dispatch` 和 `main` 分支 `push` 时运行，不在不可信的 fork PR 上运行。
+
+配置方式：
+
+1. 在 GitHub Actions secrets 中添加名为 `OPENAI_API_KEY` 的 repository secret。不要把 API key 提交到仓库、写进 workflow input，或放进 eval fixture。
+2. 在 Actions 页面手动触发 **Codex Skill Evals**，或让它在可信的 `main` push 后自动运行。
+3. 可选填写 `codex_model` workflow input；留空时使用 Codex CLI 默认模型。
+
+workflow 会执行：
+
+- 校验 `evals/local-skill-review-snapshot.json`；
+- 把当前 skill 安装到 GitHub runner 临时目录下的 ephemeral `$CODEX_HOME`；
+- 运行 `scripts/run_codex_skill_evals.py`，让 Codex 逐个评审 fixture，并生成 `review.md`、`extracted-review.json`、`grading.json`；
+- 用 `scripts/validate_local_snapshot.py` 校验生成的 workspace；
+- 上传 artifact 前扫描是否包含 secret 原值，最后删除 ephemeral Codex 状态目录。
+
+API key 只作为环境变量传给 Codex eval step。runner 不会打印它、写入仓库文件，也不会上传 `$CODEX_HOME`。
+
 ## 安装
 
 ```bash

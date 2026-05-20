@@ -7,8 +7,17 @@ __MACOSX/
 .vscode/
 .idea/
 
+# Secrets
+.env
+.env.*
+!.env.example
+
 # Packaging artifacts — never ship these in a .skill/zip
 *.zip
 *.skill
 dist/
 build/
+
+# Local eval workspaces
+.codex-eval-workspace/
+skill-reviewer-workspace/
