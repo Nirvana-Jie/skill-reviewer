@@ -33,9 +33,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      CODEX_HOME: ${{ runner.temp }}/codex-home
-      EVAL_WORKSPACE: ${{ runner.temp }}/skill-reviewer-workspace/iteration-1
-      CODEX_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.codex_model || '' }}
+      CODEX_HOME: /tmp/codex-home
+      EVAL_WORKSPACE: /tmp/skill-reviewer-workspace/iteration-1
+      CODEX_MODEL: ${{ github.event.inputs.codex_model || '' }}
 
     steps:
       - name: Check out repository
@@ -110,7 +110,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: codex-skill-evals-${{ github.run_id }}
-          path: ${{ runner.temp }}/skill-reviewer-workspace
+          path: /tmp/skill-reviewer-workspace
           retention-days: 14
 
       - name: Remove ephemeral Codex state
