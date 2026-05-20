@@ -133,6 +133,25 @@ python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.jso
 
 The useful loop is: review -> human accepts/rejects findings -> edit skill -> rerun fixture/snapshot checks -> update snapshots only when the expected review contract changes.
 
+## Contribution workflow
+
+All changes go through a branch and pull request. Do not commit or push directly
+to `main`; the branch is protected in GitHub.
+
+Before opening a PR, run:
+
+```bash
+python3 -m unittest discover -s tests
+python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json
+```
+
+After opening a PR, wait for `Static Checks` and request Codex Cloud review when
+needed:
+
+```text
+@codex review for skill-reviewer eval regression risk. Check SKILL.md, references, eval fixtures, snapshot contract, and CI safety. Do not add API keys or model-backed GitHub Actions.
+```
+
 ## GitHub checks and Codex Cloud review
 
 The repository includes `.github/workflows/static-checks.yml` for deterministic checks on pull requests and trusted `main` pushes. It does not call Codex, use an OpenAI API key, or upload generated model artifacts.
