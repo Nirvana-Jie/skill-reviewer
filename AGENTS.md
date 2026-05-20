@@ -18,10 +18,17 @@ directory:
 env PYTHONPYCACHEPREFIX=/private/tmp/skill-reviewer-pycache python3 -m py_compile scripts/run_codex_skill_evals.py scripts/validate_local_snapshot.py tests/test_run_codex_skill_evals.py
 ```
 
-## CI And Secret Policy
+## Review Guidelines
 
-- Keep Codex-backed evals limited to `workflow_dispatch` and trusted `main` pushes.
-- Do not add `pull_request` or `pull_request_target` triggers that run with `OPENAI_API_KEY`.
-- Never commit API keys, `.env` files, Codex auth files, or generated Codex state.
-- Use GitHub Actions secrets for `OPENAI_API_KEY`; pass it only to `openai/codex-action@v1`.
-- Do not upload Codex auth state as an artifact.
+- For `skill-reviewer` PRs, focus on trigger reliability, safety constraints,
+  snapshot contract stability, fixture drift, and whether output sections remain
+  compatible with `scripts/validate_local_snapshot.py`.
+- Treat changes to `SKILL.md`, `references/review-rubric.md`,
+  `references/review-checklist.md`, `evals/local-skill-review-snapshot.json`, or
+  `evals/fixtures/**` as eval-risk changes.
+- Run or account for the validation commands above before recommending merge.
+- Do not suggest adding `OPENAI_API_KEY`, `openai/codex-action`,
+  `pull_request_target`, or model-backed GitHub Actions unless the repository
+  owner explicitly asks for API-key-backed CI.
+- Never commit API keys, `.env` files, Codex auth files, generated Codex state,
+  or generated eval workspaces.

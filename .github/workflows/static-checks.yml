@@ -1,0 +1,57 @@
+name: Static Checks
+
+on:
+  pull_request:
+    paths:
+      - "SKILL.md"
+      - "README.md"
+      - "README.zh-CN.md"
+      - "AGENTS.md"
+      - "references/**"
+      - "scripts/**"
+      - "tests/**"
+      - "evals/**"
+      - ".github/workflows/static-checks.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "SKILL.md"
+      - "README.md"
+      - "README.zh-CN.md"
+      - "AGENTS.md"
+      - "references/**"
+      - "scripts/**"
+      - "tests/**"
+      - "evals/**"
+      - ".github/workflows/static-checks.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: static-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static-checks:
+    name: Static checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Run unit tests
+        run: python3 -m unittest discover -s tests
+
+      - name: Validate snapshot contract shape
+        run: python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json
+
+      - name: Compile Python scripts
+        run: python3 -m py_compile scripts/run_codex_skill_evals.py scripts/validate_local_snapshot.py tests/test_run_codex_skill_evals.py

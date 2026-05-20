@@ -133,26 +133,25 @@ python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.jso
 
 The useful loop is: review -> human accepts/rejects findings -> edit skill -> rerun fixture/snapshot checks -> update snapshots only when the expected review contract changes.
 
-## GitHub CI with Codex
+## GitHub checks and Codex Cloud review
 
-The repository includes `.github/workflows/codex-skill-evals.yml` for release-gate evals. It runs only on `workflow_dispatch` and `push` to `main`, not on untrusted fork PRs.
+The repository includes `.github/workflows/static-checks.yml` for deterministic checks on pull requests and trusted `main` pushes. It does not call Codex, use an OpenAI API key, or upload generated model artifacts.
 
-Setup:
+The static workflow runs:
 
-1. Add a repository secret named `OPENAI_API_KEY` in GitHub Actions secrets. Do not commit API keys, put them in workflow inputs, or store them in eval fixtures.
-2. Trigger **Codex Skill Evals** manually from the Actions tab, or let it run after trusted pushes to `main`.
-3. Optionally pass a `codex_model` workflow input. Leaving it blank uses the Codex action default.
+```bash
+python3 -m unittest discover -s tests
+python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json
+python3 -m py_compile scripts/run_codex_skill_evals.py scripts/validate_local_snapshot.py tests/test_run_codex_skill_evals.py
+```
 
-What the workflow does:
+For model-assisted review without storing an API key in GitHub Actions, use Codex Cloud on the pull request:
 
-- validates `evals/local-skill-review-snapshot.json`;
-- runs `openai/codex-action@v1` with `.github/codex/prompts/skill-evals.md`;
-- asks Codex to review each fixture and write `review.md` files under `.codex-eval-workspace/`;
-- runs `scripts/run_codex_skill_evals.py --from-existing-reviews` to extract `extracted-review.json` and `grading.json` deterministically;
-- validates the generated workspace with `scripts/validate_local_snapshot.py`;
-- scans artifacts for the exact secret value before upload.
+```text
+@codex review for skill-reviewer eval regression risk. Check SKILL.md, references, eval fixtures, snapshot contract, and CI safety. Do not add API keys or model-backed GitHub Actions.
+```
 
-The API key is only provided to `openai/codex-action@v1`. The workflow does not print it, write it to repo files, or upload Codex auth state.
+Keep Codex automatic reviews disabled if only repository maintainers should trigger Codex review. Codex follows `AGENTS.md` review guidelines when reviewing PRs.
 
 ## Install
 

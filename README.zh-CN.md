@@ -133,26 +133,25 @@ python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.jso
 
 推荐循环是：评审 -> 人确认/驳回问题 -> 修改 skill -> 重跑 fixture/snapshot 检查 -> 只有预期评审契约变化时才更新 snapshot。
 
-## 使用 Codex 的 GitHub CI
+## GitHub 检查与 Codex Cloud review
 
-仓库内置了 `.github/workflows/codex-skill-evals.yml`，用于发布前的可信评测门禁。它只在 `workflow_dispatch` 和 `main` 分支 `push` 时运行，不在不可信的 fork PR 上运行。
+仓库内置了 `.github/workflows/static-checks.yml`，用于在 PR 和可信的 `main` push 上运行确定性检查。它不会调用 Codex，不需要 OpenAI API key，也不会上传模型生成 artifact。
 
-配置方式：
+静态 workflow 会运行：
 
-1. 在 GitHub Actions secrets 中添加名为 `OPENAI_API_KEY` 的 repository secret。不要把 API key 提交到仓库、写进 workflow input，或放进 eval fixture。
-2. 在 Actions 页面手动触发 **Codex Skill Evals**，或让它在可信的 `main` push 后自动运行。
-3. 可选填写 `codex_model` workflow input；留空时使用 Codex action 默认模型。
+```bash
+python3 -m unittest discover -s tests
+python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json
+python3 -m py_compile scripts/run_codex_skill_evals.py scripts/validate_local_snapshot.py tests/test_run_codex_skill_evals.py
+```
 
-workflow 会执行：
+如果需要不在 GitHub Actions 中保存 API key 的模型辅助审查，在 PR 里使用 Codex Cloud：
 
-- 校验 `evals/local-skill-review-snapshot.json`；
-- 使用 `.github/codex/prompts/skill-evals.md` 运行 `openai/codex-action@v1`；
-- 让 Codex 逐个评审 fixture，并在 `.codex-eval-workspace/` 下生成 `review.md`；
-- 运行 `scripts/run_codex_skill_evals.py --from-existing-reviews`，确定性抽取 `extracted-review.json` 和 `grading.json`；
-- 用 `scripts/validate_local_snapshot.py` 校验生成的 workspace；
-- 上传 artifact 前扫描是否包含 secret 原值。
+```text
+@codex review for skill-reviewer eval regression risk. Check SKILL.md, references, eval fixtures, snapshot contract, and CI safety. Do not add API keys or model-backed GitHub Actions.
+```
 
-API key 只传给 `openai/codex-action@v1`。workflow 不会打印它、写入仓库文件，也不会上传 Codex 认证状态。
+如果只希望仓库维护者触发 Codex review，请关闭 Codex automatic reviews，改用手动 `@codex review`。Codex review 会读取 `AGENTS.md` 中的 review guidelines。
 
 ## 安装
 
