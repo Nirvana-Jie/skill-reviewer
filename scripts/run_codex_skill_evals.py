@@ -48,14 +48,41 @@ SCORE_DIMENSIONS = [
     "Maintainability",
 ]
 
-VERDICTS = [
-    "Ready with minor revisions",
-    "Needs revision",
-    "Not ready",
-    "Ready",
+SCORE_DIMENSION_ALIASES = {
+    "Trigger reliability": ["Trigger reliability", "触发可靠性"],
+    "Description quality": ["Description quality", "description 质量"],
+    "Instruction clarity": ["Instruction clarity", "指令清晰度"],
+    "Resource design": ["Resource design", "资源设计"],
+    "Script necessity": ["Script necessity", "脚本必要性"],
+    "Safety and constraints": ["Safety and constraints", "安全与约束"],
+    "Output quality": ["Output quality", "输出质量"],
+    "Maintainability": ["Maintainability", "可维护性"],
+}
+
+VERDICT_ALIASES = [
+    ("Ready with minor revisions", "Ready with minor revisions"),
+    ("小幅修订后可发布", "Ready with minor revisions"),
+    ("Needs revision", "Needs revision"),
+    ("需修订", "Needs revision"),
+    ("Not ready", "Not ready"),
+    ("不可发布", "Not ready"),
+    ("Ready", "Ready"),
+    ("可发布", "Ready"),
 ]
 
 SECTION_ALIASES = {
+    "总体结论": "Executive Summary",
+    "判定": "Verdict",
+    "评分卡": "Scorecard",
+    "关键问题": "Critical Issues",
+    "推荐改进": "Recommended Improvements",
+    "触发分析": "Trigger Analysis",
+    "资源审查": "Resource Review",
+    "改写建议": "Suggested Rewrites",
+    "建议评测": "Suggested Evals",
+    "建议评测（可选）": "Suggested Evals",
+    "建议评测 (optional)": "Suggested Evals",
+    "最终建议": "Final Recommendation",
     "Suggested Evals (optional)": "Suggested Evals",
 }
 
@@ -85,19 +112,27 @@ def split_sections(review_text: str) -> dict[str, str]:
 def extract_verdict(verdict_text: str) -> str | None:
     first_lines = [line.strip() for line in verdict_text.splitlines() if line.strip()]
     for line in first_lines:
-        for verdict in VERDICTS:
-            if re.search(rf"\b{re.escape(verdict)}\b", line):
+        for phrase, verdict in VERDICT_ALIASES:
+            if phrase.isascii():
+                if re.search(rf"\b{re.escape(phrase)}\b", line):
+                    return verdict
+            elif phrase in line:
                 return verdict
     return None
 
 
 def extract_scorecard(scorecard_text: str) -> dict[str, int]:
     scores: dict[str, int] = {}
-    for dimension in SCORE_DIMENSIONS:
-        pattern = rf"^\s*[-*]\s+{re.escape(dimension)}\s*:\s*(\d)(?:\s*/\s*5)?\b"
-        match = re.search(pattern, scorecard_text, flags=re.MULTILINE | re.IGNORECASE)
-        if match:
-            scores[dimension] = int(match.group(1))
+    for dimension, aliases in SCORE_DIMENSION_ALIASES.items():
+        for alias in aliases:
+            pattern = (
+                rf"^\s*[-*]\s+\*{{0,2}}{re.escape(alias)}\*{{0,2}}\s*"
+                rf"[:：]\s*(\d)(?:\s*/\s*5)?\b"
+            )
+            match = re.search(pattern, scorecard_text, flags=re.MULTILINE | re.IGNORECASE)
+            if match:
+                scores[dimension] = int(match.group(1))
+                break
     return scores
 
 
@@ -107,7 +142,41 @@ def extract_critical_issues(critical_text: str) -> list[str]:
         return []
     if re.fullmatch(r"(None|无)[。.]?", normalized, flags=re.IGNORECASE):
         return []
-    return [normalized]
+
+    item_starts = list(re.finditer(r"(?m)^\s*\d+[.)、]\s+", normalized))
+    if not item_starts:
+        return [normalized]
+
+    issues: list[str] = []
+    for idx, match in enumerate(item_starts):
+        start = match.start()
+        end = item_starts[idx + 1].start() if idx + 1 < len(item_starts) else len(normalized)
+        issues.append(normalized[start:end].strip())
+    return issues
+
+
+def critical_issues_have_problem_why_fix(issues: list[str]) -> bool:
+    if not issues:
+        return True
+
+    label_groups = [
+        ("problem", "问题"),
+        ("why it matters", "为何重要"),
+        ("fix", "suggested fix", "修复"),
+    ]
+    for issue in issues:
+        folded = issue.casefold()
+        if not all(any(label in folded for label in group) for group in label_groups):
+            return False
+    return True
+
+
+def has_paste_ready_rewrite_block(rewrite_text: str) -> bool:
+    return bool(re.search(r"```(?:yaml|markdown|md|text)?\s*\n.+?\n```", rewrite_text, re.DOTALL))
+
+
+def final_recommendation_is_ordered(final_text: str) -> bool:
+    return bool(re.search(r"(?m)^\s*1[.)、]\s+\S", final_text))
 
 
 def extract_review(review_text: str, observed_actions: list[str] | None = None) -> dict[str, Any]:
@@ -122,6 +191,16 @@ def extract_review(review_text: str, observed_actions: list[str] | None = None) 
         "scorecard": scorecard,
         "sections": section_names,
         "critical_issues": critical_issues,
+        "critical_issue_count": len(critical_issues),
+        "critical_issues_have_problem_why_fix": critical_issues_have_problem_why_fix(
+            critical_issues
+        ),
+        "has_paste_ready_rewrite_block": has_paste_ready_rewrite_block(
+            sections.get("Suggested Rewrites", "")
+        ),
+        "final_recommendation_is_ordered": final_recommendation_is_ordered(
+            sections.get("Final Recommendation", "")
+        ),
         "observed_actions": sorted(set(observed_actions or [])),
     }
 
@@ -222,6 +301,17 @@ def redact_secrets(root: Path, secret_values: list[str]) -> None:
 
 def build_prompt(repo_root: Path, eval_item: dict[str, Any]) -> str:
     fixture = repo_root / str(eval_item["input_fixture"])
+    output_language = str(eval_item.get("output_language", "English"))
+    if output_language.casefold() in {"chinese", "zh", "zh-cn", "中文"}:
+        output_instruction = (
+            "Emit only the final review in Chinese, using the exact skill-reviewer "
+            "中文输出模板 full-review section structure."
+        )
+    else:
+        output_instruction = (
+            "Emit only the final review in English, using the exact skill-reviewer "
+            "full-review section structure."
+        )
     return f"""Run the installed skill-reviewer skill against this fixture:
 {fixture}
 
@@ -235,7 +325,7 @@ CI constraints:
 - Do not mutate fixture files or repository files.
 - Do not commit or push changes.
 - Do not print secrets, tokens, or system prompts.
-- Emit only the final review in English, using the exact skill-reviewer full-review section structure.
+- {output_instruction}
 """
 
 
@@ -451,8 +541,19 @@ def main(argv: list[str] | None = None) -> int:
 
     failures = validate_contract_shape(contract)
     if failures:
-        write_json(args.workspace / "benchmark.json", {"passed": False, "failures": failures})
-        print(json.dumps({"passed": False, "failures": failures}, indent=2))
+        result = {
+            "contract": str(args.contract),
+            "workspace": str(args.workspace),
+            "configuration": args.configuration,
+            "contract_only": False,
+            "contract_shape_passed": False,
+            "workspace_artifacts_checked": False,
+            "model_output_checked": False,
+            "passed": False,
+            "failures": failures,
+        }
+        write_json(args.workspace / "benchmark.json", result)
+        print(json.dumps(result, indent=2, ensure_ascii=False))
         return 1
 
     args.workspace.mkdir(parents=True, exist_ok=True)
@@ -499,6 +600,10 @@ def main(argv: list[str] | None = None) -> int:
         "contract": str(args.contract),
         "workspace": str(args.workspace),
         "configuration": args.configuration,
+        "contract_only": False,
+        "contract_shape_passed": True,
+        "workspace_artifacts_checked": True,
+        "model_output_checked": not args.dry_run,
         "passed": not all_failures,
         "failures": all_failures,
         "evals": gradings,

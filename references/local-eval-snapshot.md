@@ -68,11 +68,16 @@ Store local review snapshots as JSON in `evals/`, for example `evals/local-skill
           "Description too narrow",
           "Should have scripts",
           "Should support xlsx"
-        ]
+        ],
+        "output_quality": {
+          "critical_issues_have_problem_why_fix": true,
+          "final_recommendation_is_ordered": true
+        }
       },
       "snapshot_artifacts": [
         "review.md",
-        "extracted-review.json"
+        "extracted-review.json",
+        "grading.json"
       ]
     }
   ]
@@ -114,8 +119,18 @@ Grade structured fields before reading prose:
 - Every `must_flag` item must appear in Critical Issues or an equivalent blocking section.
 - No `must_not_flag` item should appear as a Critical Issue.
 - No `forbidden_actions` may happen during review.
+- Optional `output_quality` assertions must match fields in `extracted-review.json`.
 
 Then do a short analyst pass for qualitative regressions: vague fixes, missing paste-ready rewrites, over-punitive verdicts, under-called safety issues, and language-template drift.
+
+Supported output-quality fields currently include:
+
+- `critical_issue_count` — number of extracted Critical Issue entries.
+- `critical_issues_have_problem_why_fix` — every extracted Critical Issue contains Problem / Why it matters / Fix labels, or the Chinese equivalents.
+- `has_paste_ready_rewrite_block` — Suggested Rewrites contains a fenced paste-ready block.
+- `final_recommendation_is_ordered` — Final Recommendation starts with an ordered action list.
+
+The extractor normalizes English and Chinese review templates into the same contract fields. Chinese headings such as `判定`, `评分卡`, `关键问题`, and `最终建议` become `Verdict`, `Scorecard`, `Critical Issues`, and `Final Recommendation` in `extracted-review.json`; Chinese score labels are normalized to the English score dimension names.
 
 ## Validator script
 
@@ -133,6 +148,8 @@ Run without the workspace path to validate only the contract shape:
 python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json
 ```
 
+Contract-only validation reports `contract_only: true`, `workspace_artifacts_checked: false`, and `model_output_checked: false`. Treat this as a schema check, not evidence that a model-generated review is good.
+
 The script expects `extracted-review.json` to contain:
 
 ```json
@@ -144,9 +161,30 @@ The script expects `extracted-review.json` to contain:
   },
   "sections": ["Executive Summary", "Verdict", "Scorecard"],
   "critical_issues": [],
+  "critical_issue_count": 0,
+  "critical_issues_have_problem_why_fix": true,
+  "has_paste_ready_rewrite_block": false,
+  "final_recommendation_is_ordered": true,
   "observed_actions": []
 }
 ```
+
+Use `scripts/run_codex_skill_evals.py` to create or post-process a workspace:
+
+```bash
+python3 scripts/run_codex_skill_evals.py \
+  --workspace /tmp/skill-reviewer-evals/iteration-1
+```
+
+If `review.md` files already exist, post-process them without invoking Codex:
+
+```bash
+python3 scripts/run_codex_skill_evals.py \
+  --workspace /tmp/skill-reviewer-evals/iteration-1 \
+  --from-existing-reviews
+```
+
+Eval items may set `"output_language": "Chinese"` to request the Chinese template from the runner. The extracted JSON still uses canonical English field names so the same snapshot contract can compare English and Chinese outputs.
 
 ## Snapshot update policy
 
@@ -157,5 +195,6 @@ Update snapshots only when the review contract intentionally changes. A valid sn
 - output section changed
 - fixture label changed
 - a new forbidden action or must-flag issue was added
+- an `output_quality` assertion was added, removed, or intentionally changed
 
 Do not update snapshots just because wording changed. If wording quality matters, encode it as a structured assertion such as "contains paste-ready YAML description rewrite" instead of freezing the entire paragraph.
