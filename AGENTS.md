@@ -18,6 +18,16 @@ directory:
 env PYTHONPYCACHEPREFIX=/private/tmp/skill-reviewer-pycache python3 -m py_compile scripts/run_codex_skill_evals.py scripts/validate_local_snapshot.py tests/test_run_codex_skill_evals.py
 ```
 
+## Contribution Workflow
+
+- Do not commit directly to `main`.
+- Create a feature branch for every change, push that branch, and open a pull
+  request targeting `main`.
+- Keep `main` protected. Do not remove pull-request requirements, status checks,
+  force-push protection, or deletion protection.
+- Use the GitHub PR UI for merges after `Static Checks` passes.
+- Trigger Codex Cloud review from the PR only when needed with `@codex review`.
+
 ## Review Guidelines
 
 - For `skill-reviewer` PRs, focus on trigger reliability, safety constraints,

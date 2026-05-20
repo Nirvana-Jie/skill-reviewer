@@ -133,6 +133,23 @@ python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.jso
 
 推荐循环是：评审 -> 人确认/驳回问题 -> 修改 skill -> 重跑 fixture/snapshot 检查 -> 只有预期评审契约变化时才更新 snapshot。
 
+## 贡献流程
+
+所有变更都必须走分支和 PR。不要直接 commit 或 push 到 `main`；该分支已在 GitHub 上配置保护。
+
+开 PR 前先运行：
+
+```bash
+python3 -m unittest discover -s tests
+python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json
+```
+
+开 PR 后等待 `Static Checks`，需要时在 PR 中手动触发 Codex Cloud review：
+
+```text
+@codex review for skill-reviewer eval regression risk. Check SKILL.md, references, eval fixtures, snapshot contract, and CI safety. Do not add API keys or model-backed GitHub Actions.
+```
+
 ## GitHub 检查与 Codex Cloud review
 
 仓库内置了 `.github/workflows/static-checks.yml`，用于在 PR 和可信的 `main` push 上运行确定性检查。它不会调用 Codex，不需要 OpenAI API key，也不会上传模型生成 artifact。
