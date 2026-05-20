@@ -22,6 +22,6 @@ env PYTHONPYCACHEPREFIX=/private/tmp/skill-reviewer-pycache python3 -m py_compil
 
 - Keep Codex-backed evals limited to `workflow_dispatch` and trusted `main` pushes.
 - Do not add `pull_request` or `pull_request_target` triggers that run with `OPENAI_API_KEY`.
-- Never commit API keys, `.env` files, Codex auth files, or generated `$CODEX_HOME` contents.
-- Use GitHub Actions secrets for `OPENAI_API_KEY`; pass it only as a step-scoped environment variable.
-- Do not upload `$CODEX_HOME` as an artifact.
+- Never commit API keys, `.env` files, Codex auth files, or generated Codex state.
+- Use GitHub Actions secrets for `OPENAI_API_KEY`; pass it only to `openai/codex-action@v1`.
+- Do not upload Codex auth state as an artifact.

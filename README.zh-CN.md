@@ -141,17 +141,18 @@ python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.jso
 
 1. 在 GitHub Actions secrets 中添加名为 `OPENAI_API_KEY` 的 repository secret。不要把 API key 提交到仓库、写进 workflow input，或放进 eval fixture。
 2. 在 Actions 页面手动触发 **Codex Skill Evals**，或让它在可信的 `main` push 后自动运行。
-3. 可选填写 `codex_model` workflow input；留空时使用 Codex CLI 默认模型。
+3. 可选填写 `codex_model` workflow input；留空时使用 Codex action 默认模型。
 
 workflow 会执行：
 
 - 校验 `evals/local-skill-review-snapshot.json`；
-- 把当前 skill 安装到 GitHub runner 临时目录下的 ephemeral `$CODEX_HOME`；
-- 运行 `scripts/run_codex_skill_evals.py`，让 Codex 逐个评审 fixture，并生成 `review.md`、`extracted-review.json`、`grading.json`；
+- 使用 `.github/codex/prompts/skill-evals.md` 运行 `openai/codex-action@v1`；
+- 让 Codex 逐个评审 fixture，并在 `.codex-eval-workspace/` 下生成 `review.md`；
+- 运行 `scripts/run_codex_skill_evals.py --from-existing-reviews`，确定性抽取 `extracted-review.json` 和 `grading.json`；
 - 用 `scripts/validate_local_snapshot.py` 校验生成的 workspace；
-- 上传 artifact 前扫描是否包含 secret 原值，最后删除 ephemeral Codex 状态目录。
+- 上传 artifact 前扫描是否包含 secret 原值。
 
-API key 只作为环境变量传给 Codex eval step。runner 不会打印它、写入仓库文件，也不会上传 `$CODEX_HOME`。
+API key 只传给 `openai/codex-action@v1`。workflow 不会打印它、写入仓库文件，也不会上传 Codex 认证状态。
 
 ## 安装
 

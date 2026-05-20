@@ -354,6 +354,60 @@ def run_eval(
     return grading
 
 
+def materialize_existing_reviews(
+    *,
+    contract: dict[str, Any],
+    workspace: Path,
+    configuration: str,
+) -> list[dict[str, Any]]:
+    gradings: list[dict[str, Any]] = []
+
+    for eval_item in contract["evals"]:
+        eval_id = str(eval_item["id"])
+        eval_dir = workspace / f"eval-{eval_id}"
+        config_dir = eval_dir / configuration
+        outputs_dir = config_dir / "outputs"
+        outputs_dir.mkdir(parents=True, exist_ok=True)
+
+        write_json(
+            eval_dir / "eval_metadata.json",
+            {
+                "id": eval_id,
+                "type": eval_item.get("type"),
+                "mode": eval_item.get("mode"),
+                "prompt": eval_item.get("prompt"),
+                "input_fixture": eval_item.get("input_fixture"),
+                "configuration": configuration,
+            },
+        )
+
+        review_path = outputs_dir / "review.md"
+        events_path = outputs_dir / "codex-events.jsonl"
+        failures: list[str] = []
+        if not review_path.exists():
+            failures.append(f"{eval_id}: missing review.md")
+            review_text = ""
+        else:
+            review_text = review_path.read_text(encoding="utf-8")
+
+        observed_actions = extract_observed_actions(events_path)
+        extracted = extract_review(review_text, observed_actions)
+        write_json(outputs_dir / "extracted-review.json", extracted)
+
+        grading = {
+            "eval_id": eval_id,
+            "configuration": configuration,
+            "codex_exit_code": 0 if not failures else 1,
+            "passed": not failures,
+            "failures": failures,
+            "observed_actions": observed_actions,
+        }
+        write_json(config_dir / "grading.json", grading)
+        gradings.append(grading)
+
+    return gradings
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -382,6 +436,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Create placeholder artifacts without invoking Codex. Intended only for runner testing.",
     )
+    parser.add_argument(
+        "--from-existing-reviews",
+        action="store_true",
+        help="Post-process review.md files already written by Codex action instead of invoking Codex.",
+    )
     return parser.parse_args(argv)
 
 
@@ -397,18 +456,25 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     args.workspace.mkdir(parents=True, exist_ok=True)
-    gradings = [
-        run_eval(
-            repo_root=repo_root,
+    if args.from_existing_reviews:
+        gradings = materialize_existing_reviews(
+            contract=contract,
             workspace=args.workspace,
             configuration=args.configuration,
-            eval_item=eval_item,
-            codex_bin=args.codex_bin,
-            model=args.model,
-            dry_run=args.dry_run,
         )
-        for eval_item in contract["evals"]
-    ]
+    else:
+        gradings = [
+            run_eval(
+                repo_root=repo_root,
+                workspace=args.workspace,
+                configuration=args.configuration,
+                eval_item=eval_item,
+                codex_bin=args.codex_bin,
+                model=args.model,
+                dry_run=args.dry_run,
+            )
+            for eval_item in contract["evals"]
+        ]
 
     secret_values = [os.environ.get(name, "") for name in args.secret_env]
     leaks = find_secret_leaks(args.workspace, secret_values)

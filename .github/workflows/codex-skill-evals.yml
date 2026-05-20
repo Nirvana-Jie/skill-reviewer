@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       codex_model:
-        description: "Optional Codex model override. Leave empty to use the CLI default."
+        description: "Optional Codex model override. Leave empty to use the action default."
         required: false
         type: string
         default: ""
@@ -18,6 +18,7 @@ on:
       - "references/**"
       - "scripts/**"
       - "evals/**"
+      - ".github/codex/**"
       - ".github/workflows/codex-skill-evals.yml"
 
 permissions:
@@ -33,8 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      CODEX_HOME: /tmp/codex-home
-      EVAL_WORKSPACE: /tmp/skill-reviewer-workspace/iteration-1
+      EVAL_WORKSPACE: .codex-eval-workspace/iteration-1
       CODEX_MODEL: ${{ github.event.inputs.codex_model || '' }}
 
     steps:
@@ -46,30 +46,13 @@ jobs:
         with:
           python-version: "3.x"
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
       - name: Validate snapshot contract shape
         run: python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json
 
       - name: Run runner unit tests
         run: python3 -m unittest tests/test_run_codex_skill_evals.py
 
-      - name: Install Codex CLI
-        run: npm install -g @openai/codex
-
-      - name: Install current skill into ephemeral Codex home
-        run: |
-          mkdir -p "$CODEX_HOME/skills/skill-reviewer"
-          rsync -a \
-            --exclude '.git' \
-            --exclude '.github' \
-            --exclude '__pycache__' \
-            ./ "$CODEX_HOME/skills/skill-reviewer/"
-
-      - name: Run Codex-backed skill evals
+      - name: Check OpenAI API key secret
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
@@ -78,15 +61,24 @@ jobs:
             exit 1
           fi
 
-          args=(
-            --contract evals/local-skill-review-snapshot.json
-            --workspace "$EVAL_WORKSPACE"
-          )
-          if [ -n "${CODEX_MODEL:-}" ]; then
-            args+=(--model "$CODEX_MODEL")
-          fi
+      - name: Run Codex-backed skill evals
+        id: run_codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt-file: .github/codex/prompts/skill-evals.md
+          output-file: .codex-eval-workspace/codex-final-message.md
+          model: ${{ env.CODEX_MODEL }}
+          safety-strategy: drop-sudo
+          sandbox: workspace-write
+          codex-args: '["--ask-for-approval", "never"]'
 
-          python3 scripts/run_codex_skill_evals.py "${args[@]}"
+      - name: Materialize generated review artifacts
+        run: |
+          python3 scripts/run_codex_skill_evals.py \
+            --contract evals/local-skill-review-snapshot.json \
+            --workspace "$EVAL_WORKSPACE" \
+            --from-existing-reviews
 
       - name: Validate generated snapshot workspace
         run: python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json "$EVAL_WORKSPACE"
@@ -97,10 +89,10 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          if [ -z "${OPENAI_API_KEY:-}" ] || [ ! -d "$EVAL_WORKSPACE" ]; then
+          if [ -z "${OPENAI_API_KEY:-}" ] || [ ! -d ".codex-eval-workspace" ]; then
             exit 0
           fi
-          if grep -R -l --fixed-strings "$OPENAI_API_KEY" "$EVAL_WORKSPACE"; then
+          if grep -R -l --fixed-strings "$OPENAI_API_KEY" ".codex-eval-workspace"; then
             echo "::error::OPENAI_API_KEY value appeared in generated eval artifacts."
             exit 1
           fi
@@ -110,9 +102,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: codex-skill-evals-${{ github.run_id }}
-          path: /tmp/skill-reviewer-workspace
+          path: .codex-eval-workspace
           retention-days: 14
-
-      - name: Remove ephemeral Codex state
-        if: always()
-        run: rm -rf "$CODEX_HOME"

@@ -102,5 +102,43 @@ class SecretScanTests(unittest.TestCase):
         self.assertEqual(leaks, [])
 
 
+class ExistingReviewWorkspaceTests(unittest.TestCase):
+    def test_materializes_existing_review_artifacts_without_invoking_codex(self) -> None:
+        contract = {
+            "evals": [
+                {
+                    "id": "ready-csv-column-renamer",
+                    "type": "review-output-snapshot",
+                    "mode": "full_review",
+                    "prompt": "Review this skill.",
+                    "input_fixture": "evals/fixtures/ready-csv-column-renamer/",
+                }
+            ]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir) / "iteration-1"
+            outputs = workspace / "eval-ready-csv-column-renamer" / "with_skill" / "outputs"
+            outputs.mkdir(parents=True)
+            (outputs / "review.md").write_text(SAMPLE_REVIEW, encoding="utf-8")
+
+            gradings = runner.materialize_existing_reviews(
+                contract=contract,
+                workspace=workspace,
+                configuration="with_skill",
+            )
+
+            extracted_path = outputs / "extracted-review.json"
+            grading_path = outputs.parent / "grading.json"
+            metadata_path = workspace / "eval-ready-csv-column-renamer" / "eval_metadata.json"
+
+            self.assertEqual(gradings[0]["passed"], True)
+            self.assertTrue(extracted_path.exists())
+            self.assertTrue(grading_path.exists())
+            self.assertTrue(metadata_path.exists())
+            extracted = json.loads(extracted_path.read_text(encoding="utf-8"))
+            self.assertEqual(extracted["verdict"], "Ready with minor revisions")
+
+
 if __name__ == "__main__":
     unittest.main()

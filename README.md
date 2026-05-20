@@ -141,17 +141,18 @@ Setup:
 
 1. Add a repository secret named `OPENAI_API_KEY` in GitHub Actions secrets. Do not commit API keys, put them in workflow inputs, or store them in eval fixtures.
 2. Trigger **Codex Skill Evals** manually from the Actions tab, or let it run after trusted pushes to `main`.
-3. Optionally pass a `codex_model` workflow input. Leaving it blank uses the Codex CLI default.
+3. Optionally pass a `codex_model` workflow input. Leaving it blank uses the Codex action default.
 
 What the workflow does:
 
 - validates `evals/local-skill-review-snapshot.json`;
-- installs the current skill into an ephemeral `$CODEX_HOME` under the GitHub runner temp directory;
-- runs `scripts/run_codex_skill_evals.py` to ask Codex to review each fixture and write `review.md`, `extracted-review.json`, and `grading.json`;
+- runs `openai/codex-action@v1` with `.github/codex/prompts/skill-evals.md`;
+- asks Codex to review each fixture and write `review.md` files under `.codex-eval-workspace/`;
+- runs `scripts/run_codex_skill_evals.py --from-existing-reviews` to extract `extracted-review.json` and `grading.json` deterministically;
 - validates the generated workspace with `scripts/validate_local_snapshot.py`;
-- scans artifacts for the exact secret value before upload and removes the ephemeral Codex state at the end.
+- scans artifacts for the exact secret value before upload.
 
-The API key is only provided to the Codex eval step as an environment variable. The runner does not print it, write it to repo files, or upload `$CODEX_HOME`.
+The API key is only provided to `openai/codex-action@v1`. The workflow does not print it, write it to repo files, or upload Codex auth state.
 
 ## Install
 
