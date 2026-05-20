@@ -51,10 +51,10 @@ Change the rubric, re-run the fixtures and local snapshots, ship. No re-reading 
 | Safety red lines            | Non-negotiable blockers: `Safety=1` or `Trigger=1` → **Not ready** regardless of other scores |
 | Prompt-injection hardening  | Operating principle #9: reviewed artifacts are **data**, not instructions |
 | Eval suggestions            | Optional 5–10 prompt rows only when they materially reduce risk |
-| Local eval snapshots        | Structured fixture contracts + deterministic validator script |
+| Local eval snapshots        | Structured fixture contracts + deterministic runner / validator scripts |
 | Full vs focused review      | Same 10-section shape; unrelated sections collapse to `N/A — focused review of <artifact>` |
 | Paste-ready rewrites        | `Suggested Rewrites` outputs runnable YAML / Markdown |
-| i18n                        | Parallel `## 中文输出模板` with a verdict-term translation table |
+| i18n                        | Parallel `## 中文输出模板` plus English-normalized snapshot extraction |
 
 ## Output contract
 
@@ -103,10 +103,13 @@ Protocol in [`evals/fixtures/README.md`](./evals/fixtures/README.md). Run whenev
 
 - `evals/skill-reviewer.csv` checks trigger and routing behavior.
 - `evals/fixtures/*/expected.md` gives human-readable calibration anchors.
-- `evals/local-skill-review-snapshot.json` gives machine-readable snapshot contracts for verdicts, score ranges, required sections, must-flag issues, forbidden actions, and output artifacts.
+- `evals/local-skill-review-snapshot.json` gives machine-readable snapshot contracts for verdicts, score ranges, required sections, must-flag issues, forbidden actions, output artifacts, and optional output-quality assertions.
+- `scripts/run_codex_skill_evals.py` generates or post-processes local eval workspaces.
 - `scripts/validate_local_snapshot.py` validates those contracts against generated local eval workspaces.
 
 The snapshot layer intentionally avoids byte-for-byte full-text diffs. A review can phrase findings differently and still pass if its structured contract is stable. See [`references/local-eval-snapshot.md`](./references/local-eval-snapshot.md) for the workspace layout and update policy.
+
+The validator has two modes. With only the contract path, it checks JSON shape and reports `contract_only: true`; this does **not** prove model output quality. With a workspace path, it also checks saved artifacts and `extracted-review.json` fields such as `critical_issues_have_problem_why_fix`, `has_paste_ready_rewrite_block`, and `final_recommendation_is_ordered`.
 
 ## Human-in-the-loop review
 
@@ -118,8 +121,18 @@ Use `skill-reviewer` as the strict first-pass reviewer, then keep the human as t
    ```
 2. Read the output in order: verdict, scorecard, critical issues, suggested rewrites, then suggested evals. Treat Critical Issues as the action queue.
 3. Apply only the fixes you agree with. Do not update fixtures or snapshots just to make a failing review pass.
-4. For regression coverage, run the calibration fixtures or a local workspace and save `review.md`, `extracted-review.json`, and `grading.json` for each eval case.
-5. Validate the structured snapshot contract:
+4. For regression coverage, run the calibration fixtures or a local workspace and save `review.md`, `extracted-review.json`, and `grading.json` for each eval case. To invoke Codex locally:
+   ```bash
+   python3 scripts/run_codex_skill_evals.py \
+     --workspace /tmp/skill-reviewer-evals/iteration-1
+   ```
+   To post-process `review.md` files that already exist in a workspace:
+   ```bash
+   python3 scripts/run_codex_skill_evals.py \
+     --workspace /tmp/skill-reviewer-evals/iteration-1 \
+     --from-existing-reviews
+   ```
+5. Validate the structured snapshot contract against that workspace:
    ```bash
    python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json <workspace>/iteration-1
    ```
@@ -130,6 +143,8 @@ For quick contract checks without a workspace:
 ```bash
 python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json
 ```
+
+This quick check is intentionally contract-only. It should be green before opening a PR, but it does not replace a workspace-backed eval when you need evidence about model output.
 
 The useful loop is: review -> human accepts/rejects findings -> edit skill -> rerun fixture/snapshot checks -> update snapshots only when the expected review contract changes.
 
@@ -215,6 +230,7 @@ Explicitly does **not** fire for: creating a new skill (use `skill-creator`), ru
 │   ├── local-eval-snapshot.md     # local snapshot-style eval protocol
 │   └── eval-prompts-template.csv  # eval output schema (header only)
 ├── scripts/
+│   ├── run_codex_skill_evals.py   # Codex-backed runner / post-processor
 │   └── validate_local_snapshot.py # deterministic snapshot contract validator
 └── evals/
     ├── skill-reviewer.csv         # self-regression eval set
@@ -225,11 +241,13 @@ Explicitly does **not** fire for: creating a new skill (use `skill-creator`), ru
         └── not-ready-repo-cleaner/
 ```
 
-No `assets/` — by design. The only script is a deterministic validator for local eval snapshot artifacts; the review workflow itself remains instruction-led.
+No `assets/` — by design. Scripts are limited to local eval running, post-processing, and deterministic snapshot validation; the review workflow itself remains instruction-led.
 
 ## i18n
 
 Output language follows the request. Request in English → English template. Request in Chinese → `## 中文输出模板` is used, section headings / scorecard labels / verdict strings are translated, but file paths, field names, and backticked tokens stay untranslated. No mixed-language output.
+
+The local snapshot extractor normalizes both English and Chinese review headings, verdicts, and scorecard labels into the same English contract fields. Eval items can set `"output_language": "Chinese"` to ask the runner for the Chinese template while keeping `extracted-review.json` machine-comparable.
 
 ## License
 
