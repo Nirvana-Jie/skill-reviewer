@@ -6,6 +6,8 @@ __MACOSX/
 # Editor/IDE
 .vscode/
 .idea/
+node_modules/
+coverage/
 
 # Secrets
 .env

@@ -2,6 +2,8 @@
 
 **Verdict:** Ready (acceptable: Ready, Ready with minor revisions)
 
+**Expected verification level:** `not-run` — this fixture calibrates semantic review quality and does not authorize runtime execution.
+
 **Expected scorecard ranges:**
 - Trigger reliability: 4–5
 - Description quality: 4–5

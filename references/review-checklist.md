@@ -2,6 +2,10 @@
 
 Walk this top-to-bottom. Tick each item. If an item cannot be assessed from the provided material, mark it `N/A — missing input` and list it at the end of the review.
 
+This file is a coverage aid, not a second rubric. Normative score thresholds,
+blockers, and verdict rules live only in `review-rubric.md`; if the two files
+drift, follow the rubric and flag the checklist mismatch.
+
 ## Table of Contents
 
 - [A. Intake](#a-intake)
@@ -33,6 +37,7 @@ Walk this top-to-bottom. Tick each item. If an item cannot be assessed from the 
 - [ ] I can write one sentence: "This skill exists to do X when Y, returning Z."
 - [ ] The skill is the right packaging (not better as a prompt, tool, CLI, or MCP).
 - [ ] Instruction-only vs. needs-resources classification is clear.
+- [ ] If runtime quality claims are in scope, whether the skill needs evals is explicit.
 - [ ] The skill improves a recurring agent behavior, not just human-facing documentation.
 - [ ] Any dependency contract is explicit and stable (what another skill, evaluator, or downstream agent can rely on).
 
@@ -118,6 +123,11 @@ Evals are not scored and their absence is never a blocker. Only propose them whe
 - [ ] If reviewing local skill evals: trigger/router evals, behavior assertions, calibration fixtures, and artifact snapshots are separated.
 - [ ] If reviewing snapshot-style evals: snapshots compare structured fields, not full prose by default.
 - [ ] If reviewing snapshot-style evals: baseline (`old_skill` / `without_skill`), run artifacts, forbidden actions, and snapshot update policy are explicit.
+- [ ] If runtime effect verification is requested: the reviewed subject and baseline are frozen and identified by digest.
+- [ ] If runtime effect verification is requested: paired `with_skill` and baseline subagents start in the same turn.
+- [ ] If runtime effect verification is requested: workers are read-only, bounded, and cannot edit the target, update snapshots, or own the final verdict.
+- [ ] If runtime effect verification is requested: assertions are graded against retained outputs; exit code alone is not a pass.
+- [ ] Verification level is exactly one of `not-run`, `inconclusive`, `behavior-verified`, or `regression-verified`.
 
 ## L. Maintainability
 
@@ -128,10 +138,11 @@ Evals are not scored and their absence is never a blocker. Only propose them whe
 
 ## M. Review emission
 
-- [ ] Emitted every section of the output format (Executive Summary, Verdict, Scorecard, Critical Issues, Recommended Improvements, Trigger Analysis, Resource Review, Suggested Rewrites, Suggested Evals, Final Recommendation). Empty sections explicitly marked (e.g. "None" or "N/A — focused review of <artifact>").
+- [ ] Emitted every section of the output format (Executive Summary, Verdict, Scorecard, Critical Issues, Recommended Improvements, Trigger Analysis, Resource Review, Verification Evidence, Suggested Rewrites, Suggested Evals, Final Recommendation). Empty sections explicitly marked (e.g. "None" or "N/A — focused review of <artifact>").
 - [ ] Scorecard has 8 dimensions, each with a one-line justification.
 - [ ] Each Critical Issue has: Problem, Why it matters, Fix (copy-pasteable).
 - [ ] Suggested Rewrites block is paste-ready (YAML `description:` value and/or instruction blocks), or explicitly marked "No change recommended".
 - [ ] Suggested Evals: either 5–10 targeted rows with the CSV column schema, or a one-line `Not recommended — <reason>` / `Deferred — <reason>`.
+- [ ] Verification Evidence identifies level, subject, runs, baseline, artifacts/evidence, and limitations without claiming work that did not happen.
 - [ ] Final Recommendation is an ordered action list, not prose.
 - [ ] Any unassessable items are explicitly listed.

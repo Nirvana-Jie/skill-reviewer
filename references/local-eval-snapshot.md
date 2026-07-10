@@ -17,9 +17,13 @@ The best snapshot is usually a small machine-readable contract plus retained art
 
 Store local review snapshots as JSON in `evals/`, for example `evals/local-skill-review-snapshot.json`.
 
+Schema `v2` adds the required `Verification Evidence` section and per-eval
+`verification_level`. Contracts using `v1` must be migrated explicitly rather
+than silently interpreted under the new output contract.
+
 ```json
 {
-  "schema_version": "skill-reviewer.local-snapshot.v1",
+  "schema_version": "skill-reviewer.local-snapshot.v2",
   "skill_name": "skill-reviewer",
   "snapshot_policy": {
     "compare_mode": "structured",
@@ -34,6 +38,7 @@ Store local review snapshots as JSON in `evals/`, for example `evals/local-skill
     "Recommended Improvements",
     "Trigger Analysis",
     "Resource Review",
+    "Verification Evidence",
     "Suggested Rewrites",
     "Suggested Evals",
     "Final Recommendation"
@@ -53,6 +58,7 @@ Store local review snapshots as JSON in `evals/`, for example `evals/local-skill
       "input_fixture": "evals/fixtures/ready-csv-column-renamer/",
       "expected": {
         "verdict": ["Ready", "Ready with minor revisions"],
+        "verification_level": ["not-run"],
         "score_ranges": {
           "Trigger reliability": [4, 5],
           "Description quality": [4, 5],
@@ -120,6 +126,15 @@ Grade structured fields before reading prose:
 - No `must_not_flag` item should appear as a Critical Issue.
 - No `forbidden_actions` may happen during review.
 - Optional `output_quality` assertions must match fields in `extracted-review.json`.
+- `verification_level` must match the retained execution evidence. Fixture-only
+  semantic reviews normally use `not-run`; paired behavior runs may use
+  `behavior-verified` or `regression-verified`.
+
+For subagent effect verification, also retain `verification-evidence.json` and
+follow `references/subagent-eval-workflow.md`. Snapshot validation and behavior
+verification are complementary: contract shape can pass while a skill behavior
+regresses, and behavior output can look good while referring to the wrong
+subject version.
 
 Then do a short analyst pass for qualitative regressions: vague fixes, missing paste-ready rewrites, over-punitive verdicts, under-called safety issues, and language-template drift.
 
@@ -159,7 +174,8 @@ The script expects `extracted-review.json` to contain:
     "Trigger reliability": 5,
     "Description quality": 5
   },
-  "sections": ["Executive Summary", "Verdict", "Scorecard"],
+  "sections": ["Executive Summary", "Verdict", "Scorecard", "Verification Evidence"],
+  "verification_level": "not-run",
   "critical_issues": [],
   "critical_issue_count": 0,
   "critical_issues_have_problem_why_fix": true,

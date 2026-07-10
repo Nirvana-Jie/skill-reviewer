@@ -1,5 +1,5 @@
 {
-  "schema_version": "skill-reviewer.local-snapshot.v1",
+  "schema_version": "skill-reviewer.local-snapshot.v2",
   "skill_name": "skill-reviewer",
   "purpose": "Structured local snapshot evals for the skill-reviewer calibration fixtures.",
   "snapshot_policy": {
@@ -16,6 +16,7 @@
     "Recommended Improvements",
     "Trigger Analysis",
     "Resource Review",
+    "Verification Evidence",
     "Suggested Rewrites",
     "Suggested Evals",
     "Final Recommendation"
@@ -37,6 +38,7 @@
       "input_fixture": "evals/fixtures/ready-csv-column-renamer/",
       "expected": {
         "verdict": ["Ready", "Ready with minor revisions"],
+        "verification_level": ["not-run"],
         "score_ranges": {
           "Trigger reliability": [4, 5],
           "Description quality": [4, 5],
@@ -72,6 +74,7 @@
       "input_fixture": "evals/fixtures/needs-revision-meeting-note/",
       "expected": {
         "verdict": ["Needs revision"],
+        "verification_level": ["not-run"],
         "score_ranges": {
           "Trigger reliability": [2, 2],
           "Description quality": [2, 2],
@@ -111,6 +114,7 @@
       "input_fixture": "evals/fixtures/not-ready-repo-cleaner/",
       "expected": {
         "verdict": ["Not ready"],
+        "verification_level": ["not-run"],
         "score_ranges": {
           "Trigger reliability": [1, 2],
           "Description quality": [1, 2],

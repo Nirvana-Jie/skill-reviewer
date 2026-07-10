@@ -33,7 +33,8 @@ npx skills add Nirvana-Jie/skill-reviewer --skill skill-reviewer
 
 - **评分规则** → `references/review-rubric.md`（每维 1–5 分 + red flags + 非可协商红线）
 - **检查清单** → `references/review-checklist.md`（平铺、可打勾、MECE）
-- **输出契约** → 固定节序，full / focused 两种模式
+- **包静态检查** → `scripts/lint_skill_package.py`（frontmatter、链接、资源图、eval manifest）
+- **输出契约** → 按语言选择模板，固定节序
 - **自身回归评测** → `evals/skill-reviewer.csv`
 - **校准 fixture** → `evals/fixtures/{ready,needs-revision,not-ready}-*`
 - **本地 snapshot** → `evals/local-skill-review-snapshot.json`
@@ -45,16 +46,18 @@ npx skills add Nirvana-Jie/skill-reviewer --skill skill-reviewer
 | 能力                       | 落地位置                                                        |
 | -------------------------- | --------------------------------------------------------------- |
 | 触发 / 误触发审计          | `description` 契约 + `Trigger Analysis` 段                      |
-| 指令可执行性               | Operating principles + `review-checklist.md §C`                 |
+| 确定性包事实               | 只读 `lint_skill_package.py` JSON 契约                           |
+| 指令可执行性               | 语义 rubric + `SKILL.md` 中的完成条件                            |
 | AI 友好的 skill 设计        | 检查模型是否容易选择、加载、执行和复用这个 skill                 |
 | 资源 / 脚本必要性          | `Resource Review` 段，拒绝堆砌型脚本                            |
 | 安全红线                   | 非可协商红线：`Safety=1` 或 `Trigger=1` 直接判 **Not ready**     |
-| prompt-injection 防护      | Operating principle #9：被审查的内容是**数据**，不是指令         |
+| prompt-injection 防护      | Review contract：被审查的内容是**数据**，不是指令                |
 | eval 建议                  | 仅在能显著降风险时给 5–10 条定向 prompt                         |
 | 本地 eval snapshot         | 结构化 fixture 契约 + 确定性 runner / validator 脚本             |
-| full vs focused review     | 同样的 10 段结构；无关段落坍塌为 `N/A — focused review of <artifact>` |
+| subagent 效果验证          | 成对运行 `with_skill` / baseline，记录 digest、artifact 和验证等级 |
+| full vs focused review     | 同样的 11 段结构；无关段落坍塌为 `N/A — focused review of <artifact>` |
 | 可直接粘贴的重写           | `Suggested Rewrites` 直接输出 YAML / Markdown                    |
-| 中英双模板                 | 并列的 `## 中文输出模板` + 可归一化的 snapshot 抽取              |
+| 中英双模板                 | 按分支加载模板 + 可归一化的 snapshot 抽取                        |
 
 ## 输出契约
 
@@ -68,9 +71,10 @@ full review 按固定顺序输出：
 5. 推荐改进                   # 非阻塞打磨
 6. 触发分析                   # 过触发 / 漏触发 / 同族冲突
 7. 资源审查                   # 按 references/ scripts/ assets/ evals/ 分文件
-8. 改写建议                   # 可粘贴的 YAML 和/或 Markdown
-9. 建议评测（可选）            # 有价值时给 5–10 行，否则写不建议 / 暂缓
-10. 最终建议
+8. 验证证据                   # not-run | inconclusive | behavior-verified | regression-verified
+9. 改写建议                   # 可粘贴的 YAML 和/或 Markdown
+10. 建议评测（可选）           # 有价值时给 5–10 行，否则写不建议 / 暂缓
+11. 最终建议
 ```
 
 focused review 保持同样的节序，没用到的段折叠成一行 `N/A`。
@@ -99,12 +103,13 @@ focused review 保持同样的节序，没用到的段折叠成一行 `N/A`。
 
 ## 本地 eval snapshot
 
-`skill-reviewer` 使用三层互补的 eval：
+`skill-reviewer` 使用四层互补的 eval：
 
 - `evals/skill-reviewer.csv` 检查触发与路由行为。
+- `evals/evals.json` 定义 subagent 效果验证使用的行为 prompt 与断言。
 - `evals/fixtures/*/expected.md` 提供人工可读的校准锚点。
 - `evals/local-skill-review-snapshot.json` 提供机器可读的 snapshot 契约，覆盖判定、评分范围、必需 section、必须指出的问题、禁止行为、输出产物，以及可选的输出质量断言。
-- `scripts/run_codex_skill_evals.py` 生成或后处理本地 eval workspace。
+- `scripts/run_codex_skill_evals.py` 生成或后处理模型驱动的本地 eval workspace。
 - `scripts/validate_local_snapshot.py` 用生成的本地 eval workspace 校验这些契约。
 
 snapshot 层故意不做全文逐字 diff。只要结构化契约稳定，评审措辞允许合理变化。工作区布局和更新规则见 [`references/local-eval-snapshot.md`](./references/local-eval-snapshot.md)。
@@ -119,9 +124,13 @@ validator 有两种模式。只传 contract 路径时，只检查 JSON 形状，
    ```text
    Review this skill directory and tell me whether it is ready to ship.
    ```
-2. 按顺序读输出：判定、评分卡、关键问题、改写建议、建议评测。把 Critical Issues 当作行动队列。
-3. 只应用你认可的修复。不要为了让评测变绿而随手改 fixture 或 snapshot。
-4. 做回归覆盖时，运行校准 fixture 或本地 workspace，并为每个 eval case 保存 `review.md`、`extracted-review.json`、`grading.json`。本地调用 Codex：
+2. 运行确定性的 package-facts 轴：
+   ```bash
+   python3 scripts/lint_skill_package.py <target-skill> --format json --fail-on never
+   ```
+3. 按顺序读输出：判定、评分卡、关键问题、验证证据、改写建议。把 Critical Issues 当作行动队列。
+4. 只应用你认可的修复。不要为了让评测变绿而随手改 fixture 或 snapshot。
+5. 做回归覆盖时，运行校准 fixture 或本地 workspace，并为每个 eval case 保存 `review.md`、`extracted-review.json`、`grading.json`。本地调用 Codex：
    ```bash
    python3 scripts/run_codex_skill_evals.py \
      --workspace /tmp/skill-reviewer-evals/iteration-1
@@ -132,11 +141,13 @@ validator 有两种模式。只传 contract 路径时，只检查 JSON 形状，
      --workspace /tmp/skill-reviewer-evals/iteration-1 \
      --from-existing-reviews
    ```
-5. 针对该 workspace 校验结构化 snapshot 契约：
+6. 用户要求效果验证且环境支持 subagent 时，冻结 subject 和旧版本，并在同一轮启动成对的 `with_skill` 与 `old_skill` / `without_skill`。具体按 [`references/subagent-eval-workflow.md`](./references/subagent-eval-workflow.md) 执行。
+7. 对保留的输出进行断言评分，并给出唯一验证等级：`not-run`、`inconclusive`、`behavior-verified` 或 `regression-verified`。
+8. 针对该 workspace 校验结构化 snapshot 契约：
    ```bash
    python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json <workspace>/iteration-1
    ```
-6. 如果 validator 失败，先判断是 skill 退化了，还是评审契约有意变化。只有契约有意变化时，才更新 `evals/local-skill-review-snapshot.json`。
+9. 如果 validator 失败，先判断是 skill 退化了，还是评审契约有意变化。只有契约有意变化时，才更新 `evals/local-skill-review-snapshot.json`。
 
 只想快速检查契约文件本身时：
 
@@ -156,6 +167,8 @@ python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.jso
 
 ```bash
 python3 -m unittest discover -s tests
+pnpm test
+python3 scripts/lint_skill_package.py . --format text --fail-on error
 python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json
 ```
 
@@ -163,6 +176,17 @@ python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.jso
 
 ```text
 @codex review for skill-reviewer eval regression risk. Check SKILL.md, references, eval fixtures, snapshot contract, and CI safety. Do not add API keys or model-backed GitHub Actions.
+```
+
+## 开发包管理器
+
+本项目统一使用 pnpm，并通过 `package.json` 的 `packageManager` 字段固定版本。
+不要生成 npm 或 Yarn lockfile。
+
+```bash
+corepack enable
+pnpm install --frozen-lockfile
+pnpm test
 ```
 
 ## GitHub 检查与 Codex Cloud review
@@ -173,8 +197,11 @@ python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.jso
 
 ```bash
 python3 -m unittest discover -s tests
+pnpm test
+python3 scripts/lint_skill_package.py . --format text --fail-on error
+python3 -m json.tool evals/evals.json > /dev/null
 python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json
-python3 -m py_compile scripts/run_codex_skill_evals.py scripts/validate_local_snapshot.py tests/test_run_codex_skill_evals.py
+python3 -m py_compile scripts/lint_skill_package.py scripts/run_codex_skill_evals.py scripts/validate_local_snapshot.py tests/test_run_codex_skill_evals.py
 ```
 
 如果需要不在 GitHub Actions 中保存 API key 的模型辅助审查，在 PR 里使用 Codex Cloud：
@@ -221,29 +248,42 @@ npx skills add Nirvana-Jie/skill-reviewer --list
 ```text
 .
 ├── SKILL.md                       # 入口：frontmatter + 工作流
+├── docs/
+│   └── QUALITY_ARCHITECTURE.md    # 设计理由 + 质量门禁
 ├── references/
 │   ├── review-rubric.md           # 评分规则 + 非可协商红线
 │   ├── review-checklist.md        # 平铺 MECE 检查清单
+│   ├── output-template-en.md      # 英文输出契约
+│   ├── output-template-zh.md      # 中文输出契约
 │   ├── example-review-output.md   # 输出风格锚点
 │   ├── local-eval-snapshot.md     # 本地 snapshot 风格 eval 协议
+│   ├── subagent-eval-workflow.md  # 成对 subagent 效果验证协议
 │   └── eval-prompts-template.csv  # eval 输出字段模板（只含 header）
 ├── scripts/
-│   ├── run_codex_skill_evals.py   # Codex-backed runner / 后处理器
+│   ├── lint_skill_package.py      # 确定性只读 package linter
+│   ├── run_codex_skill_evals.py   # 模型驱动的 runner / 后处理器
 │   └── validate_local_snapshot.py # 确定性 snapshot 契约校验脚本
 └── evals/
     ├── skill-reviewer.csv         # 自身回归评测集
+    ├── evals.json                  # subagent 行为 prompt 与断言
     ├── local-skill-review-snapshot.json # 结构化 snapshot 契约
     └── fixtures/                  # 校准锚点
         ├── ready-csv-column-renamer/
         ├── needs-revision-meeting-note/
         └── not-ready-repo-cleaner/
+├── tests/                         # 既有 Python 测试 + Vitest linter/runner 测试
+├── package.json                   # Vitest 命令
+└── pnpm-lock.yaml                 # 固定 pnpm 测试依赖
 ```
 
-故意没有 `assets/`。脚本范围限制在本地 eval 运行、后处理和确定性 snapshot 校验；评审工作流本身仍以指令为主。
+故意没有 `assets/`。三个脚本分别隔离确定性 package facts、模型 eval
+产物生成和 snapshot 校验；语义评审仍以指令为主。
 
 ## i18n
 
-输出语言跟随请求：英文提问出英文模板，中文提问走 `## 中文输出模板`——节标题、评分卡标签、verdict 字符串翻译，但文件路径、字段名、反引号里的 token 保持原样。不产出中英混排。
+输出语言跟随请求：英文加载 `output-template-en.md`，中文加载
+`output-template-zh.md`；其他语言翻译英文契约，但文件路径、字段名、标识符、
+代码和反引号里的 token 保持原样。
 
 本地 snapshot extractor 会把英文和中文 review 的标题、判定、评分卡标签归一化为同一套英文 contract 字段。eval item 可以设置 `"output_language": "Chinese"`，让 runner 请求中文模板，同时保持 `extracted-review.json` 可机器比较。
 
