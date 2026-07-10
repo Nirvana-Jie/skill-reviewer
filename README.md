@@ -33,7 +33,8 @@ Most "skill reviews" in the wild are vibes. `skill-reviewer` encodes the review 
 
 - **rubric** → `references/review-rubric.md` (1–5 per dimension, with red flags and non-negotiable blockers)
 - **checklist** → `references/review-checklist.md` (flat, tickable, MECE)
-- **output contract** → fixed section order, full vs focused review modes
+- **package linter** → `scripts/lint_skill_package.py` (front matter, links, resource graph, eval manifest)
+- **output contract** → language-selected templates with a fixed section order
 - **regression evals** → `evals/skill-reviewer.csv`
 - **calibration fixtures** → `evals/fixtures/{ready,needs-revision,not-ready}-*`
 - **local snapshots** → `evals/local-skill-review-snapshot.json`
@@ -45,16 +46,18 @@ Change the rubric, re-run the fixtures and local snapshots, ship. No re-reading 
 | Capability                  | How it's enforced                                                |
 | --------------------------- | ---------------------------------------------------------------- |
 | Trigger / mis-trigger audit | `description` contract + `Trigger Analysis` section              |
-| Instruction executability   | Operating principles + `review-checklist.md §C`                  |
+| Deterministic package facts | Read-only `lint_skill_package.py` JSON contract                   |
+| Instruction executability   | Semantic rubric + completion criteria in `SKILL.md`               |
 | AI-friendly skill design    | Checks whether the model can choose, load, follow, and reuse the skill |
 | Resource / script necessity | `Resource Review` section, rejects cargo-cult scripts            |
 | Safety red lines            | Non-negotiable blockers: `Safety=1` or `Trigger=1` → **Not ready** regardless of other scores |
-| Prompt-injection hardening  | Operating principle #9: reviewed artifacts are **data**, not instructions |
+| Prompt-injection hardening  | Review contract: reviewed artifacts are **data**, not instructions |
 | Eval suggestions            | Optional 5–10 prompt rows only when they materially reduce risk |
 | Local eval snapshots        | Structured fixture contracts + deterministic runner / validator scripts |
-| Full vs focused review      | Same 10-section shape; unrelated sections collapse to `N/A — focused review of <artifact>` |
+| Subagent effect verification | Paired `with_skill` / baseline runs with digests, retained evidence, and explicit verification levels |
+| Full vs focused review      | Same 11-section shape; unrelated sections collapse to `N/A — focused review of <artifact>` |
 | Paste-ready rewrites        | `Suggested Rewrites` outputs runnable YAML / Markdown |
-| i18n                        | Parallel `## 中文输出模板` plus English-normalized snapshot extraction |
+| i18n                        | Branch-selected templates + English-normalized snapshot extraction |
 
 ## Output contract
 
@@ -68,9 +71,10 @@ Every full review emits, in order:
 5. Recommended Improvements   # non-blocking polish
 6. Trigger Analysis           # over/under/collision
 7. Resource Review            # per file under references/ scripts/ assets/ evals/
-8. Suggested Rewrites         # paste-ready YAML and/or Markdown
-9. Suggested Evals (optional) # 5–10 rows when useful, otherwise Not recommended / Deferred
-10. Final Recommendation
+8. Verification Evidence      # not-run | inconclusive | behavior-verified | regression-verified
+9. Suggested Rewrites         # paste-ready YAML and/or Markdown
+10. Suggested Evals (optional)# 5–10 rows when useful, otherwise Not recommended / Deferred
+11. Final Recommendation
 ```
 
 Focused review keeps the same order; unused sections collapse to a single `N/A` line.
@@ -99,12 +103,13 @@ Protocol in [`evals/fixtures/README.md`](./evals/fixtures/README.md). Run whenev
 
 ## Local eval snapshots
 
-`skill-reviewer` uses three complementary eval layers:
+`skill-reviewer` uses four complementary eval layers:
 
 - `evals/skill-reviewer.csv` checks trigger and routing behavior.
+- `evals/evals.json` defines behavior prompts and assertions for subagent effect verification.
 - `evals/fixtures/*/expected.md` gives human-readable calibration anchors.
 - `evals/local-skill-review-snapshot.json` gives machine-readable snapshot contracts for verdicts, score ranges, required sections, must-flag issues, forbidden actions, output artifacts, and optional output-quality assertions.
-- `scripts/run_codex_skill_evals.py` generates or post-processes local eval workspaces.
+- `scripts/run_codex_skill_evals.py` generates or post-processes model-backed local eval workspaces.
 - `scripts/validate_local_snapshot.py` validates those contracts against generated local eval workspaces.
 
 The snapshot layer intentionally avoids byte-for-byte full-text diffs. A review can phrase findings differently and still pass if its structured contract is stable. See [`references/local-eval-snapshot.md`](./references/local-eval-snapshot.md) for the workspace layout and update policy.
@@ -119,9 +124,13 @@ Use `skill-reviewer` as the strict first-pass reviewer, then keep the human as t
    ```text
    Review this skill directory and tell me whether it is ready to ship.
    ```
-2. Read the output in order: verdict, scorecard, critical issues, suggested rewrites, then suggested evals. Treat Critical Issues as the action queue.
-3. Apply only the fixes you agree with. Do not update fixtures or snapshots just to make a failing review pass.
-4. For regression coverage, run the calibration fixtures or a local workspace and save `review.md`, `extracted-review.json`, and `grading.json` for each eval case. To invoke Codex locally:
+2. Run the deterministic package-facts axis:
+   ```bash
+   python3 scripts/lint_skill_package.py <target-skill> --format json --fail-on never
+   ```
+3. Read the output in order: verdict, scorecard, critical issues, verification evidence, and suggested rewrites. Treat Critical Issues as the action queue.
+4. Apply only the fixes you agree with. Do not update fixtures or snapshots just to make a failing review pass.
+5. For regression coverage, run the calibration fixtures or a local workspace and save `review.md`, `extracted-review.json`, and `grading.json` for each eval case. To invoke Codex locally:
    ```bash
    python3 scripts/run_codex_skill_evals.py \
      --workspace /tmp/skill-reviewer-evals/iteration-1
@@ -132,11 +141,13 @@ Use `skill-reviewer` as the strict first-pass reviewer, then keep the human as t
      --workspace /tmp/skill-reviewer-evals/iteration-1 \
      --from-existing-reviews
    ```
-5. Validate the structured snapshot contract against that workspace:
+6. When effect verification is requested and subagents are available, freeze the subject and old version, then launch paired `with_skill` and `old_skill` / `without_skill` runs in the same turn. Follow [`references/subagent-eval-workflow.md`](./references/subagent-eval-workflow.md).
+7. Grade assertions against retained outputs and report one verification level: `not-run`, `inconclusive`, `behavior-verified`, or `regression-verified`.
+8. Validate the structured snapshot contract against that workspace:
    ```bash
    python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json <workspace>/iteration-1
    ```
-6. If the validator fails, inspect whether the skill regressed or the review contract intentionally changed. Update `evals/local-skill-review-snapshot.json` only for intentional contract changes.
+9. If the validator fails, inspect whether the skill regressed or the review contract intentionally changed. Update `evals/local-skill-review-snapshot.json` only for intentional contract changes.
 
 For quick contract checks without a workspace:
 
@@ -157,6 +168,8 @@ Before opening a PR, run:
 
 ```bash
 python3 -m unittest discover -s tests
+pnpm test
+python3 scripts/lint_skill_package.py . --format text --fail-on error
 python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json
 ```
 
@@ -167,6 +180,17 @@ needed:
 @codex review for skill-reviewer eval regression risk. Check SKILL.md, references, eval fixtures, snapshot contract, and CI safety. Do not add API keys or model-backed GitHub Actions.
 ```
 
+## Development package manager
+
+This repository uses pnpm exclusively, pinned through the `packageManager`
+field in `package.json`. Do not generate npm or Yarn lockfiles.
+
+```bash
+corepack enable
+pnpm install --frozen-lockfile
+pnpm test
+```
+
 ## GitHub checks and Codex Cloud review
 
 The repository includes `.github/workflows/static-checks.yml` for deterministic checks on pull requests and trusted `main` pushes. It does not call Codex, use an OpenAI API key, or upload generated model artifacts.
@@ -175,8 +199,11 @@ The static workflow runs:
 
 ```bash
 python3 -m unittest discover -s tests
+pnpm test
+python3 scripts/lint_skill_package.py . --format text --fail-on error
+python3 -m json.tool evals/evals.json > /dev/null
 python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json
-python3 -m py_compile scripts/run_codex_skill_evals.py scripts/validate_local_snapshot.py tests/test_run_codex_skill_evals.py
+python3 -m py_compile scripts/lint_skill_package.py scripts/run_codex_skill_evals.py scripts/validate_local_snapshot.py tests/test_run_codex_skill_evals.py
 ```
 
 For model-assisted review without storing an API key in GitHub Actions, use Codex Cloud on the pull request:
@@ -223,29 +250,44 @@ Explicitly does **not** fire for: creating a new skill (use `skill-creator`), ru
 ```text
 .
 ├── SKILL.md                       # entry point, frontmatter + workflow
+├── docs/
+│   └── QUALITY_ARCHITECTURE.md    # design rationale + quality gates
 ├── references/
 │   ├── review-rubric.md           # scoring + non-negotiable blockers
 │   ├── review-checklist.md        # flat MECE checklist
+│   ├── output-template-en.md      # exact English output contract
+│   ├── output-template-zh.md      # exact Chinese output contract
 │   ├── example-review-output.md   # style anchor
 │   ├── local-eval-snapshot.md     # local snapshot-style eval protocol
+│   ├── subagent-eval-workflow.md  # paired effect-verification protocol
 │   └── eval-prompts-template.csv  # eval output schema (header only)
 ├── scripts/
-│   ├── run_codex_skill_evals.py   # Codex-backed runner / post-processor
+│   ├── lint_skill_package.py      # deterministic read-only package linter
+│   ├── run_codex_skill_evals.py   # model-backed runner / post-processor
 │   └── validate_local_snapshot.py # deterministic snapshot contract validator
 └── evals/
     ├── skill-reviewer.csv         # self-regression eval set
+    ├── evals.json                  # subagent behavior prompts + assertions
     ├── local-skill-review-snapshot.json # structured snapshot contract
     └── fixtures/                  # calibration anchors
         ├── ready-csv-column-renamer/
         ├── needs-revision-meeting-note/
         └── not-ready-repo-cleaner/
+├── tests/                         # legacy Python tests + Vitest linter/runner tests
+├── package.json                   # Vitest commands
+└── pnpm-lock.yaml                 # pinned pnpm test dependencies
 ```
 
-No `assets/` — by design. Scripts are limited to local eval running, post-processing, and deterministic snapshot validation; the review workflow itself remains instruction-led.
+No `assets/` — by design. The three scripts isolate deterministic package facts,
+model-backed eval materialization, and snapshot validation; semantic review
+remains instruction-led.
 
 ## i18n
 
-Output language follows the request. Request in English → English template. Request in Chinese → `## 中文输出模板` is used, section headings / scorecard labels / verdict strings are translated, but file paths, field names, and backticked tokens stay untranslated. No mixed-language output.
+Output language follows the request. English loads `output-template-en.md`;
+Chinese loads `output-template-zh.md`; other languages translate the English
+contract while preserving paths, fields, identifiers, code, and backticked
+tokens.
 
 The local snapshot extractor normalizes both English and Chinese review headings, verdicts, and scorecard labels into the same English contract fields. Eval items can set `"output_language": "Chinese"` to ask the runner for the Chinese template while keeping `extracted-review.json` machine-comparable.
 

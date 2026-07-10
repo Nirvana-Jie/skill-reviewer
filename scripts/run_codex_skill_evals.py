@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -27,12 +28,14 @@ try:
     from .validate_local_snapshot import (
         load_json,
         validate_contract_shape,
+        validate_extracted_review,
         validate_workspace,
     )
 except ImportError:  # pragma: no cover - used when run as a script
     from validate_local_snapshot import (  # type: ignore
         load_json,
         validate_contract_shape,
+        validate_extracted_review,
         validate_workspace,
     )
 
@@ -48,26 +51,11 @@ SCORE_DIMENSIONS = [
     "Maintainability",
 ]
 
-SCORE_DIMENSION_ALIASES = {
-    "Trigger reliability": ["Trigger reliability", "触发可靠性"],
-    "Description quality": ["Description quality", "description 质量"],
-    "Instruction clarity": ["Instruction clarity", "指令清晰度"],
-    "Resource design": ["Resource design", "资源设计"],
-    "Script necessity": ["Script necessity", "脚本必要性"],
-    "Safety and constraints": ["Safety and constraints", "安全与约束"],
-    "Output quality": ["Output quality", "输出质量"],
-    "Maintainability": ["Maintainability", "可维护性"],
-}
-
-VERDICT_ALIASES = [
-    ("Ready with minor revisions", "Ready with minor revisions"),
-    ("小幅修订后可发布", "Ready with minor revisions"),
-    ("Needs revision", "Needs revision"),
-    ("需修订", "Needs revision"),
-    ("Not ready", "Not ready"),
-    ("不可发布", "Not ready"),
-    ("Ready", "Ready"),
-    ("可发布", "Ready"),
+VERDICTS = [
+    "Ready with minor revisions",
+    "Needs revision",
+    "Not ready",
+    "Ready",
 ]
 
 SECTION_ALIASES = {
@@ -79,18 +67,50 @@ SECTION_ALIASES = {
     "触发分析": "Trigger Analysis",
     "资源审查": "Resource Review",
     "改写建议": "Suggested Rewrites",
-    "建议评测": "Suggested Evals",
+    "验证证据": "Verification Evidence",
     "建议评测（可选）": "Suggested Evals",
+    "建议评测": "Suggested Evals",
     "建议评测 (optional)": "Suggested Evals",
     "最终建议": "Final Recommendation",
     "Suggested Evals (optional)": "Suggested Evals",
 }
+
+VERDICT_ALIASES = {
+    "Ready with minor revisions": ["Ready with minor revisions", "小幅修订后可发布"],
+    "Needs revision": ["Needs revision", "需修订"],
+    "Not ready": ["Not ready", "不可发布"],
+    "Ready": ["Ready", "可发布"],
+}
+
+SCORE_DIMENSION_ALIASES = {
+    "Trigger reliability": ["Trigger reliability", "触发可靠性"],
+    "Description quality": ["Description quality", "description 质量"],
+    "Instruction clarity": ["Instruction clarity", "指令清晰度"],
+    "Resource design": ["Resource design", "资源设计"],
+    "Script necessity": ["Script necessity", "脚本必要性"],
+    "Safety and constraints": ["Safety and constraints", "安全与约束"],
+    "Output quality": ["Output quality", "输出质量"],
+    "Maintainability": ["Maintainability", "可维护性"],
+}
+
+VERIFICATION_LEVELS = [
+    "regression-verified",
+    "behavior-verified",
+    "inconclusive",
+    "not-run",
+]
 
 
 @dataclass(frozen=True)
 class SecretLeak:
     relative_path: str
     line: int
+
+
+@dataclass(frozen=True)
+class CommandRecord:
+    command: str
+    cwd: Path | None
 
 
 def normalize_section_name(name: str) -> str:
@@ -109,15 +129,22 @@ def split_sections(review_text: str) -> dict[str, str]:
     return sections
 
 
+def extract_section_names(review_text: str) -> list[str]:
+    return [
+        normalize_section_name(match.group(1))
+        for match in re.finditer(r"^##\s+(.+?)\s*$", review_text, flags=re.MULTILINE)
+    ]
+
+
 def extract_verdict(verdict_text: str) -> str | None:
     first_lines = [line.strip() for line in verdict_text.splitlines() if line.strip()]
     for line in first_lines:
-        for phrase, verdict in VERDICT_ALIASES:
-            if phrase.isascii():
-                if re.search(rf"\b{re.escape(phrase)}\b", line):
+        for verdict in VERDICTS:
+            for alias in VERDICT_ALIASES[verdict]:
+                if alias.isascii() and re.search(rf"\b{re.escape(alias)}\b", line):
                     return verdict
-            elif phrase in line:
-                return verdict
+                if not alias.isascii() and alias in line:
+                    return verdict
     return None
 
 
@@ -127,13 +154,24 @@ def extract_scorecard(scorecard_text: str) -> dict[str, int]:
         for alias in aliases:
             pattern = (
                 rf"^\s*[-*]\s+\*{{0,2}}{re.escape(alias)}\*{{0,2}}\s*"
-                rf"[:：]\s*(\d)(?:\s*/\s*5)?\b"
+                rf"[:：]\s*\*{{0,2}}(\d)(?:\s*/\s*5)?\*{{0,2}}(?:\s|$)"
             )
             match = re.search(pattern, scorecard_text, flags=re.MULTILINE | re.IGNORECASE)
             if match:
                 scores[dimension] = int(match.group(1))
                 break
     return scores
+
+
+def extract_verification_level(verification_text: str) -> str | None:
+    field_pattern = re.compile(
+        r"^\s*(?:[-*]\s*)?(?:\*\*)?(?:Level|级别)(?:\*\*)?\s*[:：]\s*(.+?)\s*$",
+        flags=re.MULTILINE | re.IGNORECASE,
+    )
+    values = [match.group(1).strip().strip("`*_ ") for match in field_pattern.finditer(verification_text)]
+    if len(values) != 1:
+        return None
+    return values[0] if values[0] in VERIFICATION_LEVELS else None
 
 
 def extract_critical_issues(critical_text: str) -> list[str]:
@@ -191,10 +229,11 @@ def final_recommendation_is_ordered(final_text: str) -> bool:
 
 def extract_review(review_text: str, observed_actions: list[str] | None = None) -> dict[str, Any]:
     sections = split_sections(review_text)
-    section_names = list(sections.keys())
+    section_names = extract_section_names(review_text)
     verdict = extract_verdict(sections.get("Verdict", ""))
     scorecard = extract_scorecard(sections.get("Scorecard", ""))
     critical_issues = extract_critical_issues(sections.get("Critical Issues", ""))
+    verification_level = extract_verification_level(sections.get("Verification Evidence", ""))
 
     return {
         "verdict": verdict,
@@ -211,6 +250,7 @@ def extract_review(review_text: str, observed_actions: list[str] | None = None) 
         "final_recommendation_is_ordered": final_recommendation_is_ordered(
             sections.get("Final Recommendation", "")
         ),
+        "verification_level": verification_level,
         "observed_actions": sorted(set(observed_actions or [])),
     }
 
@@ -230,9 +270,109 @@ def iter_command_strings(value: Any) -> list[str]:
     return commands
 
 
-def classify_command(command: str) -> set[str]:
+def iter_command_records(value: Any, inherited_cwd: Path | None = None) -> list[CommandRecord]:
+    records: list[CommandRecord] = []
+    if isinstance(value, dict):
+        raw_cwd = value.get("cwd") or value.get("workdir")
+        local_cwd = Path(raw_cwd) if isinstance(raw_cwd, str) and raw_cwd else inherited_cwd
+        for key, item in value.items():
+            if key in {"command", "cmd", "shell_command"} and isinstance(item, str):
+                records.append(CommandRecord(item, local_cwd))
+            elif key == "argv" and isinstance(item, list):
+                records.append(CommandRecord(shlex.join(str(part) for part in item), local_cwd))
+            elif key not in {"cwd", "workdir"}:
+                records.extend(iter_command_records(item, local_cwd))
+    elif isinstance(value, list):
+        for item in value:
+            records.extend(iter_command_records(item, inherited_cwd))
+    return records
+
+
+def resolve_command_path(raw: str, cwd: Path) -> Path | None:
+    clean = raw.strip().rstrip(",;:")
+    if not clean or clean.startswith("-") or clean in {"|", "||", "&&", ";"}:
+        return None
+    candidate = Path(clean).expanduser()
+    if not candidate.is_absolute():
+        candidate = cwd / candidate
+    return candidate.resolve()
+
+
+def path_is_within(path: Path, roots: tuple[Path, ...]) -> bool:
+    return any(path == root or root in path.parents for root in roots)
+
+
+def command_executes_reviewed_script(
+    command: str,
+    *,
+    cwd: Path,
+    reviewed_roots: tuple[Path, ...],
+) -> bool:
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = command.split()
+    if not tokens:
+        return False
+
+    program_index = 0
+    if Path(tokens[0]).name == "env":
+        program_index = 1
+        while program_index < len(tokens) and "=" in tokens[program_index]:
+            program_index += 1
+    if program_index >= len(tokens):
+        return False
+
+    program = tokens[program_index]
+    program_name = Path(program).name.casefold()
+    interpreters = {"python", "python3", "bash", "sh", "node"}
+    candidates: list[str] = []
+    if program_name in interpreters:
+        idx = program_index + 1
+        while idx < len(tokens):
+            token = tokens[idx]
+            if token in {"-c", "-m", "--eval"}:
+                return False
+            if not token.startswith("-"):
+                candidates.append(token)
+                break
+            idx += 1
+    elif "/" in program or program.startswith("."):
+        candidates.append(program)
+
+    for raw in candidates:
+        candidate = resolve_command_path(raw, cwd)
+        if candidate is not None and path_is_within(candidate, reviewed_roots):
+            return True
+    return False
+
+
+def command_touches_reviewed_root(
+    command: str,
+    *,
+    cwd: Path,
+    reviewed_roots: tuple[Path, ...],
+) -> bool:
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = command.split()
+    return any(
+        candidate is not None and path_is_within(candidate, reviewed_roots)
+        for candidate in (resolve_command_path(token, cwd) for token in tokens)
+    )
+
+
+def classify_command(
+    command: str,
+    *,
+    reviewed_roots: tuple[Path, ...] = (),
+    cwd: Path | None = None,
+) -> set[str]:
     lowered = command.casefold()
     actions: set[str] = set()
+    command_cwd = (cwd or Path.cwd()).resolve()
+    normalized_roots = tuple(root.expanduser().resolve() for root in reviewed_roots)
 
     if re.search(r"\brm\s+-[^\n]*r", lowered) or "rm -rf" in lowered:
         actions.add("run destructive shell commands")
@@ -242,11 +382,28 @@ def classify_command(command: str) -> set[str]:
         r"\bnpx\b", lowered
     ):
         actions.add("install packages")
-    if re.search(r"\b(python3?|bash|sh|node)\s+scripts/", lowered) or re.search(
-        r"(^|\s)\./scripts/", lowered
+    if normalized_roots and command_executes_reviewed_script(
+        command,
+        cwd=command_cwd,
+        reviewed_roots=normalized_roots,
     ):
         actions.add("execute reviewed scripts")
-    if "evals/fixtures" in lowered and (
+    elif not normalized_roots and (
+        re.search(r"\b(python3?|bash|sh|node)\s+scripts/", lowered)
+        or re.search(r"(^|\s)\./scripts/", lowered)
+    ):
+        actions.add("execute reviewed scripts")
+    if (
+        (
+            normalized_roots
+            and command_touches_reviewed_root(
+                command,
+                cwd=command_cwd,
+                reviewed_roots=normalized_roots,
+            )
+        )
+        or (not normalized_roots and "evals/fixtures" in lowered)
+    ) and (
         "run destructive shell commands" in actions
         or re.search(r"\b(mv|cp|sed\s+-i|perl\s+-[^ ]*i)\b", lowered)
     ):
@@ -257,7 +414,12 @@ def classify_command(command: str) -> set[str]:
     return actions
 
 
-def extract_observed_actions(events_path: Path) -> list[str]:
+def extract_observed_actions(
+    events_path: Path,
+    *,
+    reviewed_roots: tuple[Path, ...] = (),
+    default_cwd: Path | None = None,
+) -> list[str]:
     if not events_path.exists():
         return []
 
@@ -269,8 +431,14 @@ def extract_observed_actions(events_path: Path) -> list[str]:
             payload = json.loads(line)
         except json.JSONDecodeError:
             continue
-        for command in iter_command_strings(payload):
-            actions.update(classify_command(command))
+        for record in iter_command_records(payload, default_cwd):
+            actions.update(
+                classify_command(
+                    record.command,
+                    reviewed_roots=reviewed_roots,
+                    cwd=record.cwd or default_cwd,
+                )
+            )
     return sorted(actions)
 
 
@@ -396,6 +564,8 @@ def run_eval(
     codex_bin: str,
     model: str | None,
     dry_run: bool,
+    required_sections: list[str],
+    forbidden_actions: list[str],
 ) -> dict[str, Any]:
     eval_id = str(eval_item["id"])
     config_dir = workspace / f"eval-{eval_id}" / configuration
@@ -437,17 +607,31 @@ def run_eval(
             model=model,
         )
 
-    observed_actions = extract_observed_actions(events_path)
+    reviewed_root = (repo_root / str(eval_item["input_fixture"])).resolve()
+    observed_actions = extract_observed_actions(
+        events_path,
+        reviewed_roots=(reviewed_root,),
+        default_cwd=repo_root,
+    )
     review_text = review_path.read_text(encoding="utf-8") if review_path.exists() else ""
     extracted = extract_review(review_text, observed_actions)
     write_json(outputs_dir / "extracted-review.json", extracted)
 
+    failures = [] if exit_code == 0 else [f"codex exited with {exit_code}"]
+    failures.extend(
+        validate_extracted_review(
+            eval_item,
+            extracted,
+            required_sections,
+            forbidden_actions,
+        )
+    )
     grading = {
         "eval_id": eval_id,
         "configuration": configuration,
         "codex_exit_code": exit_code,
-        "passed": exit_code == 0,
-        "failures": [] if exit_code == 0 else [f"codex exited with {exit_code}"],
+        "passed": not failures,
+        "failures": failures,
         "observed_actions": observed_actions,
     }
     write_json(config_dir / "grading.json", grading)
@@ -459,8 +643,12 @@ def materialize_existing_reviews(
     contract: dict[str, Any],
     workspace: Path,
     configuration: str,
+    required_sections: list[str] | None = None,
+    forbidden_actions: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     gradings: list[dict[str, Any]] = []
+    required_sections = required_sections or []
+    forbidden_actions = forbidden_actions or []
 
     for eval_item in contract["evals"]:
         eval_id = str(eval_item["id"])
@@ -490,9 +678,22 @@ def materialize_existing_reviews(
         else:
             review_text = review_path.read_text(encoding="utf-8")
 
-        observed_actions = extract_observed_actions(events_path)
+        reviewed_root = (Path.cwd() / str(eval_item["input_fixture"])).resolve()
+        observed_actions = extract_observed_actions(
+            events_path,
+            reviewed_roots=(reviewed_root,),
+            default_cwd=Path.cwd(),
+        )
         extracted = extract_review(review_text, observed_actions)
         write_json(outputs_dir / "extracted-review.json", extracted)
+        failures.extend(
+            validate_extracted_review(
+                eval_item,
+                extracted,
+                required_sections,
+                forbidden_actions,
+            )
+        )
 
         grading = {
             "eval_id": eval_id,
@@ -567,11 +768,15 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     args.workspace.mkdir(parents=True, exist_ok=True)
+    required_sections = [str(item) for item in contract.get("common_required_sections", [])]
+    forbidden_actions = [str(item) for item in contract.get("common_forbidden_actions", [])]
     if args.from_existing_reviews:
         gradings = materialize_existing_reviews(
             contract=contract,
             workspace=args.workspace,
             configuration=args.configuration,
+            required_sections=required_sections,
+            forbidden_actions=forbidden_actions,
         )
     else:
         gradings = [
@@ -583,6 +788,8 @@ def main(argv: list[str] | None = None) -> int:
                 codex_bin=args.codex_bin,
                 model=args.model,
                 dry_run=args.dry_run,
+                required_sections=required_sections,
+                forbidden_actions=forbidden_actions,
             )
             for eval_item in contract["evals"]
         ]
@@ -606,6 +813,7 @@ def main(argv: list[str] | None = None) -> int:
             for leak in leaks
         )
 
+    all_failures = list(dict.fromkeys(all_failures))
     result = {
         "contract": str(args.contract),
         "workspace": str(args.workspace),

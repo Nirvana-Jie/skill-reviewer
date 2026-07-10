@@ -2,6 +2,8 @@
 
 **Verdict:** Needs revision (acceptable: Needs revision only; Ready or Ready with minor revisions would be a regression, Not ready would be over-punishment)
 
+**Expected verification level:** `not-run` — this fixture calibrates semantic review quality and does not authorize runtime execution.
+
 **Expected scorecard ranges:**
 - Trigger reliability: 2 (description "helps with meeting notes" is generic; will over- or under-trigger)
 - Description quality: 2 (missing negative triggers, representative utterances, scope boundaries)

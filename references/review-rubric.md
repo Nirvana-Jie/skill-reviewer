@@ -17,6 +17,7 @@ This rubric defines what "good" looks like for each dimension scored in the revi
 - [7. Output quality](#7-output-quality)
 - [Suggested evals (optional, not scored)](#suggested-evals-optional-not-scored)
   - [Local snapshot-style evals](#local-snapshot-style-evals)
+  - [Subagent effect verification](#subagent-effect-verification)
 - [8. Maintainability](#8-maintainability)
 - [When a skill should NOT exist](#when-a-skill-should-not-exist)
 - [Verdict decision rules](#verdict-decision-rules)
@@ -155,6 +156,9 @@ Warranted when the file is consumed as-is in the skill's output (templates, fixt
 - A stable, named output format.
 - Examples of the output in SKILL.md or references.
 - Deterministic file layout / schema the caller can rely on.
+- Runtime verification claims identify the tested subject, baseline, retained
+  artifacts, and verification level. `not-run` is preferable to an invented
+  pass.
 
 **Red flags:**
 - Every run invents a new format.
@@ -190,6 +194,28 @@ For local skill evaluation, snapshot-style coverage is warranted when the skill'
 - A single prompt with no baseline is called a benchmark.
 - Snapshot files do not identify the input fixture, model/run context, expected verdict, or forbidden actions.
 - Fixture `expected.md`, JSON snapshots, and README describe different dimensions or section names.
+
+### Subagent effect verification
+
+When the user explicitly asks whether a skill revision works better, subagents
+are useful for independent execution, not as a substitute for evidence.
+
+**Good looks like:**
+- The reviewed subject and baseline are frozen and identified by digest.
+- `with_skill` and `old_skill` / `without_skill` start in the same turn.
+- Workers are read-only, bounded to one case or configuration, and cannot edit
+  the target, update snapshots, or decide the final verdict.
+- Assertions are graded against retained outputs; a zero exit code is not
+  sufficient evidence.
+- Missing baselines, digest mismatches, timeouts, or conflicting results become
+  `inconclusive`, not passing evidence.
+
+**Red flags:**
+- "Subagents were launched" is presented as proof of quality.
+- Only the new skill is run, but the report claims a regression improvement.
+- Workers evaluate different subject versions or mutate shared fixtures.
+- The lead agent delegates the final release decision to a worker or majority
+  vote.
 
 ## 8. Maintainability
 
@@ -232,3 +258,9 @@ Apply these rules first. Only if none of them trigger, fall through to the dimen
 - **Not ready** — Any dimension = 1, or safety issues unaddressed, or the skill should not exist as a skill.
 
 A skill with a great description but broken instructions is **Needs revision**, not **Ready with minor revisions**. Triggering without executability is worse than not triggering.
+
+Evals remain unscored, but evidence integrity is not optional. When runtime
+verification was explicitly requested, a failed declared validation, a false
+verification claim, or contradictory grading is a Critical Issue and caps the
+verdict at **Needs revision** until resolved. Merely lacking evals does not
+trigger this cap.

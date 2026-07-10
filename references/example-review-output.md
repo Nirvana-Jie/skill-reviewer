@@ -13,6 +13,7 @@ Reference example showing the expected depth, tone, and rewrite quality of a ski
   - [Recommended Improvements](#recommended-improvements)
   - [Trigger Analysis](#trigger-analysis)
   - [Resource Review](#resource-review)
+  - [Verification Evidence](#verification-evidence)
   - [Suggested Rewrites](#suggested-rewrites)
   - [Suggested Evals (optional)](#suggested-evals-optional)
   - [Final Recommendation](#final-recommendation)
@@ -118,6 +119,15 @@ Needs revision
 - scripts/: absent; correctly so.
 - assets/: absent; correctly so.
 - evals/: absent; not a scored defect, but recommended because the trigger boundary is fuzzy.
+
+## Verification Evidence
+- Level: `not-run`
+- Subject: fictional inline `meeting-summarizer`; no package digest available
+- Static checks: not run — the example contains only an abridged inline artifact
+- Runs: none
+- Baseline: not requested
+- Evidence: static/semantic review of the abridged `SKILL.md` only
+- Limitations: no runtime behavior, trigger routing, or regression claims were verified
 
 ## Suggested Rewrites
 

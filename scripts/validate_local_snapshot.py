@@ -60,8 +60,8 @@ def find_artifact(config_dir: Path, artifact: str) -> Path | None:
 
 def validate_contract_shape(contract: dict[str, Any]) -> list[str]:
     failures: list[str] = []
-    if contract.get("schema_version") != "skill-reviewer.local-snapshot.v1":
-        failures.append("schema_version must be skill-reviewer.local-snapshot.v1")
+    if contract.get("schema_version") != "skill-reviewer.local-snapshot.v2":
+        failures.append("schema_version must be skill-reviewer.local-snapshot.v2")
     if not contract.get("skill_name"):
         failures.append("skill_name is required")
     if not isinstance(contract.get("evals"), list) or not contract["evals"]:
@@ -79,6 +79,13 @@ def validate_contract_shape(contract: dict[str, Any]) -> list[str]:
         expected = item.get("expected", {})
         if not isinstance(expected.get("verdict"), list) or not expected.get("verdict"):
             failures.append(f"{prefix}.expected.verdict must be a non-empty array")
+        if (
+            not isinstance(expected.get("verification_level"), list)
+            or not expected.get("verification_level")
+        ):
+            failures.append(
+                f"{prefix}.expected.verification_level must be a non-empty array"
+            )
         if not isinstance(expected.get("score_ranges"), dict):
             failures.append(f"{prefix}.expected.score_ranges must be an object")
         if "output_quality" in expected and not isinstance(expected["output_quality"], dict):
@@ -104,6 +111,14 @@ def validate_extracted_review(
     if verdict not in accepted_verdicts:
         failures.append(f"{eval_id}: verdict {verdict!r} not in {accepted_verdicts!r}")
 
+    verification_level = extracted.get("verification_level")
+    accepted_verification_levels = expected.get("verification_level", [])
+    if verification_level not in accepted_verification_levels:
+        failures.append(
+            f"{eval_id}: verification_level {verification_level!r} "
+            f"not in {accepted_verification_levels!r}"
+        )
+
     scorecard = extracted.get("scorecard", {})
     for dimension, bounds in expected.get("score_ranges", {}).items():
         if dimension not in scorecard:
@@ -120,8 +135,11 @@ def validate_extracted_review(
 
     sections = as_text_list(extracted.get("sections"))
     for section in required_sections:
-        if section not in sections:
-            failures.append(f"{eval_id}: missing required section {section!r}")
+        count = sections.count(section)
+        if count != 1:
+            failures.append(
+                f"{eval_id}: required section {section!r} appears {count} times; expected 1"
+            )
 
     issue_text = as_text_list(extracted.get("critical_issues"))
     for needle in expected.get("must_flag", []):

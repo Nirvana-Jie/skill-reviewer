@@ -39,6 +39,14 @@ Clear.
 ## Resource Review
 Clear.
 
+## Verification Evidence
+- Level: `not-run`
+- Subject: demo
+- Runs: none
+- Baseline: not requested
+- Evidence: semantic review only
+- Limitations: runtime behavior not verified
+
 ## Suggested Rewrites
 No change.
 
@@ -225,6 +233,11 @@ class ExistingReviewWorkspaceTests(unittest.TestCase):
                     "mode": "full_review",
                     "prompt": "Review this skill.",
                     "input_fixture": "evals/fixtures/ready-csv-column-renamer/",
+                    "expected": {
+                        "verdict": ["Ready with minor revisions"],
+                        "verification_level": ["not-run"],
+                        "score_ranges": {},
+                    },
                 }
             ]
         }
@@ -252,13 +265,13 @@ class ExistingReviewWorkspaceTests(unittest.TestCase):
             extracted = json.loads(extracted_path.read_text(encoding="utf-8"))
             self.assertEqual(extracted["verdict"], "Ready with minor revisions")
 
-
 class SnapshotValidatorTests(unittest.TestCase):
     def test_validate_extracted_review_checks_optional_quality_assertions(self) -> None:
         eval_item = {
             "id": "demo",
             "expected": {
                 "verdict": ["Ready"],
+                "verification_level": ["not-run"],
                 "score_ranges": {},
                 "output_quality": {
                     "critical_issues_have_problem_why_fix": True,
@@ -269,6 +282,7 @@ class SnapshotValidatorTests(unittest.TestCase):
         }
         extracted = {
             "verdict": "Ready",
+            "verification_level": "not-run",
             "scorecard": {},
             "sections": [],
             "critical_issues": [],
@@ -291,7 +305,7 @@ class SnapshotValidatorTests(unittest.TestCase):
             contract_path.write_text(
                 json.dumps(
                     {
-                        "schema_version": "skill-reviewer.local-snapshot.v1",
+                        "schema_version": "skill-reviewer.local-snapshot.v2",
                         "skill_name": "skill-reviewer",
                         "common_required_sections": [],
                         "common_forbidden_actions": [],
@@ -304,6 +318,7 @@ class SnapshotValidatorTests(unittest.TestCase):
                                 "input_fixture": "evals/fixtures/demo/",
                                 "expected": {
                                     "verdict": ["Ready"],
+                                    "verification_level": ["not-run"],
                                     "score_ranges": {},
                                 },
                                 "snapshot_artifacts": [],
@@ -337,7 +352,7 @@ class SnapshotValidatorTests(unittest.TestCase):
             contract_path.write_text(
                 json.dumps(
                     {
-                        "schema_version": "skill-reviewer.local-snapshot.v1",
+                        "schema_version": "skill-reviewer.local-snapshot.v2",
                         "skill_name": "skill-reviewer",
                         "common_required_sections": [],
                         "common_forbidden_actions": [],
@@ -350,6 +365,7 @@ class SnapshotValidatorTests(unittest.TestCase):
                                 "input_fixture": "evals/fixtures/demo/",
                                 "expected": {
                                     "verdict": ["Ready"],
+                                    "verification_level": ["not-run"],
                                     "score_ranges": {},
                                 },
                                 "snapshot_artifacts": [],
@@ -378,7 +394,6 @@ class SnapshotValidatorTests(unittest.TestCase):
         self.assertFalse(payload["contract_only"])
         self.assertTrue(payload["workspace_artifacts_checked"])
         self.assertFalse(payload["model_output_checked"])
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,6 +11,8 @@ on:
       - "scripts/**"
       - "tests/**"
       - "evals/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
       - ".github/workflows/static-checks.yml"
   push:
     branches:
@@ -24,6 +26,8 @@ on:
       - "scripts/**"
       - "tests/**"
       - "evals/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
       - ".github/workflows/static-checks.yml"
 
 permissions:
@@ -47,11 +51,34 @@ jobs:
         with:
           python-version: "3.x"
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Enable pnpm through Corepack
+        run: corepack enable
+
+      - name: Enforce pnpm lockfile policy
+        run: test -f pnpm-lock.yaml && test ! -e package-lock.json && test ! -e yarn.lock
+
+      - name: Install test dependencies
+        run: pnpm install --frozen-lockfile
+
       - name: Run unit tests
         run: python3 -m unittest discover -s tests
+
+      - name: Run Vitest package and runner tests
+        run: pnpm test
+
+      - name: Self-lint the skill package
+        run: python3 scripts/lint_skill_package.py . --format text --fail-on error
+
+      - name: Validate behavior eval manifest
+        run: python3 -m json.tool evals/evals.json > /dev/null
 
       - name: Validate snapshot contract shape
         run: python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json
 
       - name: Compile Python scripts
-        run: python3 -m py_compile scripts/run_codex_skill_evals.py scripts/validate_local_snapshot.py tests/test_run_codex_skill_evals.py
+        run: python3 -m py_compile scripts/lint_skill_package.py scripts/run_codex_skill_evals.py scripts/validate_local_snapshot.py tests/test_run_codex_skill_evals.py

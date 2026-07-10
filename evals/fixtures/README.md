@@ -26,6 +26,7 @@ Run these any time you change:
    - A must-flag issue listed in `expected.md` is not raised in Critical Issues.
    - A forbidden action listed in the JSON snapshot occurs.
    - Required output artifacts such as `review.md`, `extracted-review.json`, or `grading.json` are missing from the workspace.
+   - `Verification Evidence` is missing or claims a runtime level unsupported by retained artifacts.
 
 For contract-only validation:
 
