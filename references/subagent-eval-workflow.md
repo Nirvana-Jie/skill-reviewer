@@ -33,10 +33,10 @@ blocker and stops before worker launch.
 
 1. Read the target `SKILL.md` and every resource needed by the selected cases.
 2. Place the workspace outside candidate and baseline directories.
-3. Choose `old_skill` for revision comparison or `without_skill` for a new
-   skill. Freeze the accepted baseline before candidate edits.
-4. Compile the required split. Treat `execution-plan.json` and `run-lock.json`
-   as immutable.
+3. Choose `old_skill` for selection/audit revision comparison; development may
+   use `without_skill`. Freeze the accepted baseline before candidate edits.
+4. Compile exactly one required split into a fresh, empty workspace. Treat
+   `execution-plan.json` and `run-lock.json` as immutable.
 5. Check permissions. Default to no network and no writes outside each repeat
    root. Ask before any external dependency or permission expansion.
 6. Count runs from case × arm × repeat. Respect the environment concurrency
@@ -51,13 +51,13 @@ workers concurrently unless the environment explicitly permits more.
 
 Each executor prompt includes:
 
-- exact plan path, run ID, case ID, arm, and repeat numbers;
-- immutable candidate or baseline path, or the `without_skill` marker;
-- subject/baseline digest and fixture paths from the plan;
+- exact sanitized assignment path, run ID, case ID, arm, and repeat numbers;
+- answer-key-free candidate/baseline snapshot path, or the `without_skill`
+  marker;
+- source/snapshot digest and declared input paths from the assignment;
 - the realistic user prompt, not a paraphrased success criterion;
 - exact writable repeat root and required artifact paths;
 - declared permissions and timeout;
-- assertion IDs to preserve, without telling the worker how to game them;
 - only the declared executor input files; never calibration `expected.md`,
   assertion expected values, audit content, or grader references;
 - prohibition on editing candidate, baseline, manifest, fixtures, snapshots,
@@ -71,6 +71,9 @@ load either package; solve from the user prompt and provided fixture only.
 
 The lead records failed, timed-out, or interrupted runs in `execution.json` and
 retains partial outputs. Never reconstruct a missing output from memory.
+Every execution record must bind the run/case/arm/repeat, SHA-256 of its
+assignment, forbidden actions, side effects, and digests of every produced
+declared artifact. A stale or mismatched record is incomplete evidence.
 
 Do not hand the executor the full plan when it contains assertion expectations.
 Pass a sanitized assignment derived from the locked plan: identity, prompt,
@@ -83,6 +86,11 @@ with the lead and graders.
 <workspace>/
 ├── execution-plan.json
 ├── run-lock.json
+├── skill-snapshots/
+│   ├── with_skill/                    # no evals or answer keys
+│   └── old_skill/                     # when applicable
+├── inputs/<case>/<arm>/repeat-N/package/...
+├── assignments/<case>/<arm>/repeat-N.json
 ├── cases/
 │   └── <case-id>/
 │       ├── with_skill/
@@ -98,9 +106,12 @@ with the lead and graders.
 ├── iteration-<N>/
 │   ├── acceptance-decision.json
 │   └── audit-decision.json             # only for the one-shot audit
-├── evolution-state.json                # only for explicit evolution
 └── dashboard-data.json
 ```
+
+For explicit evolution, keep `evolution-state.json` in a separate control
+workspace. Each candidate round and audit has its own immutable run workspace;
+the state joins them by authority and baseline digests rather than one run ID.
 
 Generated state never belongs inside the reviewed skill package.
 

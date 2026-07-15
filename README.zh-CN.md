@@ -124,8 +124,9 @@ focused review 保持同样的节序，没用到的段折叠成一行 `N/A`。
 
 snapshot 层故意不做全文逐字 diff。只要结构化契约稳定，评审措辞允许合理变化。工作区布局和更新规则见 [`references/local-eval-snapshot.md`](./references/local-eval-snapshot.md)。
 
-行为 runtime 与校准 snapshot runner 严格分离：前者冻结 plan、manifest、subject、
-baseline 和 fixture，再由主 Agent 分发 native worker；输入一旦漂移就拒绝评分。
+行为 runtime 与校准 snapshot runner 严格分离：前者冻结 eval/grader 权威，生成
+不含答案键的 skill snapshot 与 arm/repeat 独立输入，并把执行和输出绑定到 assignment；
+复用旧 workspace 或输入漂移都会被拒绝。
 详见 [`references/executable-evals.md`](./references/executable-evals.md) 与
 [`references/subagent-eval-workflow.md`](./references/subagent-eval-workflow.md)。
 
@@ -133,7 +134,8 @@ validator 有两种模式。只传 contract 路径时，只检查 JSON 形状，
 
 ## 可执行 eval 与有界进化
 
-确定性 adapter 与具体 Agent 实现无关，native worker 的分发由主 Agent 负责：
+确定性 adapter 与具体 Agent 实现无关，native worker 的分发由主 Agent 负责。
+每次只编译一个 split，且 workspace 必须是全新或空目录：
 
 ```bash
 python3 scripts/skill_eval_runtime.py compile \

@@ -130,8 +130,9 @@ from the rubric.
 - **Executable behavior verification:** read
   `references/executable-evals.md`, then read and follow
   `references/subagent-eval-workflow.md` completely. Compile the requested
-  split into a plan and run lock. The lead agent launches native paired workers
-  in the same turn; the runtime itself stays agent-agnostic.
+  split into a fresh workspace, plan, run lock, answer-key-free skill snapshots,
+  and arm/repeat-specific input copies. The lead agent launches native paired
+  workers in the same turn; the runtime itself stays agent-agnostic.
 
 For a full/readiness branch, auto-discover and execute a valid manifest. For a
 focused branch, execute only when evals or effect claims are in scope. An
@@ -172,9 +173,11 @@ python3 scripts/skill_eval_runtime.py project-dashboard \
 The Dashboard is a presentation of the retained evidence chain, not a new
 source of truth and not an execution/approval surface.
 
-**Completion criterion:** plan and input digests are locked; every configured
-arm/repeat has retained status; the verification level follows from graded
-artifacts; missing, timed-out, mismatched, drifted, or conflicting evidence is
+**Completion criterion:** plan, eval/grader authority, assignments, skill
+snapshots, and input digests are locked; every configured arm/repeat has a
+run/case/arm/repeat- and artifact-digest-bound execution record; the
+verification level follows from graded artifacts; missing, stale, timed-out,
+mismatched, drifted, unsafe, or conflicting evidence is
 `inconclusive`, never silently passing.
 
 ### 5. Evolve only on explicit request

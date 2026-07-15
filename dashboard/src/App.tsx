@@ -334,6 +334,11 @@ export function EvidenceDashboard({
                     <article key={arm.id}>
                       <div><strong>{arm.id}</strong><StatusChip status={arm.passed ? "passed" : arm.complete ? "failed" : "incomplete"} /></div>
                       <p>{arm.assertions.passed}/{arm.assertions.total} assertions · {percent(arm.required_pass_rate)}</p>
+                      {((arm.forbidden_actions?.length ?? 0) > 0 || (arm.side_effects?.length ?? 0) > 0 || (arm.binding_errors?.length ?? 0) > 0) && (
+                        <p className="arm-warning">
+                          {arm.binding_errors?.length ?? 0} binding · {arm.forbidden_actions?.length ?? 0} forbidden · {arm.side_effects?.length ?? 0} side effects
+                        </p>
+                      )}
                     </article>
                   ))}
                 </div>

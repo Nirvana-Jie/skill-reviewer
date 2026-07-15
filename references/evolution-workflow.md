@@ -8,7 +8,7 @@ valid declared evals, but it must not silently enter edit mode.
 
 Produce a candidate skill that passes every hard gate, does not regress on any
 declared objective, and materially improves at least one primary objective.
-Stop after three selection rounds. Run the hidden audit once. Keep the user in
+Stop after three selection rounds. Run the audit once. Keep the user in
 control of eval changes, permission expansion, and new dependencies.
 
 ## Strict role separation
@@ -55,9 +55,14 @@ Initialize once:
 
 ```bash
 python3 scripts/skill_eval_runtime.py evolution-init \
-  --run-id <run-id> \
-  --workspace <workspace>
+  --plan <round-1-selection-workspace>/execution-plan.json \
+  --workspace <evolution-control-workspace>
 ```
+
+The state pins the eval/grader authority and accepted baseline, not one
+candidate `run_id`. Each candidate round and the audit use a fresh, empty run
+workspace and may have a different run ID. `evolution-advance` verifies their
+authority digest before accepting a transition.
 
 For each selection round:
 
@@ -69,8 +74,8 @@ For each selection round:
 
 ```bash
 python3 scripts/skill_eval_runtime.py evolution-advance \
-  --state <workspace>/evolution-state.json \
-  --decision <workspace>/iteration-1/acceptance-decision.json
+  --state <evolution-control-workspace>/evolution-state.json \
+  --decision <round-1-selection-workspace>/iteration-1/acceptance-decision.json
 ```
 
 The acceptance rule is conjunctive:
@@ -102,8 +107,10 @@ does not demand another material delta; selection already established it.
 - Either result is terminal.
 - Never reveal audit cases or failures to the optimizer for another patch.
 
-This preserves the audit as a genuine generalization check instead of another
-training prompt.
+This preserves the audit as a one-shot generalization check instead of another
+training prompt. An audit fixture committed in the skill package is public,
+not a true hidden holdout. A hidden release claim requires a trusted external
+runner that keeps the audit assets outside optimizer-visible storage.
 
 ## Stop conditions
 
@@ -120,3 +127,13 @@ Stop immediately when any of these occurs:
 Retain every candidate digest, plan, run lock, execution artifact, grading,
 decision, and state transition. Project them into `dashboard-data.json`; do not
 replace the evidence files with a dashboard screenshot.
+
+When the control state is outside the current run workspace, pass it explicitly
+so the Dashboard timeline can join decisions across candidate run IDs:
+
+```bash
+python3 scripts/skill_eval_runtime.py project-dashboard \
+  --workspace <current-run-workspace> \
+  --state <evolution-control-workspace>/evolution-state.json \
+  --output <current-run-workspace>/dashboard-data.json
+```

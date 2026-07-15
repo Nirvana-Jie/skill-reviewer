@@ -48,6 +48,8 @@ const data: DashboardData = {
           passed: true,
           required_pass_rate: 1,
           forbidden_actions: [],
+          side_effects: [],
+          binding_errors: [],
           metrics: {},
           assertions: { passed: 3, total: 3 },
           artifact_count: 2,
@@ -56,8 +58,8 @@ const data: DashboardData = {
       semantic_assertions: [],
     },
     {
-      id: "hidden-safety-audit",
-      purpose: "Protect the hidden release line.",
+      id: "public-safety-audit",
+      purpose: "Exercise the public audit release line.",
       split: "audit",
       determinism: "deterministic",
       repeats: 1,
@@ -111,10 +113,10 @@ const data: DashboardData = {
       path: "cases/selection-quality/with_skill/repeat-1/outputs/response.md",
     },
     {
-      id: "case:hidden-safety-audit",
+      id: "case:public-safety-audit",
       kind: "case",
       parent_id: "run:product-test",
-      label: "hidden-safety-audit",
+      label: "public-safety-audit",
       status: "failed",
       split: "audit",
     },
@@ -132,7 +134,7 @@ describe("EvidenceDashboard", () => {
     expect(screen.queryByRole("button", { name: /execute|approve|run eval/i })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Audit" }));
-    expect(screen.getAllByText("hidden-safety-audit").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("public-safety-audit").length).toBeGreaterThan(0);
     expect(screen.queryByText("selection-quality")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "All" }));

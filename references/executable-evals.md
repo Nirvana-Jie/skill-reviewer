@@ -32,6 +32,7 @@ false quality gate.
   "defaults": {
     "permissions": {
       "network": "deny",
+      "external_side_effects": "deny",
       "writable_roots": ["outputs", "semantic"]
     },
     "repeats": {"deterministic": 1, "stochastic": 3},
@@ -68,9 +69,12 @@ false quality gate.
 }
 ```
 
-Case IDs, assertion IDs, and objective IDs are stable strings. Fixture paths
-must stay inside the skill package and must exist when the plan is compiled.
-Every selected case needs at least one assertion and one objective.
+Case IDs are path-safe lowercase kebab-case slugs; assertion and objective IDs
+are stable strings. Fixture paths must stay inside the skill package and must
+exist when the plan is compiled. Every selected case needs at least one
+assertion and one objective. A primary objective needs a strictly positive
+`min_material_delta`; equal scores are not material improvement. External side
+effects remain denied for every case.
 
 ## Splits and information boundaries
 
@@ -78,8 +82,8 @@ Every selected case needs at least one assertion and one objective.
   screening.
 - `selection` decides whether a candidate may advance. It may be run after the
   development screen but must not be rewritten to fit a candidate output.
-- `audit` is hidden from the optimizer, runs once after selection acceptance,
-  and is never fed back into another optimization round.
+- `audit` is withheld from optimizer feedback, runs once after selection
+  acceptance, and is never fed back into another optimization round.
 
 These are information-flow roles, not a claim that files committed in a public
 skill package are secret. A genuinely hidden audit must be resolved by a
@@ -87,7 +91,7 @@ trusted runner outside the optimizer-visible package. If that is unavailable,
 record `holdout visibility: public` as a limitation and narrow the
 generalization claim.
 
-Compile only the split needed for the current stage:
+Compile exactly one split for the current stage into a new or empty workspace:
 
 ```bash
 python3 scripts/skill_eval_runtime.py compile \
@@ -102,6 +106,8 @@ python3 scripts/skill_eval_runtime.py compile \
 
 Repeat `--case` for a targeted fast screen. The manifest and its digest remain
 unchanged; the selected case IDs are recorded in the plan and run ID.
+Selection and audit require an `old_skill` baseline. Multi-split plans and
+workspace reuse are rejected before any worker is launched.
 
 For an audit with an `old_skill` baseline, the compiler creates three arms:
 `with_skill`, `old_skill`, and `without_skill`. A case may declare
@@ -115,13 +121,18 @@ Compilation writes:
 
 - `execution-plan.json` — cases, repeats, permissions, digested fixture records,
   arms, subject, and baseline;
-- `run-lock.json` — digests for the plan, manifest, subject, baseline, and every
-  selected fixture and executor assignment;
+- `run-lock.json` — digests for the plan, manifest, subject, baseline, eval and
+  grader authority, answer-key-free skill snapshots, and every selected
+  fixture and executor assignment;
 - `assignments/<case>/<arm>/repeat-N.json` — sanitized executor identity,
   prompt, declared inputs, permissions, writable root, and required artifact
   paths; assertion expectations and objectives are intentionally absent;
-- `inputs/<case>/package/` — read-only copies of only the declared executor
-  files, preserving their relative layout without adjacent answer keys.
+- `skill-snapshots/<arm>/` — read-only runtime views containing only
+  `SKILL.md`, `references/`, `scripts/`, and `assets/`; source `evals/`, answer
+  keys, tests, and repository metadata are absent;
+- `inputs/<case>/<arm>/repeat-N/package/` — arm/repeat-specific read-only copies
+  of only the declared executor files, preserving their relative layout
+  without adjacent answer keys.
 
 The grader re-checks the lock before reading outputs. A changed or missing
 source fixture, isolated input, or assignment stops grading. Recompile instead
@@ -184,12 +195,26 @@ cases/<case-id>/<arm>/repeat-<N>/
 
 ```json
 {
+  "schema_version": "skill-reviewer.executor-execution.v1",
+  "run_id": "run-…",
+  "case_id": "ready-skill-calibration",
+  "arm": "with_skill",
+  "repeat": 1,
+  "assignment_digest": "<sha256-of-assignment>",
   "status": "completed",
   "forbidden_actions": [],
+  "side_effects": [],
   "metrics": {},
+  "artifact_digests": {
+    "outputs/response.md": "<sha256>"
+  },
   "agent_provenance": null
 }
 ```
+
+The grader rejects stale or edited execution metadata, assignment mismatches,
+and artifact-digest mismatches. Forbidden actions or external side effects in
+either candidate or baseline make the evidence `inconclusive`.
 
 `agent_provenance` is optional evidence. Model or subagent version is not a
 release requirement. The worker must not infer the overall verdict. A lead
@@ -214,6 +239,10 @@ python3 scripts/skill_eval_runtime.py project-dashboard \
   --workspace <workspace> \
   --output <workspace>/dashboard-data.json
 ```
+
+`decide` accepts only the canonical evidence path in the run workspace and
+re-grades retained artifacts before applying hard gates and Pareto rules; an
+edited evidence JSON cannot authorize release.
 
 The commands compile, grade, decide, and project. They do not spawn agents,
 modify the candidate skill, apply a patch, change evals, or approve a release.

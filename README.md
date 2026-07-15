@@ -129,15 +129,16 @@ Protocol in [`evals/fixtures/README.md`](./evals/fixtures/README.md). Run whenev
 The snapshot layer intentionally avoids byte-for-byte full-text diffs. A review can phrase findings differently and still pass if its structured contract is stable. See [`references/local-eval-snapshot.md`](./references/local-eval-snapshot.md) for the workspace layout and update policy.
 
 The behavior runtime is separate from the calibration snapshot runner. It
-freezes plan/manifest/subject/baseline/fixtures, expects native agents to write
-isolated artifacts, and refuses to grade after input drift. See
+freezes eval/grader authority, materializes answer-key-free skill snapshots and
+arm/repeat-specific inputs, binds every execution/output to its assignment, and
+refuses stale workspaces or input drift. See
 [`references/executable-evals.md`](./references/executable-evals.md) and
 [`references/subagent-eval-workflow.md`](./references/subagent-eval-workflow.md).
 
 ## Executable evals and bounded evolution
 
 The deterministic adapter is agent-agnostic; the lead agent owns native worker
-dispatch:
+dispatch. Compile exactly one split into a fresh, empty workspace:
 
 ```bash
 python3 scripts/skill_eval_runtime.py compile \

@@ -5,7 +5,9 @@ export interface DashboardArm {
   complete: boolean;
   passed: boolean;
   required_pass_rate: number | null;
-  forbidden_actions: string[];
+  forbidden_actions?: string[];
+  side_effects?: string[];
+  binding_errors?: string[];
   metrics: Record<string, number>;
   assertions: { passed: number; total: number };
   artifact_count: number;

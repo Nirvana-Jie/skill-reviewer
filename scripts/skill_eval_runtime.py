@@ -25,9 +25,13 @@ RUN_LOCK_SCHEMA = "skill-reviewer.run-lock.v1"
 VERIFICATION_SCHEMA = "skill-reviewer.verification.v1"
 ACCEPTANCE_SCHEMA = "skill-reviewer.acceptance-decision.v1"
 ASSIGNMENT_SCHEMA = "skill-reviewer.executor-assignment.v1"
+EXECUTION_SCHEMA = "skill-reviewer.executor-execution.v1"
 SEMANTIC_JUDGMENT_SCHEMA = "skill-reviewer.semantic-judgment.v1"
 DASHBOARD_SCHEMA = "skill-reviewer.dashboard-data.v1"
 EVOLUTION_STATE_SCHEMA = "skill-reviewer.evolution-state.v1"
+
+PATH_SAFE_SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+RUNTIME_SKILL_ENTRIES = ("SKILL.md", "references", "scripts", "assets")
 
 DETERMINISTIC_ASSERTION_TYPES = {
     "file_exists",
@@ -74,6 +78,13 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def sha256_json(value: Any) -> str:
+    encoded = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def iter_subject_files(root: Path) -> Iterable[Path]:
     ignored_parts = {
         ".git",
@@ -105,6 +116,82 @@ def sha256_tree(root: Path) -> str:
         digest.update(len(content).to_bytes(8, "big"))
         digest.update(content)
     return digest.hexdigest()
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _ensure_empty_workspace(workspace: Path, subject: Path) -> None:
+    resolved = workspace.resolve()
+    if _is_within(resolved, subject):
+        raise ManifestError("workspace must be outside the subject directory")
+    if resolved.exists():
+        if not resolved.is_dir():
+            raise ManifestError("workspace must be an empty directory")
+        if any(resolved.iterdir()):
+            raise ManifestError("workspace must be empty before compilation")
+
+
+def _make_read_only(root: Path) -> None:
+    for path in root.rglob("*"):
+        if path.is_file():
+            path.chmod(path.stat().st_mode & ~0o222)
+
+
+def _materialize_skill_snapshot(source: Path, destination: Path) -> str:
+    if destination.exists():
+        raise ManifestError(f"skill snapshot already exists: {destination}")
+    destination.mkdir(parents=True)
+    for entry_name in RUNTIME_SKILL_ENTRIES:
+        source_entry = source / entry_name
+        if not source_entry.exists():
+            continue
+        destination_entry = destination / entry_name
+        if source_entry.is_file():
+            safe_source = _safe_subject_file(
+                source, entry_name, "runtime skill snapshot entry"
+            )
+            shutil.copy2(safe_source, destination_entry)
+            continue
+        if not source_entry.is_dir():
+            raise ManifestError(
+                f"runtime skill snapshot entry must be a file or directory: {entry_name}"
+            )
+        for source_file in iter_subject_files(source_entry):
+            relative = source_file.relative_to(source_entry)
+            safe_source = _safe_subject_file(
+                source, (Path(entry_name) / relative).as_posix(), "runtime skill snapshot entry"
+            )
+            destination_file = destination_entry / relative
+            destination_file.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(safe_source, destination_file)
+    if not (destination / "SKILL.md").is_file():
+        raise ManifestError("skill snapshot requires SKILL.md")
+    digest = sha256_tree(destination)
+    _make_read_only(destination)
+    return digest
+
+
+def _build_authority(subject: Path, manifest_path: Path) -> dict[str, Any]:
+    eval_root = manifest_path.parent.resolve()
+    if not _is_within(eval_root, subject):
+        raise ManifestError("eval authority must stay inside the subject directory")
+    identity = {
+        "manifest_digest": sha256_file(manifest_path),
+        "evals_digest": sha256_tree(eval_root),
+        "grader_digest": sha256_file(Path(__file__).resolve()),
+    }
+    return {
+        **identity,
+        "evals_root": str(eval_root),
+        "grader_path": str(Path(__file__).resolve()),
+        "digest": sha256_json(identity),
+    }
 
 
 def _require_string(value: Any, label: str) -> str:
@@ -275,6 +362,10 @@ def _validate_objectives(objectives: Any, label: str) -> list[dict[str, Any]]:
         primary = objective.get("primary", True)
         if not isinstance(primary, bool):
             raise ManifestError(f"{objective_label}.primary must be boolean")
+        if primary and material <= 0:
+            raise ManifestError(
+                f"{objective_label}.min_material_delta must be greater than zero for a primary objective"
+            )
         normalized.append(
             {
                 **objective,
@@ -303,17 +394,35 @@ def validate_manifest(manifest: dict[str, Any], subject: Path) -> list[dict[str,
         value = repeats.get(key)
         if not isinstance(value, int) or value < 1:
             raise ManifestError(f"defaults.repeats.{key} must be a positive integer")
-        if key == "deterministic" and value != expected:
-            raise ManifestError("defaults.repeats.deterministic must be 1")
+        if value != expected:
+            raise ManifestError(f"defaults.repeats.{key} must be {expected}")
     evolution = defaults.get("evolution")
     if not isinstance(evolution, dict) or evolution.get("max_rounds") != 3:
         raise ManifestError("defaults.evolution.max_rounds must be 3")
-    permissions = defaults.get("permissions")
-    if not isinstance(permissions, dict) or permissions.get("network") not in {
+    raw_permissions = defaults.get("permissions")
+    if not isinstance(raw_permissions, dict) or raw_permissions.get("network") not in {
         "deny",
         "allowlist",
     }:
         raise ManifestError("defaults.permissions.network must be deny or allowlist")
+    permissions = {"external_side_effects": "deny", **raw_permissions}
+    if permissions.get("external_side_effects") != "deny":
+        raise ManifestError("defaults.permissions.external_side_effects must be deny")
+    writable_roots = permissions.get("writable_roots")
+    if not isinstance(writable_roots, list) or not writable_roots:
+        raise ManifestError("defaults.permissions.writable_roots must be a non-empty array")
+    for index, raw_root in enumerate(writable_roots):
+        _validate_artifact_path(
+            raw_root, f"defaults.permissions.writable_roots[{index}]"
+        )
+    if permissions.get("network") == "allowlist":
+        allowlist = permissions.get("network_allowlist")
+        if not isinstance(allowlist, list) or not allowlist or not all(
+            isinstance(value, str) and value.strip() for value in allowlist
+        ):
+            raise ManifestError(
+                "defaults.permissions.network_allowlist must be a non-empty string array when network is allowlist"
+            )
 
     evals = manifest.get("evals")
     if not isinstance(evals, list) or not evals:
@@ -325,6 +434,10 @@ def validate_manifest(manifest: dict[str, Any], subject: Path) -> list[dict[str,
         if not isinstance(item, dict):
             raise ManifestError(f"{label} must be an object")
         eval_id = _require_string(item.get("id"), f"{label}.id")
+        if not PATH_SAFE_SLUG.fullmatch(eval_id):
+            raise ManifestError(
+                f"{label}.id must be a path-safe lowercase kebab-case slug"
+            )
         if eval_id in seen_ids:
             raise ManifestError(f"duplicate eval id: {eval_id}")
         seen_ids.add(eval_id)
@@ -362,6 +475,28 @@ def validate_manifest(manifest: dict[str, Any], subject: Path) -> list[dict[str,
             raise ManifestError(
                 f"{label}.permissions.network must be deny or allowlist"
             )
+        if resolved_permissions.get("external_side_effects") != "deny":
+            raise ManifestError(
+                f"{label}.permissions.external_side_effects must remain deny"
+            )
+        resolved_writable_roots = resolved_permissions.get("writable_roots")
+        if not isinstance(resolved_writable_roots, list) or not resolved_writable_roots:
+            raise ManifestError(
+                f"{label}.permissions.writable_roots must be a non-empty array"
+            )
+        for root_index, raw_root in enumerate(resolved_writable_roots):
+            _validate_artifact_path(
+                raw_root,
+                f"{label}.permissions.writable_roots[{root_index}]",
+            )
+        if resolved_permissions.get("network") == "allowlist":
+            allowlist = resolved_permissions.get("network_allowlist")
+            if not isinstance(allowlist, list) or not allowlist or not all(
+                isinstance(value, str) and value.strip() for value in allowlist
+            ):
+                raise ManifestError(
+                    f"{label}.permissions.network_allowlist must be a non-empty string array"
+                )
         normalized.append(
             {
                 **item,
@@ -387,11 +522,19 @@ def compile_manifest(
 ) -> dict[str, Any]:
     manifest_path = manifest_path.resolve()
     subject = subject.resolve()
+    expected_manifest = (subject / "evals" / "evals.json").resolve()
+    if manifest_path != expected_manifest:
+        raise ManifestError("manifest must be the subject's evals/evals.json")
     manifest = load_json(manifest_path)
     cases = validate_manifest(manifest, subject)
-    selected_splits = list(dict.fromkeys(splits or ["development", "selection", "audit"]))
-    if any(split not in {"development", "selection", "audit"} for split in selected_splits):
-        raise ManifestError("split must be development, selection, or audit")
+    selected_splits = list(dict.fromkeys(splits or []))
+    if len(selected_splits) != 1 or selected_splits[0] not in {
+        "development",
+        "selection",
+        "audit",
+    }:
+        raise ManifestError("compile requires exactly one --split")
+    selected_split = selected_splits[0]
     requested_case_ids = list(dict.fromkeys(case_ids or []))
     available_case_ids = {str(case["id"]) for case in cases}
     unknown_case_ids = [
@@ -409,8 +552,10 @@ def compile_manifest(
     ]
     if not cases:
         raise ManifestError("selected split has no eval cases")
+    _ensure_empty_workspace(workspace, subject)
     manifest_digest = sha256_file(manifest_path)
     subject_digest = sha256_tree(subject)
+    authority = _build_authority(subject, manifest_path)
 
     if baseline_kind == "old_skill":
         if baseline_path is None:
@@ -427,6 +572,9 @@ def compile_manifest(
         default_arms = ["with_skill", "without_skill"]
     else:
         raise ManifestError("baseline kind must be old_skill or without_skill")
+
+    if selected_split in {"selection", "audit"} and baseline_kind != "old_skill":
+        raise ManifestError(f"{selected_split} requires an old_skill baseline")
 
     cases_with_arms: list[dict[str, Any]] = []
     for case in cases:
@@ -452,16 +600,31 @@ def compile_manifest(
                 )
         cases_with_arms.append({**case, **extra, "arms": arms})
 
+    workspace = workspace.resolve()
     run_seed = "|".join(
         [
             subject_digest,
-            manifest_digest,
+            str(authority["digest"]),
             str(baseline.get("digest")),
-            ",".join(selected_splits),
+            selected_split,
             ",".join(str(case["id"]) for case in cases),
         ]
     ).encode("utf-8")
     run_id = f"run-{hashlib.sha256(run_seed).hexdigest()[:20]}"
+    snapshot_records: dict[str, dict[str, Any]] = {}
+    candidate_snapshot = _safe_artifact(workspace, "skill-snapshots/with_skill")
+    snapshot_records["with_skill"] = {
+        "path": str(candidate_snapshot),
+        "digest": _materialize_skill_snapshot(subject, candidate_snapshot),
+        "source_digest": subject_digest,
+    }
+    if baseline_kind == "old_skill" and baseline_path is not None:
+        baseline_snapshot = _safe_artifact(workspace, "skill-snapshots/old_skill")
+        snapshot_records["old_skill"] = {
+            "path": str(baseline_snapshot),
+            "digest": _materialize_skill_snapshot(baseline_path, baseline_snapshot),
+            "source_digest": baseline.get("digest"),
+        }
     plan = {
         "schema_version": PLAN_SCHEMA,
         "run_id": run_id,
@@ -472,6 +635,8 @@ def compile_manifest(
         },
         "subject": {"path": str(subject), "digest": subject_digest},
         "baseline": baseline,
+        "authority": authority,
+        "skill_snapshots": snapshot_records,
         "splits": selected_splits,
         "case_ids": [str(case["id"]) for case in cases],
         "cases": cases_with_arms,
@@ -480,22 +645,6 @@ def compile_manifest(
     plan_path = workspace / "execution-plan.json"
     write_json(plan_path, plan)
     input_copy_digests: dict[str, str] = {}
-    isolated_inputs: dict[tuple[str, str], Path] = {}
-    for case in cases_with_arms:
-        for record in case.get("files", []):
-            relative_path = (
-                Path("inputs")
-                / str(case["id"])
-                / "package"
-                / str(record["path"])
-            )
-            source_path = subject / str(record["path"])
-            isolated_path = workspace / relative_path
-            isolated_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source_path, isolated_path)
-            isolated_path.chmod(0o444)
-            isolated_inputs[(str(case["id"]), str(record["path"]))] = isolated_path
-            input_copy_digests[relative_path.as_posix()] = sha256_file(isolated_path)
     assignment_digests: dict[str, str] = {}
     for case in cases_with_arms:
         expected_artifacts = list(
@@ -509,20 +658,23 @@ def compile_manifest(
             if arm == "with_skill":
                 configuration = {
                     "kind": "with_skill",
-                    "skill_path": str(subject),
-                    "digest": subject_digest,
+                    "skill_path": snapshot_records["with_skill"]["path"],
+                    "snapshot_digest": snapshot_records["with_skill"]["digest"],
+                    "source_digest": subject_digest,
                 }
             elif arm == "old_skill":
                 configuration = {
                     "kind": "old_skill",
-                    "skill_path": baseline.get("path"),
-                    "digest": baseline.get("digest"),
+                    "skill_path": snapshot_records["old_skill"]["path"],
+                    "snapshot_digest": snapshot_records["old_skill"]["digest"],
+                    "source_digest": baseline.get("digest"),
                 }
             else:
                 configuration = {
                     "kind": "without_skill",
                     "skill_path": None,
-                    "digest": None,
+                    "snapshot_digest": None,
+                    "source_digest": None,
                 }
             for repeat in range(1, int(case["repeats"]) + 1):
                 relative_path = Path("assignments") / str(case["id"]) / str(arm) / (
@@ -535,6 +687,45 @@ def compile_manifest(
                     / str(arm)
                     / f"repeat-{repeat}"
                 )
+                input_files: list[dict[str, Any]] = []
+                input_root = _safe_artifact(
+                    workspace,
+                    (
+                        Path("inputs")
+                        / str(case["id"])
+                        / str(arm)
+                        / f"repeat-{repeat}"
+                    ).as_posix(),
+                )
+                for record in case.get("files", []):
+                    input_relative = (
+                        Path("inputs")
+                        / str(case["id"])
+                        / str(arm)
+                        / f"repeat-{repeat}"
+                        / "package"
+                        / str(record["path"])
+                    )
+                    source_path = _safe_subject_file(
+                        subject, str(record["path"]), "eval input"
+                    )
+                    isolated_path = _safe_artifact(
+                        workspace, input_relative.as_posix()
+                    )
+                    isolated_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source_path, isolated_path)
+                    isolated_path.chmod(isolated_path.stat().st_mode & ~0o222)
+                    digest = sha256_file(isolated_path)
+                    input_copy_digests[input_relative.as_posix()] = digest
+                    input_files.append(
+                        {
+                            "relative_path": record["path"],
+                            "path": str(isolated_path),
+                            "digest": digest,
+                        }
+                    )
+                if input_root.exists():
+                    _make_read_only(input_root)
                 assignment = {
                     "schema_version": ASSIGNMENT_SCHEMA,
                     "run_id": run_id,
@@ -544,17 +735,14 @@ def compile_manifest(
                     "repeat_count": case["repeats"],
                     "prompt": case["prompt"],
                     "configuration": configuration,
-                    "input_files": [
-                        {
-                            "relative_path": record["path"],
-                            "path": str(
-                                isolated_inputs[
-                                    (str(case["id"]), str(record["path"]))
-                                ]
-                            ),
-                            "digest": record["digest"],
-                        }
-                        for record in case.get("files", [])
+                    "input_files": input_files,
+                    "readable_paths": [
+                        *(
+                            [str(configuration["skill_path"])]
+                            if configuration["skill_path"]
+                            else []
+                        ),
+                        *(str(record["path"]) for record in input_files),
                     ],
                     "permissions": case["permissions"],
                     "writable_root": str(repeat_root.resolve()),
@@ -573,6 +761,10 @@ def compile_manifest(
         "manifest_digest": manifest_digest,
         "subject_digest": subject_digest,
         "baseline": baseline,
+        "authority": authority,
+        "skill_snapshot_digests": {
+            arm: record["digest"] for arm, record in snapshot_records.items()
+        },
         "fixture_digests": {
             record["path"]: record["digest"]
             for item in cases
@@ -792,28 +984,141 @@ def grade_assertion(assertion: dict[str, Any], repeat_root: Path) -> dict[str, A
 
 
 def grade_arm(
-    *, workspace: Path, case: dict[str, Any], arm: str
+    *,
+    workspace: Path,
+    case: dict[str, Any],
+    arm: str,
+    run_id: str,
+    assignment_digests: dict[str, str],
 ) -> dict[str, Any]:
     repeat_results: list[dict[str, Any]] = []
     complete = True
     required_passed = 0
     required_total = 0
     forbidden_actions: list[str] = []
+    side_effects: list[str] = []
+    binding_errors: list[str] = []
     artifacts: list[str] = []
     metric_samples: dict[str, list[float]] = {}
     for repeat in range(1, int(case["repeats"]) + 1):
         repeat_root = workspace / "cases" / str(case["id"]) / arm / f"repeat-{repeat}"
         execution_path = repeat_root / "execution.json"
+        assignment_relative = (
+            Path("assignments")
+            / str(case["id"])
+            / arm
+            / f"repeat-{repeat}.json"
+        ).as_posix()
+        expected_assignment_digest = assignment_digests.get(assignment_relative)
+        if not isinstance(expected_assignment_digest, str):
+            raise ManifestError(
+                f"run lock is missing assignment digest: {assignment_relative}"
+            )
+        assignment_path = _safe_artifact(workspace, assignment_relative)
+        assignment = load_json(assignment_path)
+        for key, expected_value in {
+            "schema_version": ASSIGNMENT_SCHEMA,
+            "run_id": run_id,
+            "case_id": case["id"],
+            "arm": arm,
+            "repeat": repeat,
+        }.items():
+            if assignment.get(key) != expected_value:
+                raise ManifestError(
+                    f"locked assignment {key} mismatch: {assignment_relative}"
+                )
+        repeat_binding_errors: list[str] = []
         if not execution_path.is_file():
-            complete = False
-            execution = {"status": "missing", "forbidden_actions": []}
+            execution: dict[str, Any] = {
+                "status": "missing",
+                "forbidden_actions": [],
+                "side_effects": [],
+                "metrics": {},
+            }
+            repeat_binding_errors.append("execution.json is missing")
         else:
-            execution = load_json(execution_path)
-            complete = complete and execution.get("status") == "completed"
             artifacts.append(str(execution_path.relative_to(workspace)))
-        actions = execution.get("forbidden_actions", [])
+            try:
+                execution = load_json(execution_path)
+            except ManifestError as error:
+                execution = {
+                    "status": "invalid",
+                    "forbidden_actions": [],
+                    "side_effects": [],
+                    "metrics": {},
+                }
+                repeat_binding_errors.append(str(error))
+        expected_identity = {
+            "schema_version": EXECUTION_SCHEMA,
+            "run_id": run_id,
+            "case_id": case["id"],
+            "arm": arm,
+            "repeat": repeat,
+            "assignment_digest": expected_assignment_digest,
+        }
+        for key, expected_value in expected_identity.items():
+            if execution.get(key) != expected_value:
+                repeat_binding_errors.append(
+                    f"execution {key} does not match the locked assignment"
+                )
+        if execution.get("status") not in {
+            "completed",
+            "failed",
+            "timed_out",
+            "interrupted",
+        }:
+            repeat_binding_errors.append("execution status is invalid")
+        expected_artifacts = assignment.get("expected_artifacts")
+        artifact_digests = execution.get("artifact_digests")
+        if not isinstance(expected_artifacts, list) or not all(
+            isinstance(value, str) for value in expected_artifacts
+        ):
+            raise ManifestError(
+                f"locked assignment has invalid expected_artifacts: {assignment_relative}"
+            )
+        if not isinstance(artifact_digests, dict):
+            repeat_binding_errors.append("execution artifact_digests must be an object")
+            artifact_digests = {}
+        for artifact in expected_artifacts:
+            artifact_path = _safe_artifact(repeat_root, artifact)
+            if not artifact_path.is_file():
+                continue
+            recorded_digest = artifact_digests.get(artifact)
+            if not isinstance(recorded_digest, str) or recorded_digest != sha256_file(
+                artifact_path
+            ):
+                repeat_binding_errors.append(
+                    f"artifact digest is missing or mismatched: {artifact}"
+                )
+        unexpected_digest_paths = set(artifact_digests) - set(expected_artifacts)
+        if unexpected_digest_paths:
+            repeat_binding_errors.append(
+                "execution contains undeclared artifact digests: "
+                + ", ".join(sorted(str(value) for value in unexpected_digest_paths))
+            )
+        if "forbidden_actions" not in execution:
+            repeat_binding_errors.append("execution forbidden_actions is required")
+        actions = execution.get("forbidden_actions")
         if isinstance(actions, list):
             forbidden_actions.extend(str(action) for action in actions)
+        else:
+            repeat_binding_errors.append("execution forbidden_actions must be an array")
+        if "side_effects" not in execution:
+            repeat_binding_errors.append("execution side_effects is required")
+        effects = execution.get("side_effects")
+        if isinstance(effects, list):
+            side_effects.extend(str(effect) for effect in effects)
+        else:
+            repeat_binding_errors.append("execution side_effects must be an array")
+        if not isinstance(execution.get("metrics"), dict):
+            repeat_binding_errors.append("execution metrics must be an object")
+        repeat_complete = (
+            execution.get("status") == "completed" and not repeat_binding_errors
+        )
+        complete = complete and repeat_complete
+        binding_errors.extend(
+            f"repeat {repeat}: {error}" for error in repeat_binding_errors
+        )
         assertions = [
             grade_assertion(assertion, repeat_root)
             for assertion in case.get("assertions", [])
@@ -829,7 +1134,7 @@ def grade_arm(
                 repeat_required_passed += int(result["passed"])
         metrics: dict[str, float] = {}
         raw_metrics = execution.get("metrics", {})
-        if isinstance(raw_metrics, dict):
+        if repeat_complete and isinstance(raw_metrics, dict):
             for metric, value in raw_metrics.items():
                 if (
                     isinstance(metric, str)
@@ -846,20 +1151,30 @@ def grade_arm(
         repeat_results.append(
             {
                 "repeat": repeat,
-                "status": execution.get("status"),
+                "status": execution.get("status")
+                if not repeat_binding_errors
+                else "invalid",
+                "binding_errors": repeat_binding_errors,
                 "assertions": assertions,
                 "required_pass_rate": repeat_pass_rate,
                 "metrics": metrics,
             }
         )
     required_pass_rate = required_passed / required_total if required_total else 1.0
-    passed = complete and not forbidden_actions and required_pass_rate == 1.0
+    passed = (
+        complete
+        and not forbidden_actions
+        and not side_effects
+        and required_pass_rate == 1.0
+    )
     result = {
         "arm": arm,
         "complete": complete,
         "passed": passed,
         "required_pass_rate": required_pass_rate,
         "forbidden_actions": sorted(set(forbidden_actions)),
+        "side_effects": sorted(set(side_effects)),
+        "binding_errors": binding_errors,
         "repeats": repeat_results,
         "artifacts": artifacts,
     }
@@ -1056,6 +1371,14 @@ def verify_locked_inputs(
     if subject.get("digest") != lock.get("subject_digest"):
         raise ManifestError("execution plan subject digest does not match run lock")
 
+    authority = plan.get("authority")
+    locked_authority = lock.get("authority")
+    if not isinstance(authority, dict) or authority != locked_authority:
+        raise ManifestError("execution plan authority does not match run lock")
+    recomputed_authority = _build_authority(subject_path, manifest_path)
+    if recomputed_authority != authority:
+        raise ManifestError("locked eval or grader authority changed after compilation")
+
     if isinstance(baseline, dict) and baseline.get("kind") == "old_skill":
         baseline_path = Path(
             _require_string(baseline.get("path"), "plan.baseline.path")
@@ -1066,6 +1389,28 @@ def verify_locked_inputs(
             raise ManifestError("locked old_skill baseline changed or disappeared")
         if baseline.get("digest") != lock.get("baseline", {}).get("digest"):
             raise ManifestError("execution plan baseline digest does not match run lock")
+
+    snapshots = plan.get("skill_snapshots")
+    locked_snapshot_digests = lock.get("skill_snapshot_digests")
+    if not isinstance(snapshots, dict) or not isinstance(
+        locked_snapshot_digests, dict
+    ):
+        raise ManifestError("skill snapshot authority is missing")
+    for arm, record in snapshots.items():
+        if not isinstance(arm, str) or not isinstance(record, dict):
+            raise ManifestError("skill snapshot records must be objects")
+        snapshot_path = Path(
+            _require_string(record.get("path"), f"skill_snapshots.{arm}.path")
+        )
+        if not _is_within(snapshot_path, workspace):
+            raise ManifestError(f"skill snapshot escapes the run workspace: {arm}")
+        expected_digest = locked_snapshot_digests.get(arm)
+        if (
+            not isinstance(expected_digest, str)
+            or record.get("digest") != expected_digest
+            or sha256_tree(snapshot_path) != expected_digest
+        ):
+            raise ManifestError(f"locked skill snapshot changed: {arm}")
 
     fixture_digests = lock.get("fixture_digests", {})
     if not isinstance(fixture_digests, dict):
@@ -1100,7 +1445,9 @@ def verify_locked_inputs(
         "locked": True,
         "verified": True,
         "run_lock": str(lock_path.resolve()),
+        "run_lock_digest": sha256_file(lock_path),
         "plan_digest": lock.get("plan_digest"),
+        "authority_digest": authority.get("digest"),
     }
 
 
@@ -1111,19 +1458,30 @@ def grade_run(*, plan_path: Path, workspace: Path) -> dict[str, Any]:
     integrity = verify_locked_inputs(
         plan_path=plan_path.resolve(), workspace=workspace.resolve(), plan=plan
     )
+    run_lock = load_json(workspace.resolve() / "run-lock.json")
+    assignment_digests = run_lock.get("assignment_digests")
+    if not isinstance(assignment_digests, dict):
+        raise ManifestError("run lock assignment_digests must be an object")
     case_results: list[dict[str, Any]] = []
     any_incomplete = False
     all_with_skill_passed = True
     any_regression = False
     any_direction_disagreement = False
     any_semantic_problem = False
+    any_safety_violation = False
     limitations: list[str] = []
     for case in plan.get("cases", []):
         arms = case.get("arms", [])
         if not isinstance(arms, list) or "with_skill" not in arms:
             raise ManifestError(f"case {case.get('id')} has no with_skill arm")
         graded = {
-            arm: grade_arm(workspace=workspace, case=case, arm=str(arm))
+            arm: grade_arm(
+                workspace=workspace,
+                case=case,
+                arm=str(arm),
+                run_id=str(plan.get("run_id")),
+                assignment_digests=assignment_digests,
+            )
             for arm in arms
         }
         candidate = graded["with_skill"]
@@ -1181,6 +1539,16 @@ def grade_run(*, plan_path: Path, workspace: Path) -> dict[str, Any]:
                 limitations.append(
                     f"forbidden action recorded for case {case['id']} arm {arm}"
                 )
+                any_safety_violation = True
+            if arm_result["side_effects"]:
+                limitations.append(
+                    f"external side effect recorded for case {case['id']} arm {arm}"
+                )
+                any_safety_violation = True
+            if arm_result["binding_errors"]:
+                limitations.append(
+                    f"execution binding invalid for case {case['id']} arm {arm}"
+                )
         all_with_skill_passed = all_with_skill_passed and candidate["passed"]
         any_regression = any_regression or regressed
         any_direction_disagreement = any_direction_disagreement or direction_disagreement
@@ -1228,6 +1596,7 @@ def grade_run(*, plan_path: Path, workspace: Path) -> dict[str, Any]:
         or any_regression
         or any_direction_disagreement
         or any_semantic_problem
+        or any_safety_violation
     ):
         level = "inconclusive"
     elif has_baseline:
@@ -1245,6 +1614,10 @@ def grade_run(*, plan_path: Path, workspace: Path) -> dict[str, Any]:
         "integrity": integrity,
         "agent_provenance": plan.get("agent_provenance"),
     }
+    if any(case.get("split") == "audit" for case in plan.get("cases", [])):
+        evidence["limitations"].append(
+            "public audit fixtures are not a hidden holdout; hidden release evidence requires a trusted external runner"
+        )
     write_json(workspace / "verification-evidence.json", evidence)
     return evidence
 
@@ -1271,18 +1644,37 @@ def decide_candidate(
     iteration: int,
     phase: str,
 ) -> dict[str, Any]:
+    if phase not in {"selection", "audit"}:
+        raise ManifestError("decision phase must be selection or audit")
+    workspace = workspace.resolve()
+    plan_path = plan_path.resolve()
+    evidence_path = evidence_path.resolve()
+    if plan_path != workspace / "execution-plan.json":
+        raise ManifestError("decision plan must be the workspace execution-plan.json")
+    if evidence_path != workspace / "verification-evidence.json":
+        raise ManifestError(
+            "decision evidence must be the workspace verification-evidence.json"
+        )
     plan = load_json(plan_path)
-    evidence = load_json(evidence_path)
     if plan.get("schema_version") != PLAN_SCHEMA:
         raise ManifestError(f"execution plan schema must be {PLAN_SCHEMA}")
+    plan_splits = plan.get("splits")
+    if plan_splits != [phase] or any(
+        case.get("split") != phase for case in plan.get("cases", [])
+    ):
+        raise ManifestError(
+            f"{phase} decisions require a plan containing only the {phase} split"
+        )
+    evidence = grade_run(plan_path=plan_path, workspace=workspace)
     if evidence.get("schema_version") != VERIFICATION_SCHEMA:
         raise ManifestError(f"verification evidence schema must be {VERIFICATION_SCHEMA}")
     if plan.get("run_id") != evidence.get("run_id"):
         raise ManifestError("execution plan and evidence use different run ids")
     if iteration < 1:
         raise ManifestError("iteration must be a positive integer")
-    if phase not in {"selection", "audit"}:
-        raise ManifestError("decision phase must be selection or audit")
+    integrity = evidence.get("integrity")
+    if not isinstance(integrity, dict) or integrity.get("verified") is not True:
+        raise ManifestError("decision requires verified locked evidence")
 
     evidence_cases = {
         str(item.get("id")): item
@@ -1307,6 +1699,7 @@ def decide_candidate(
             and candidate.get("complete") is True
             and candidate.get("passed") is True
             and not candidate.get("forbidden_actions")
+            and not candidate.get("side_effects")
         )
         hard_gates.append(
             {
@@ -1321,7 +1714,12 @@ def decide_candidate(
             if paired_arm == baseline_arm or paired_arm not in result:
                 continue
             paired = result.get(paired_arm)
-            paired_complete = isinstance(paired, dict) and paired.get("complete") is True
+            paired_complete = (
+                isinstance(paired, dict)
+                and paired.get("complete") is True
+                and not paired.get("forbidden_actions")
+                and not paired.get("side_effects")
+            )
             hard_gates.append(
                 {
                     "id": f"{case_id}:paired-{paired_arm}-complete",
@@ -1331,7 +1729,12 @@ def decide_candidate(
                     else f"{paired_arm} artifacts are missing or incomplete",
                 }
             )
-        baseline_valid = isinstance(baseline, dict) and baseline.get("complete") is True
+        baseline_valid = (
+            isinstance(baseline, dict)
+            and baseline.get("complete") is True
+            and not baseline.get("forbidden_actions")
+            and not baseline.get("side_effects")
+        )
         hard_gates.append(
             {
                 "id": f"{case_id}:paired-baseline-complete",
@@ -1341,14 +1744,18 @@ def decide_candidate(
                 else "paired baseline artifacts are missing or incomplete",
             }
         )
-        no_forbidden = isinstance(candidate, dict) and not candidate.get("forbidden_actions")
+        no_forbidden = (
+            isinstance(candidate, dict)
+            and not candidate.get("forbidden_actions")
+            and not candidate.get("side_effects")
+        )
         hard_gates.append(
             {
                 "id": f"{case_id}:forbidden-actions",
                 "passed": no_forbidden,
-                "reason": "no forbidden action observed"
+                "reason": "no forbidden action or external side effect observed"
                 if no_forbidden
-                else "forbidden action observed",
+                else "forbidden action or external side effect observed",
             }
         )
         if not isinstance(candidate, dict) or not isinstance(baseline, dict):
@@ -1418,6 +1825,14 @@ def decide_candidate(
     decision = {
         "schema_version": ACCEPTANCE_SCHEMA,
         "run_id": plan.get("run_id"),
+        "plan_path": str(plan_path),
+        "plan_digest": sha256_file(plan_path),
+        "evidence_path": str(evidence_path),
+        "evidence_digest": sha256_file(evidence_path),
+        "evidence_level": evidence.get("level"),
+        "authority_digest": plan.get("authority", {}).get("digest"),
+        "subject": plan.get("subject"),
+        "baseline": plan.get("baseline"),
         "iteration": iteration,
         "phase": phase,
         "status": status,
@@ -1445,20 +1860,137 @@ def decide_candidate(
     return decision
 
 
-def initialize_evolution(*, run_id: str, workspace: Path) -> dict[str, Any]:
-    run_id = _require_string(run_id, "run_id")
+def _validate_bound_decision(
+    decision: dict[str, Any], decision_path: Path
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if decision.get("schema_version") != ACCEPTANCE_SCHEMA:
+        raise ManifestError(f"acceptance decision schema must be {ACCEPTANCE_SCHEMA}")
+    plan_path = Path(
+        _require_string(decision.get("plan_path"), "decision.plan_path")
+    )
+    evidence_path = Path(
+        _require_string(decision.get("evidence_path"), "decision.evidence_path")
+    )
+    if not plan_path.is_file() or sha256_file(plan_path) != decision.get(
+        "plan_digest"
+    ):
+        raise ManifestError("decision plan digest is missing or mismatched")
+    if not evidence_path.is_file() or sha256_file(evidence_path) != decision.get(
+        "evidence_digest"
+    ):
+        raise ManifestError("decision evidence digest is missing or mismatched")
+    plan = load_json(plan_path)
+    evidence = load_json(evidence_path)
+    if plan.get("schema_version") != PLAN_SCHEMA:
+        raise ManifestError(f"execution plan schema must be {PLAN_SCHEMA}")
+    if evidence.get("schema_version") != VERIFICATION_SCHEMA:
+        raise ManifestError(f"verification evidence schema must be {VERIFICATION_SCHEMA}")
+    if not (
+        decision.get("run_id") == plan.get("run_id") == evidence.get("run_id")
+    ):
+        raise ManifestError("decision, plan, and evidence use different run ids")
+    if decision.get("authority_digest") != plan.get("authority", {}).get("digest"):
+        raise ManifestError("decision authority digest does not match its plan")
+    if decision.get("subject") != plan.get("subject"):
+        raise ManifestError("decision subject does not match its plan")
+    if decision.get("baseline") != plan.get("baseline"):
+        raise ManifestError("decision baseline does not match its plan")
+    integrity = evidence.get("integrity")
+    if (
+        not isinstance(integrity, dict)
+        or integrity.get("verified") is not True
+        or integrity.get("plan_digest") != decision.get("plan_digest")
+    ):
+        raise ManifestError("decision evidence is not bound to a verified plan")
+    if decision.get("evidence_level") != evidence.get("level"):
+        raise ManifestError("decision evidence level does not match retained evidence")
+    phase = decision.get("phase")
+    if phase not in {"selection", "audit"} or plan.get("splits") != [phase]:
+        raise ManifestError("decision phase does not match its single-split plan")
+    hard_gates = decision.get("hard_gates")
+    objectives = decision.get("objectives")
+    if not isinstance(hard_gates, list) or not isinstance(objectives, list):
+        raise ManifestError("decision hard gates and objectives must be arrays")
+    hard_gates_passed = bool(hard_gates) and all(
+        isinstance(item, dict) and item.get("passed") is True for item in hard_gates
+    )
+    pareto_admissible = bool(objectives) and all(
+        isinstance(item, dict) and item.get("non_regressed") is True
+        for item in objectives
+    )
+    material_improvement = any(
+        isinstance(item, dict)
+        and item.get("primary") is True
+        and item.get("materially_improved") is True
+        for item in objectives
+    )
+    if (
+        decision.get("hard_gates_passed") is not hard_gates_passed
+        or decision.get("pareto_admissible") is not pareto_admissible
+        or decision.get("material_improvement") is not material_improvement
+    ):
+        raise ManifestError("decision summary does not match its gates and objectives")
+    expected_accepted = (
+        evidence.get("level") != "inconclusive"
+        and hard_gates_passed
+        and pareto_admissible
+        and (phase == "audit" or material_improvement)
+    )
+    if decision.get("accepted") is not expected_accepted:
+        raise ManifestError("decision accepted flag is inconsistent")
+    if expected_accepted:
+        expected_status = "accepted"
+    elif evidence.get("level") == "inconclusive":
+        expected_status = "inconclusive"
+    elif not hard_gates_passed or not pareto_admissible:
+        expected_status = "rejected"
+    else:
+        expected_status = "no-change"
+    if decision.get("status") != expected_status:
+        raise ManifestError("decision status is inconsistent")
+    if not decision_path.is_file():
+        raise ManifestError("decision artifact does not exist")
+    return plan, evidence
+
+
+def initialize_evolution(*, plan_path: Path, workspace: Path) -> dict[str, Any]:
+    plan_path = plan_path.resolve()
+    plan = load_json(plan_path)
+    if plan.get("schema_version") != PLAN_SCHEMA:
+        raise ManifestError(f"execution plan schema must be {PLAN_SCHEMA}")
+    if plan.get("splits") != ["selection"]:
+        raise ManifestError("evolution must initialize from a selection plan")
+    verify_locked_inputs(
+        plan_path=plan_path, workspace=plan_path.parent, plan=plan
+    )
+    authority_digest = _require_string(
+        plan.get("authority", {}).get("digest"), "plan.authority.digest"
+    )
+    baseline = plan.get("baseline")
+    if (
+        not isinstance(baseline, dict)
+        or baseline.get("kind") != "old_skill"
+        or not isinstance(baseline.get("digest"), str)
+    ):
+        raise ManifestError("evolution requires a pinned old_skill baseline")
     state_path = workspace / "evolution-state.json"
     if state_path.exists():
         raise ManifestError("evolution-state.json already exists")
+    evolution_id = f"evo-{sha256_json({'authority': authority_digest, 'baseline': baseline.get('digest')})[:20]}"
     state = {
         "schema_version": EVOLUTION_STATE_SCHEMA,
-        "run_id": run_id,
+        "evolution_id": evolution_id,
+        "authority_digest": authority_digest,
+        "baseline": baseline,
+        "initialized_from_plan": str(plan_path.resolve()),
         "max_rounds": 3,
         "current_round": 1,
         "status": "optimizing",
         "next_action": "propose_candidate",
         "terminal": False,
         "audit_consumed": False,
+        "selected_subject_digest": None,
+        "seen_run_ids": [],
         "history": [],
     }
     write_json(state_path, state)
@@ -1470,10 +2002,11 @@ def advance_evolution(*, state_path: Path, decision_path: Path) -> dict[str, Any
     decision = load_json(decision_path)
     if state.get("schema_version") != EVOLUTION_STATE_SCHEMA:
         raise ManifestError(f"evolution state schema must be {EVOLUTION_STATE_SCHEMA}")
-    if decision.get("schema_version") != ACCEPTANCE_SCHEMA:
-        raise ManifestError(f"acceptance decision schema must be {ACCEPTANCE_SCHEMA}")
-    if state.get("run_id") != decision.get("run_id"):
-        raise ManifestError("evolution state and decision use different run ids")
+    plan, _evidence = _validate_bound_decision(decision, decision_path)
+    if state.get("authority_digest") != decision.get("authority_digest"):
+        raise ManifestError("evolution authority changed; user confirmation requires a new run")
+    if state.get("baseline") != decision.get("baseline"):
+        raise ManifestError("accepted old_skill baseline changed during evolution")
     if state.get("terminal") is True:
         raise ManifestError("evolution is already terminal")
     phase = decision.get("phase")
@@ -1482,6 +2015,12 @@ def advance_evolution(*, state_path: Path, decision_path: Path) -> dict[str, Any
         raise ManifestError("decision phase must be selection or audit")
     if iteration != state.get("current_round"):
         raise ManifestError("decision iteration does not match the current evolution round")
+    seen_run_ids = state.get("seen_run_ids")
+    if not isinstance(seen_run_ids, list):
+        raise ManifestError("evolution seen_run_ids must be an array")
+    run_id = _require_string(decision.get("run_id"), "decision.run_id")
+    if run_id in seen_run_ids:
+        raise ManifestError("the same evaluation run cannot advance evolution twice")
 
     history = state.get("history")
     if not isinstance(history, list):
@@ -1490,6 +2029,8 @@ def advance_evolution(*, state_path: Path, decision_path: Path) -> dict[str, Any
         {
             "phase": phase,
             "iteration": iteration,
+            "run_id": run_id,
+            "subject_digest": plan.get("subject", {}).get("digest"),
             "status": decision.get("status"),
             "accepted": decision.get("accepted") is True,
             "decision_path": str(decision_path.resolve()),
@@ -1506,6 +2047,7 @@ def advance_evolution(*, state_path: Path, decision_path: Path) -> dict[str, Any
                     "status": "awaiting-audit",
                     "next_action": "run_audit",
                     "terminal": False,
+                    "selected_subject_digest": plan.get("subject", {}).get("digest"),
                 }
             )
         elif int(state.get("current_round", 0)) >= int(state.get("max_rounds", 3)):
@@ -1526,6 +2068,10 @@ def advance_evolution(*, state_path: Path, decision_path: Path) -> dict[str, Any
             raise ManifestError("audit is allowed only after a selection candidate is accepted")
         if state.get("audit_consumed") is True:
             raise ManifestError("audit may run only once")
+        if plan.get("subject", {}).get("digest") != state.get(
+            "selected_subject_digest"
+        ):
+            raise ManifestError("audit subject is not the accepted selection candidate")
         released = decision.get("accepted") is True
         state.update(
             {
@@ -1536,6 +2082,7 @@ def advance_evolution(*, state_path: Path, decision_path: Path) -> dict[str, Any
             }
         )
     state["history"] = history
+    state["seen_run_ids"] = [*seen_run_ids, run_id]
     write_json(state_path, state)
     return state
 
@@ -1559,6 +2106,8 @@ def _arm_metrics(arm: dict[str, Any]) -> dict[str, float]:
         "passed",
         "required_pass_rate",
         "forbidden_actions",
+        "side_effects",
+        "binding_errors",
         "repeats",
         "artifacts",
     }
@@ -1571,23 +2120,37 @@ def _arm_metrics(arm: dict[str, Any]) -> dict[str, float]:
     }
 
 
-def project_dashboard(*, workspace: Path, output: Path) -> dict[str, Any]:
+def project_dashboard(
+    *, workspace: Path, output: Path, state_path: Path | None = None
+) -> dict[str, Any]:
     workspace = workspace.resolve()
     plan_path = workspace / "execution-plan.json"
     plan = load_json(plan_path)
     if plan.get("schema_version") != PLAN_SCHEMA:
         raise ManifestError(f"execution plan schema must be {PLAN_SCHEMA}")
     evidence = _load_optional_json(workspace / "verification-evidence.json")
-    state = _load_optional_json(workspace / "evolution-state.json")
+    resolved_state_path = (
+        state_path.resolve() if state_path is not None else workspace / "evolution-state.json"
+    )
+    state = _load_optional_json(resolved_state_path)
+    if state is not None and state.get("schema_version") != EVOLUTION_STATE_SCHEMA:
+        raise ManifestError(f"evolution state schema must be {EVOLUTION_STATE_SCHEMA}")
     decisions: list[dict[str, Any]] = []
-    for decision_path in sorted(workspace.glob("iteration-*/*decision.json")):
+    decision_paths = set(workspace.glob("iteration-*/*decision.json"))
+    if state is not None:
+        for record in state.get("history", []):
+            if isinstance(record, dict) and isinstance(record.get("decision_path"), str):
+                decision_paths.add(Path(record["decision_path"]).resolve())
+    for decision_path in sorted(decision_paths):
         decision = load_json(decision_path)
         if decision.get("schema_version") != ACCEPTANCE_SCHEMA:
             raise ManifestError(f"acceptance decision schema must be {ACCEPTANCE_SCHEMA}")
         decisions.append(
             {
                 **decision,
-                "artifact": str(decision_path.relative_to(workspace)),
+                "artifact": str(decision_path.relative_to(workspace))
+                if _is_within(decision_path, workspace)
+                else str(decision_path),
             }
         )
     decisions.sort(key=_decision_sort_key)
@@ -1739,6 +2302,8 @@ def project_dashboard(*, workspace: Path, output: Path) -> dict[str, Any]:
                     "passed": arm.get("passed") is True,
                     "required_pass_rate": arm.get("required_pass_rate"),
                     "forbidden_actions": arm.get("forbidden_actions", []),
+                    "side_effects": arm.get("side_effects", []),
+                    "binding_errors": arm.get("binding_errors", []),
                     "metrics": _arm_metrics(arm),
                     "assertions": {
                         "passed": passed_assertions,
@@ -1846,7 +2411,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--phase", choices=["selection", "audit"], default="selection"
     )
     evolution_init_parser = subparsers.add_parser("evolution-init")
-    evolution_init_parser.add_argument("--run-id", required=True)
+    evolution_init_parser.add_argument("--plan", type=Path, required=True)
     evolution_init_parser.add_argument("--workspace", type=Path, required=True)
     evolution_advance_parser = subparsers.add_parser("evolution-advance")
     evolution_advance_parser.add_argument("--state", type=Path, required=True)
@@ -1854,6 +2419,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     dashboard_parser = subparsers.add_parser("project-dashboard")
     dashboard_parser.add_argument("--workspace", type=Path, required=True)
     dashboard_parser.add_argument("--output", type=Path, required=True)
+    dashboard_parser.add_argument("--state", type=Path)
     return parser.parse_args(argv)
 
 
@@ -1882,7 +2448,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "evolution-init":
             result = initialize_evolution(
-                run_id=args.run_id, workspace=args.workspace
+                plan_path=args.plan, workspace=args.workspace
             )
         elif args.command == "evolution-advance":
             result = advance_evolution(
@@ -1890,7 +2456,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "project-dashboard":
             result = project_dashboard(
-                workspace=args.workspace, output=args.output
+                workspace=args.workspace, output=args.output, state_path=args.state
             )
         else:  # pragma: no cover - argparse rejects unknown commands
             raise AssertionError(args.command)

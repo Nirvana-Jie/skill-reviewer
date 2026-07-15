@@ -74,11 +74,13 @@ The implementation is tested through five public transformations:
 | `evals/evals.json` + subject + baseline | `compile` | `execution-plan.json` + `run-lock.json` |
 | retained execution artifacts | `grade` | arm grading + `verification-evidence.json` |
 | plan + verification evidence | `decide` | selection/audit acceptance decision |
-| decision history | `evolution-init` / `evolution-advance` | `evolution-state.json` |
+| selection plan + bound decision history | `evolution-init` / `evolution-advance` | cross-run `evolution-state.json` |
 | workspace evidence | `project-dashboard` | `dashboard-data.json` |
 
 The React UI consumes only the final read model. It does not parse arbitrary
 worker directories, execute a case, apply a candidate, or approve a release.
+Projection may receive the external evolution control-state path to join bound
+decisions from multiple immutable candidate run workspaces.
 
 ## Executable manifest and integrity boundary
 
@@ -89,20 +91,26 @@ ordinary skill.
 Compilation records:
 
 - manifest digest;
+- the complete eval-directory and deterministic-grader authority digest;
 - candidate package tree digest;
 - accepted baseline tree digest when present;
 - every selected fixture digest;
+- answer-key-free candidate/baseline skill snapshot digests;
 - execution-plan digest;
-- selected data splits and paired arms.
+- exactly one selected data split and its paired arms.
 
-Declared fixture inputs are copied into a read-only workspace view containing
-only allow-listed files. Executors receive this view rather than the source
-fixture directory, preventing a package linter or directory walk from reading
-an adjacent `expected.md` answer key.
+Compilation requires a fresh or empty workspace. Declared fixture inputs are
+copied into arm/repeat-specific read-only views containing only allow-listed
+files. Executors receive those inputs and a runtime skill snapshot containing
+only `SKILL.md`, `references/`, `scripts/`, and `assets/`, rather than either
+source tree. A package linter or directory walk therefore cannot read the eval
+manifest, audit cases, or an adjacent `expected.md` answer key.
 
 Before grading, the runtime recomputes each digest. Any drift stops grading
-before `verification-evidence.json` is emitted. The intended response to drift
-is recompilation into a new run, never hand-editing the lock.
+before `verification-evidence.json` is emitted. Each `execution.json` is also
+bound to its run/case/arm/repeat, assignment digest, and produced artifact
+digests. The intended response to drift is recompilation into a new empty run
+workspace, never hand-editing the lock or evidence.
 
 ## Execution topology
 
@@ -155,7 +163,7 @@ An evolution selection decision is accepted only if all clauses are true:
 1. input integrity is verified;
 2. every candidate arm is complete;
 3. every `must_pass` deterministic assertion passes;
-4. no forbidden action is recorded;
+4. no forbidden action or external side effect is recorded by any arm;
 5. every required paired baseline is complete;
 6. evidence has no stochastic direction or semantic-judge disagreement;
 7. every declared objective stays within its non-regression tolerance;
@@ -189,6 +197,11 @@ manifest, fixtures, snapshots, graders, and accepted baseline remain immutable.
 An eval-change proposal requires user confirmation and a new run. Candidate
 changes may otherwise restructure the full skill package. New external
 dependencies, network access, or wider permissions also require user authority.
+
+The evolution control state pins eval/grader authority and the accepted
+baseline, not a candidate run ID. Each candidate round and selection→audit
+transition may therefore use a different immutable run workspace, while an
+authority change or an audit of a different candidate digest is rejected.
 
 ## Dashboard product boundary
 
