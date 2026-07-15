@@ -2,16 +2,27 @@
 
 import "@testing-library/jest-dom/vitest";
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { EvidenceDashboard } from "./App";
 import DiffViewer from "./DiffViewer";
 import type { DashboardData } from "./types";
+import {
+  preferenceStorageKeys,
+  UiPreferencesProvider,
+  useUiPreferences,
+} from "./ui-preferences";
 
-const { workerProviderSpy, diffWorkerFactorySpy, diffOptionsSpy } = vi.hoisted(() => ({
+const {
+  workerProviderSpy,
+  workerRenderOptionsSpy,
+  diffWorkerFactorySpy,
+  diffOptionsSpy,
+} = vi.hoisted(() => ({
   workerProviderSpy: vi.fn(),
+  workerRenderOptionsSpy: vi.fn().mockResolvedValue(undefined),
   diffWorkerFactorySpy: vi.fn(),
   diffOptionsSpy: vi.fn(),
 }));
@@ -41,6 +52,7 @@ vi.mock("@pierre/diffs/react", () => ({
     poolOptions.workerFactory();
     return <div data-testid="worker-pool">{children}</div>;
   },
+  useWorkerPool: () => ({ setRenderOptions: workerRenderOptionsSpy }),
 }));
 
 vi.mock("@pierre/diffs/worker/worker.js?worker", () => ({
@@ -51,12 +63,44 @@ vi.mock("@pierre/diffs/worker/worker.js?worker", () => ({
   },
 }));
 
+function renderWithPreferences(node: ReactNode) {
+  return render(
+    <UiPreferencesProvider>{node}</UiPreferencesProvider>,
+  );
+}
+
+function WorkerPoolThemeHarness() {
+  const { setTheme } = useUiPreferences();
+  return (
+    <>
+      <button type="button" onClick={() => setTheme("dark")}>
+        Use dark worker theme
+      </button>
+      <DiffViewer diffs={data.diffs} enableWorkerPool />
+    </>
+  );
+}
+
+beforeEach(() => {
+  window.localStorage.clear();
+  document.title = "";
+  document.documentElement.removeAttribute("data-theme");
+  document.documentElement.removeAttribute("lang");
+  document.documentElement.style.removeProperty("color-scheme");
+});
+
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   workerProviderSpy.mockClear();
+  workerRenderOptionsSpy.mockClear();
   diffWorkerFactorySpy.mockClear();
   diffOptionsSpy.mockClear();
+  window.localStorage.clear();
+  document.title = "";
+  document.documentElement.removeAttribute("data-theme");
+  document.documentElement.removeAttribute("lang");
+  document.documentElement.style.removeProperty("color-scheme");
 });
 
 const data: DashboardData = {
@@ -252,7 +296,7 @@ describe("EvidenceDashboard", () => {
       }),
     });
     vi.stubGlobal("fetch", fetchMock);
-    const { container } = render(
+    const { container } = renderWithPreferences(
       <EvidenceDashboard data={data} connectionState="live" />,
     );
 
@@ -322,6 +366,77 @@ describe("EvidenceDashboard", () => {
     ).toBeGreaterThan(0);
   });
 
+  it("switches locale and monochrome theme across the complete workbench", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        contract: "skill-reviewer.dashboard-diff",
+        id: "1".repeat(24),
+        path: "SKILL.md",
+        old_digest: "1".repeat(64),
+        new_digest: "2".repeat(64),
+        old_content: "old instructions\n",
+        new_content: "new instructions\n",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderWithPreferences(
+      <EvidenceDashboard data={data} connectionState="live" />,
+    );
+
+    expect(document.documentElement).toHaveAttribute("lang", "en");
+    expect(document.documentElement).toHaveAttribute("data-theme", "light");
+    expect(document.title).toBe("Skill Reviewer · Evidence Workbench");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Switch to Simplified Chinese" }),
+    );
+
+    expect(document.documentElement).toHaveAttribute("lang", "zh-CN");
+    expect(document.title).toBe("Skill Reviewer · 证据工作台");
+    expect(screen.getByText("证据链")).toBeInTheDocument();
+    expect(screen.getAllByText("公开校准").length).toBeGreaterThan(0);
+    expect(screen.getByText("回归已验证")).toBeInTheDocument();
+    expect(window.localStorage.getItem(preferenceStorageKeys.locale)).toBe("zh-CN");
+
+    fireEvent.click(screen.getByRole("button", { name: "差异 (1)" }));
+    expect(await screen.findByText("Rendered diff SKILL.md")).toBeInTheDocument();
+    expect(diffOptionsSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ theme: "pierre-light" }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "切换到深色主题" }));
+
+    expect(document.documentElement).toHaveAttribute("data-theme", "dark");
+    expect(document.documentElement.style.colorScheme).toBe("dark");
+    expect(window.localStorage.getItem(preferenceStorageKeys.theme)).toBe("dark");
+    expect(
+      screen.getByRole("button", { name: "切换到浅色主题" }),
+    ).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(diffOptionsSpy).toHaveBeenLastCalledWith(
+        expect.objectContaining({ theme: "pierre-dark" }),
+      );
+    });
+  });
+
+  it("restores persisted locale and theme preferences", () => {
+    window.localStorage.setItem(preferenceStorageKeys.locale, "zh-CN");
+    window.localStorage.setItem(preferenceStorageKeys.theme, "dark");
+
+    renderWithPreferences(
+      <EvidenceDashboard data={data} connectionState="live" />,
+    );
+
+    expect(document.documentElement).toHaveAttribute("lang", "zh-CN");
+    expect(document.documentElement).toHaveAttribute("data-theme", "dark");
+    expect(screen.getByText("证据链")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "切换到浅色主题" }),
+    ).toBeInTheDocument();
+  });
+
   it("mounts the Pierre worker pool for production diff rendering", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -337,7 +452,7 @@ describe("EvidenceDashboard", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<DiffViewer diffs={data.diffs} enableWorkerPool />);
+    renderWithPreferences(<WorkerPoolThemeHarness />);
 
     expect(await screen.findByText("Rendered diff SKILL.md")).toBeInTheDocument();
     expect(workerProviderSpy).toHaveBeenCalledWith({
@@ -348,9 +463,21 @@ describe("EvidenceDashboard", () => {
       highlighterOptions: expect.objectContaining({
         langs: ["markdown"],
         preferredHighlighter: "shiki-js",
+        theme: "pierre-light",
       }),
     });
     expect(diffWorkerFactorySpy).toHaveBeenCalled();
+    expect(workerRenderOptionsSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ theme: "pierre-light" }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Use dark worker theme" }));
+
+    await waitFor(() => {
+      expect(workerRenderOptionsSpy).toHaveBeenLastCalledWith(
+        expect.objectContaining({ theme: "pierre-dark" }),
+      );
+    });
     expect(screen.getByTestId("worker-pool")).toBeInTheDocument();
   });
 });

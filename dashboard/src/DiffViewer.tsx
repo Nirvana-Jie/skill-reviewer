@@ -11,11 +11,13 @@ import {
   type WorkerInitializationRenderOptions,
   Virtualizer,
   WorkerPoolContextProvider,
+  useWorkerPool,
 } from "@pierre/diffs/react";
 import DiffWorker from "@pierre/diffs/worker/worker.js?worker";
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
 import type { DashboardDiff, DashboardDiffPayload } from "./types";
+import { localizeValue, useUiPreferences } from "./ui-preferences";
 
 type DiffLayout = "split" | "unified";
 
@@ -61,12 +63,33 @@ const languageByExtension = {
 } as const satisfies Record<string, SupportedLanguage>;
 
 const baseHighlighterOptions = {
-  theme: "pierre-light",
   lineDiffType: "word-alt",
   tokenizeMaxLineLength: 1600,
   maxLineDiffLength: 1600,
   preferredHighlighter: "shiki-js",
-} as const satisfies WorkerInitializationRenderOptions;
+} as const;
+
+// Pierre reads provider options when its singleton is created, so live theme
+// changes also need to update the already-running worker pool.
+function WorkerRenderOptionsSync({ theme }: { theme: "pierre-dark" | "pierre-light" }) {
+  const workerPool = useWorkerPool();
+
+  useEffect(() => {
+    if (!workerPool) return;
+    void workerPool
+      .setRenderOptions({
+        theme,
+        lineDiffType: baseHighlighterOptions.lineDiffType,
+        maxLineDiffLength: baseHighlighterOptions.maxLineDiffLength,
+        tokenizeMaxLineLength: baseHighlighterOptions.tokenizeMaxLineLength,
+      })
+      .catch((cause: unknown) => {
+        console.error("unable to synchronize diff worker theme", cause);
+      });
+  }, [theme, workerPool]);
+
+  return null;
+}
 
 function languageForPath(path: string): SupportedLanguage {
   const extension = path.split(".").pop()?.toLowerCase() ?? "";
@@ -88,9 +111,9 @@ function formatBytes(value: number): string {
   return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
-function splitPath(path: string): { directory: string; name: string } {
+function splitPath(path: string, rootLabel: string): { directory: string; name: string } {
   const separator = path.lastIndexOf("/");
-  if (separator < 0) return { directory: "root", name: path };
+  if (separator < 0) return { directory: rootLabel, name: path };
   return {
     directory: path.slice(0, separator),
     name: path.slice(separator + 1),
@@ -128,6 +151,7 @@ function DiffBrowser({
   diffs: DashboardDiff[];
   enableWorkerPool: boolean;
 }) {
+  const { locale, theme, t } = useUiPreferences();
   const [selectedId, setSelectedId] = useState(diffs[0]?.id ?? "");
   const [payloads, setPayloads] = useState<Record<string, DashboardDiffPayload>>(
     {},
@@ -137,6 +161,7 @@ function DiffBrowser({
   const [query, setQuery] = useState("");
   const [layout, setLayout] = useState<DiffLayout>("split");
   const [wrapLines, setWrapLines] = useState(false);
+  const diffTheme = theme === "dark" ? "pierre-dark" : "pierre-light";
   const highlighterLanguageKey = Array.from(
     new Set(diffs.map((diff) => languageForPath(diff.path))),
   )
@@ -145,11 +170,12 @@ function DiffBrowser({
   const highlighterOptions = useMemo(
     () => ({
       ...baseHighlighterOptions,
+      theme: diffTheme,
       langs: (highlighterLanguageKey
         ? highlighterLanguageKey.split(",")
         : ["text"]) as SupportedLanguage[],
     }),
-    [highlighterLanguageKey],
+    [diffTheme, highlighterLanguageKey],
   );
 
   const visibleDiffs = useMemo(() => {
@@ -227,16 +253,19 @@ function DiffBrowser({
   };
 
   const payload = selectedPayload;
-  const selectedPath = selected ? splitPath(selected.path) : null;
+  const selectedPath = selected ? splitPath(selected.path, t("rootDirectory")) : null;
   const lineSummary = payload
-    ? `${payload.old_content.split("\n").length} → ${payload.new_content.split("\n").length} lines`
+    ? t("lineSummary", {
+        oldLines: payload.old_content.split("\n").length,
+        newLines: payload.new_content.split("\n").length,
+      })
     : null;
 
   const browser = (
     <div className="diff-browser">
       <aside className="diff-sidebar">
         <div className="diff-sidebar-heading">
-          <strong>Changed files</strong>
+          <strong>{t("changedFiles")}</strong>
           <span>{visibleDiffs.length} / {diffs.length}</span>
         </div>
         <label className="diff-search">
@@ -244,21 +273,21 @@ function DiffBrowser({
           <input
             type="search"
             value={query}
-            aria-label="Filter changed files"
-            placeholder="Filter files"
+            aria-label={t("filterChangedFiles")}
+            placeholder={t("filterFiles")}
             onChange={(event) => setQuery(event.target.value)}
           />
         </label>
-        <nav className="diff-file-list" aria-label="Changed runtime files">
+        <nav className="diff-file-list" aria-label={t("changedRuntimeFiles")}>
           {visibleDiffs.map((diff) => {
-            const path = splitPath(diff.path);
+            const path = splitPath(diff.path, t("rootDirectory"));
             return (
               <button
                 type="button"
                 key={diff.id}
                 className={diff.id === selected?.id ? "is-selected" : ""}
                 aria-pressed={diff.id === selected?.id}
-                aria-label={`Open diff ${diff.path}`}
+                aria-label={t("openDiff", { path: diff.path })}
                 onClick={() => setSelectedId(diff.id)}
               >
                 <span className={`change-mark change-${diff.status}`}>
@@ -275,12 +304,14 @@ function DiffBrowser({
             );
           })}
           {visibleDiffs.length === 0 && (
-            <p className="diff-no-results">No changed files match “{query}”.</p>
+            <p className="diff-no-results">
+              {t("noChangedFilesMatch", { query })}
+            </p>
           )}
         </nav>
       </aside>
 
-      <section className="diff-workbench" aria-label="Document diff">
+      <section className="diff-workbench" aria-label={t("documentDiff")}>
         <header className="diff-toolbar">
           <div className="diff-path">
             {selected && selectedPath ? (
@@ -292,20 +323,22 @@ function DiffBrowser({
                   <small>{selectedPath.directory}</small>
                   <strong>{selectedPath.name}</strong>
                 </div>
-                <span className="change-label">{selected.status}</span>
+                <span className="change-label">
+                  {localizeValue(locale, selected.status)}
+                </span>
               </>
             ) : (
-              <strong>No file selected</strong>
+              <strong>{t("noFileSelected")}</strong>
             )}
           </div>
 
           <div className="diff-toolbar-actions">
             {lineSummary && <span className="line-summary">{lineSummary}</span>}
-            <div className="button-group" aria-label="File navigation">
+            <div className="button-group" aria-label={t("fileNavigation")}>
               <button
                 type="button"
-                aria-label="Previous changed file"
-                title="Previous file"
+                aria-label={t("previousChangedFile")}
+                title={t("previousFile")}
                 disabled={visibleDiffs.length < 2}
                 onClick={() => selectRelative(-1)}
               >
@@ -313,21 +346,21 @@ function DiffBrowser({
               </button>
               <button
                 type="button"
-                aria-label="Next changed file"
-                title="Next file"
+                aria-label={t("nextChangedFile")}
+                title={t("nextFile")}
                 disabled={visibleDiffs.length < 2}
                 onClick={() => selectRelative(1)}
               >
                 <ChevronRight size={14} />
               </button>
             </div>
-            <div className="button-group" aria-label="Diff layout">
+            <div className="button-group" aria-label={t("diffLayout")}>
               <button
                 type="button"
                 className={layout === "split" ? "is-active" : ""}
-                aria-label="Split diff"
+                aria-label={t("splitDiff")}
                 aria-pressed={layout === "split"}
-                title="Split diff"
+                title={t("splitDiff")}
                 onClick={() => setLayout("split")}
               >
                 <Columns2 size={14} />
@@ -335,9 +368,9 @@ function DiffBrowser({
               <button
                 type="button"
                 className={layout === "unified" ? "is-active" : ""}
-                aria-label="Unified diff"
+                aria-label={t("unifiedDiff")}
                 aria-pressed={layout === "unified"}
-                title="Unified diff"
+                title={t("unifiedDiff")}
                 onClick={() => setLayout("unified")}
               >
                 <Rows3 size={14} />
@@ -346,9 +379,9 @@ function DiffBrowser({
             <button
               type="button"
               className={`toolbar-button ${wrapLines ? "is-active" : ""}`}
-              aria-label="Wrap lines"
+              aria-label={t("wrapLines")}
               aria-pressed={wrapLines}
-              title="Wrap long lines"
+              title={t("wrapLongLines")}
               onClick={() => setWrapLines((current) => !current)}
             >
               <WrapText size={14} />
@@ -358,23 +391,26 @@ function DiffBrowser({
 
         <article className="diff-card" key={selected?.id ?? "empty"}>
           {!selected ? (
-            <p className="binary-diff-note">Choose a changed file to inspect.</p>
+            <p className="binary-diff-note">{t("chooseChangedFile")}</p>
           ) : selected.render_mode !== "lazy" ? (
             <div className="binary-diff-note">
-              <strong>Preview unavailable</strong>
+              <strong>{t("previewUnavailable")}</strong>
               <p>
                 {selected.summary ??
-                  `Old ${formatBytes(selected.old_size)} · new ${formatBytes(selected.new_size)}`}
+                  t("sizeSummary", {
+                    oldSize: formatBytes(selected.old_size),
+                    newSize: formatBytes(selected.new_size),
+                  })}
               </p>
             </div>
           ) : loadingId === selected.id ? (
             <div className="diff-loading" aria-live="polite">
               <span />
-              <p>Loading bounded preview…</p>
+              <p>{t("loadingPreview")}</p>
             </div>
           ) : error ? (
             <div className="binary-diff-note is-error">
-              <strong>Diff could not be rendered</strong>
+              <strong>{t("diffRenderFailed")}</strong>
               <p>{error}</p>
             </div>
           ) : payload ? (
@@ -395,7 +431,7 @@ function DiffBrowser({
                   cacheKey: selected.new_digest ?? `absent:${selected.path}`,
                 }}
                 options={{
-                  theme: "pierre-light",
+                  theme: diffTheme,
                   diffStyle: layout,
                   overflow: wrapLines ? "wrap" : "scroll",
                   disableFileHeader: true,
@@ -420,6 +456,7 @@ function DiffBrowser({
       poolOptions={workerPoolOptions}
       highlighterOptions={highlighterOptions}
     >
+      <WorkerRenderOptionsSync theme={diffTheme} />
       {browser}
     </WorkerPoolContextProvider>
   ) : (

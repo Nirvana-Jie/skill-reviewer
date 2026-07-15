@@ -203,6 +203,14 @@ current change set are initialized, digest cache keys reuse rendered syntax
 trees, and a bounded worker cache prevents an extended review from retaining
 every visited document.
 
+The workbench can switch between English and Simplified Chinese and between
+light and dark monochrome themes from the persistent top-bar controls. On a
+first visit it follows the browser language and operating-system color scheme;
+after that it restores the user's choices locally. Interface chrome is
+translated while run identifiers, file paths, evidence payloads, and recorded
+limitations remain verbatim so localization cannot rewrite review evidence.
+The document renderer changes its syntax theme with the surrounding workbench.
+
 Live reprojection switches generations only after the replacement read model
 and all of its sidecars validate together. Sidecars are content-addressed and
 retained within the run workspace, so already-issued URLs remain available to

@@ -278,6 +278,18 @@ floating cards. At wide viewports the product uses a persistent case rail,
 central evidence/diff canvas, and fact inspector; diff focus mode gives the
 document surface the full workspace without changing the evidence model.
 
+Display preferences are client-side presentation state, never evidence state.
+The workbench exposes English and Simplified Chinese locales plus light and dark
+monochrome themes. A first visit derives locale and theme from browser and
+operating-system preferences; an explicit choice is stored locally and shared
+across tabs. Locale updates the document language for assistive technology, and
+theme updates both semantic CSS tokens and Pierre's syntax theme. Translation
+is limited to product chrome and known enum labels: run identifiers, paths,
+digests, source text, backend messages, and limitation records stay byte-faithful
+to the retained artifacts. Vitest covers switching and restoration, while real
+browser checks cover desktop and narrow-screen layouts in both locales and
+themes.
+
 `@pierre/diffs` remains the document renderer because this surface is a
 read-only review flow and the library provides the required split/unified
 views, virtualized rendering, worker execution, and render caching directly.

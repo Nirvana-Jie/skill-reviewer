@@ -9,6 +9,7 @@ import {
   FileText,
   Fingerprint,
   GitCompareArrows,
+  Languages,
   LockKeyhole,
   Maximize2,
   Minimize2,
@@ -19,6 +20,11 @@ import {
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 
 import type { DashboardCase, DashboardData, SpineNode } from "./types";
+import {
+  localizeStatus,
+  localizeValue,
+  useUiPreferences,
+} from "./ui-preferences";
 
 type SplitFilter = "all" | DashboardCase["split"];
 type ConnectionState = "connecting" | "live" | "stale";
@@ -26,12 +32,7 @@ type CanvasView = "evidence" | "diff";
 
 const DiffViewer = lazy(() => import("./DiffViewer"));
 
-const splitLabels: Array<{ value: SplitFilter; label: string }> = [
-  { value: "all", label: "All" },
-  { value: "development", label: "Development" },
-  { value: "selection", label: "Selection" },
-  { value: "audit", label: "Audit" },
-];
+const splitOptions: SplitFilter[] = ["all", "development", "selection", "audit"];
 
 const iconByKind = {
   run: Activity,
@@ -85,8 +86,8 @@ function statusTone(status: string): "good" | "bad" | "warn" | "neutral" {
   return "neutral";
 }
 
-function shortDigest(digest?: string | null): string {
-  if (!digest) return "not recorded";
+function shortDigest(digest: string | null | undefined, fallback: string): string {
+  if (!digest) return fallback;
   return `${digest.slice(0, 8)}…${digest.slice(-6)}`;
 }
 
@@ -95,7 +96,15 @@ function percent(value: number | null | undefined): string {
 }
 
 function StatusChip({ status }: { status: string }) {
-  return <span className={`status-chip status-${statusTone(status)}`}>{status}</span>;
+  const { locale } = useUiPreferences();
+  return (
+    <span
+      className={`status-chip status-${statusTone(status)}`}
+      title={locale === "zh-CN" ? status : undefined}
+    >
+      {localizeStatus(locale, status)}
+    </span>
+  );
 }
 
 function nodeDepth(node: SpineNode, nodesById: Map<string, SpineNode>): number {
@@ -166,6 +175,58 @@ function useDashboardData() {
   return { data, error, connectionState };
 }
 
+const splitMessageKeys = {
+  all: "all",
+  development: "development",
+  selection: "selection",
+  audit: "audit",
+} as const;
+
+function DisplayPreferences() {
+  const { locale, theme, setLocale, setTheme, t } = useUiPreferences();
+  const nextTheme = theme === "light" ? "dark" : "light";
+
+  return (
+    <div className="display-controls" aria-label={t("displayPreferences")}>
+      <div className="locale-control" role="group" aria-label={t("language")}>
+        <Languages size={13} aria-hidden="true" />
+        <button
+          type="button"
+          className={locale === "en" ? "is-active" : ""}
+          aria-label={t("switchToEnglish")}
+          aria-pressed={locale === "en"}
+          onClick={() => setLocale("en")}
+        >
+          EN
+        </button>
+        <button
+          type="button"
+          className={locale === "zh-CN" ? "is-active" : ""}
+          aria-label={t("switchToChinese")}
+          aria-pressed={locale === "zh-CN"}
+          onClick={() => setLocale("zh-CN")}
+        >
+          中
+        </button>
+      </div>
+      <button
+        type="button"
+        className="theme-control"
+        aria-label={
+          nextTheme === "dark" ? t("switchToDarkTheme") : t("switchToLightTheme")
+        }
+        title={
+          nextTheme === "dark" ? t("switchToDarkTheme") : t("switchToLightTheme")
+        }
+        onClick={() => setTheme(nextTheme)}
+      >
+        <span className="theme-swatch" aria-hidden="true" />
+        <span>{nextTheme === "dark" ? t("darkTheme") : t("lightTheme")}</span>
+      </button>
+    </div>
+  );
+}
+
 export function EvidenceDashboard({
   data,
   connectionState,
@@ -173,6 +234,7 @@ export function EvidenceDashboard({
   data: DashboardData;
   connectionState: ConnectionState;
 }) {
+  const { locale, t } = useUiPreferences();
   const [split, setSplit] = useState<SplitFilter>("all");
   const [selectedId, setSelectedId] = useState(data.spine[0]?.id ?? "");
   const [canvasView, setCanvasView] = useState<CanvasView>("evidence");
@@ -225,12 +287,12 @@ export function EvidenceDashboard({
       : null;
   const runTone = statusTone(data.run.status);
   const releaseMessage = data.run.release_eligible
-    ? "behaviorally release-eligible"
-    : "behavioral evidence blocked";
+    ? t("releaseEligible")
+    : t("releaseBlocked");
 
   return (
     <main className={`app-shell ${focusMode ? "is-focus-mode" : ""}`}>
-      <h1 className="sr-only">Skill Reviewer evidence workspace</h1>
+      <h1 className="sr-only">{t("appTitle")}</h1>
 
       <header className="app-chrome">
         <div className="brand-lockup">
@@ -240,54 +302,57 @@ export function EvidenceDashboard({
           <div className="brand-copy">
             <strong>Skill Reviewer</strong>
             <span>/</span>
-            <span>Evidence</span>
+            <span>{t("brandEvidence")}</span>
           </div>
         </div>
 
-        <div className="run-identity">
-          <span className={`live-dot live-${connectionState}`} aria-hidden="true" />
-          <span className="connection-label">
-            {connectionState === "live" ? "Live" : connectionState}
-          </span>
-          <code>{data.run.id}</code>
-          <StatusChip status={data.run.verification_level} />
-          <StatusChip status={data.run.status} />
-          <span className="readonly-pill">
-            <LockKeyhole size={12} /> read-only
-          </span>
+        <div className="chrome-utilities">
+          <div className="run-identity">
+            <span className={`live-dot live-${connectionState}`} aria-hidden="true" />
+            <span className="connection-label">
+              {t(connectionState)}
+            </span>
+            <code>{data.run.id}</code>
+            <StatusChip status={data.run.verification_level} />
+            <StatusChip status={data.run.status} />
+            <span className="readonly-pill">
+              <LockKeyhole size={12} /> {t("readOnly")}
+            </span>
+          </div>
+          <DisplayPreferences />
         </div>
       </header>
 
       <section
         className={`run-summary summary-${runTone}`}
-        aria-label="Behavioral gate state"
+        aria-label={t("behavioralGateState")}
       >
         <div className="release-state">
-          <span>Release state</span>
-          <strong>{data.run.status}</strong>
+          <span>{t("releaseState")}</span>
+          <strong>{localizeStatus(locale, data.run.status)}</strong>
         </div>
-        <div className="summary-metrics" role="list" aria-label="Run summary">
+        <div className="summary-metrics" role="list" aria-label={t("runSummary")}>
           <div role="listitem">
-            <span>Hard gates</span>
+            <span>{t("hardGates")}</span>
             <strong>
               {data.summary.hard_gates_passed} / {data.summary.hard_gates_total}
             </strong>
           </div>
           <div role="listitem">
-            <span>Cases passed</span>
+            <span>{t("casesPassed")}</span>
             <strong>
               {data.summary.candidate_passed} / {data.summary.case_count}
             </strong>
           </div>
           <div role="listitem">
-            <span>Round</span>
+            <span>{t("round")}</span>
             <strong>
               {data.summary.current_round ?? "—"} / {data.summary.max_rounds}
             </strong>
           </div>
           <div role="listitem">
-            <span>Evidence</span>
-            <strong>{data.run.evidence_scope}</strong>
+            <span>{t("evidence")}</span>
+            <strong>{localizeValue(locale, data.run.evidence_scope)}</strong>
           </div>
         </div>
         <div className="integrity-mark">
@@ -297,36 +362,36 @@ export function EvidenceDashboard({
             <CircleAlert size={15} />
           )}
           <span>
-            {data.run.integrity?.verified ? "Inputs locked" : "Integrity pending"}
+            {data.run.integrity?.verified ? t("inputsLocked") : t("integrityPending")}
             <small>{releaseMessage}</small>
           </span>
         </div>
       </section>
 
       <div className="workspace-grid">
-        <aside className="rail pane" aria-label="Run overview">
+        <aside className="rail pane" aria-label={t("runOverview")}>
           <div className="pane-heading">
             <div>
-              <span className="pane-kicker">Evaluation suite</span>
-              <h2>Cases</h2>
+              <span className="pane-kicker">{t("evaluationSuite")}</span>
+              <h2>{t("cases")}</h2>
             </div>
             <span className="count-badge">{visibleCases.length}</span>
           </div>
 
           <div className="filter-block">
             <div className="section-label">
-              <SlidersHorizontal size={13} /> Split
+              <SlidersHorizontal size={13} /> {t("split")}
             </div>
             <div className="segmented-control">
-              {splitLabels.map((item) => (
+              {splitOptions.map((item) => (
                 <button
                   type="button"
-                  key={item.value}
-                  className={split === item.value ? "is-active" : ""}
-                  aria-pressed={split === item.value}
-                  onClick={() => setSplit(item.value)}
+                  key={item}
+                  className={split === item ? "is-active" : ""}
+                  aria-pressed={split === item}
+                  onClick={() => setSplit(item)}
                 >
-                  {item.label}
+                  {t(splitMessageKeys[item])}
                 </button>
               ))}
             </div>
@@ -349,66 +414,69 @@ export function EvidenceDashboard({
                 <span className="case-copy">
                   <strong>{item.id}</strong>
                   <small>
-                    {item.split} · {item.holdout_visibility}
+                    {localizeValue(locale, item.split)} ·{" "}
+                    {localizeValue(locale, item.holdout_visibility)}
                   </small>
                   <small>
-                    {item.determinism === "stochastic"
-                      ? `${item.repeats}× paired`
-                      : "1× paired"}
+                    {t("pairedRuns", {
+                      count: item.determinism === "stochastic" ? item.repeats : 1,
+                    })}
                   </small>
                 </span>
                 <StatusChip status={item.status} />
               </button>
             ))}
             {visibleCases.length === 0 && (
-              <p className="empty-note">No cases in this split.</p>
+              <p className="empty-note">{t("noCasesInSplit")}</p>
             )}
           </div>
 
           <div className="evolution-summary">
             <div className="section-label">
-              <GitCompareArrows size={13} /> Evolution
+              <GitCompareArrows size={13} /> {t("evolution")}
             </div>
             <div className="query-grid">
               <div>
-                <span>Selection</span>
+                <span>{t("selection")}</span>
                 <strong>
                   {data.summary.selection_queries} / {data.evolution.selection_query_limit}
                 </strong>
               </div>
               <div>
-                <span>Audit</span>
+                <span>{t("audit")}</span>
                 <strong>
                   {data.summary.audit_queries} / {data.evolution.audit_query_limit}
                 </strong>
               </div>
             </div>
             <p>
-              continuity epoch {data.summary.continuity_epoch ?? "—"} ·{" "}
-              {data.summary.rejected_candidates} rejected
+              {t("continuitySummary", {
+                epoch: data.summary.continuity_epoch ?? "—",
+                count: data.summary.rejected_candidates,
+              })}
             </p>
-            <div className="lineage-list" aria-label="Candidate lineage">
+            <div className="lineage-list" aria-label={t("candidateLineage")}>
               {data.evolution.candidate_lineage.slice(-2).map((candidate) => (
                 <div key={`${candidate.run_id}-${candidate.round}`}>
                   <span>R{candidate.round ?? "—"}</span>
-                  <code>{shortDigest(candidate.candidate_digest)}</code>
-                  <em>{candidate.continuity ?? "continue"}</em>
+                  <code>{shortDigest(candidate.candidate_digest, t("notRecorded"))}</code>
+                  <em>{localizeValue(locale, candidate.continuity ?? "continue")}</em>
                 </div>
               ))}
             </div>
           </div>
         </aside>
 
-        <section className="evidence-canvas pane" aria-label="Evidence workspace">
+        <section className="evidence-canvas pane" aria-label={t("evidenceWorkspace")}>
           <div className="canvas-toolbar">
-            <div className="canvas-switch" aria-label="Canvas view">
+            <div className="canvas-switch" aria-label={t("canvasView")}>
               <button
                 type="button"
                 className={canvasView === "evidence" ? "is-active" : ""}
                 aria-pressed={canvasView === "evidence"}
                 onClick={() => setCanvasView("evidence")}
               >
-                Evidence
+                {t("evidence")}
               </button>
               <button
                 type="button"
@@ -416,21 +484,21 @@ export function EvidenceDashboard({
                 aria-pressed={canvasView === "diff"}
                 onClick={() => setCanvasView("diff")}
               >
-                Diff ({data.diffs.length})
+                {t("diff")} ({data.diffs.length})
               </button>
             </div>
             <div className="canvas-context">
               <span>
                 {canvasView === "evidence"
-                  ? `${visibleNodes.length} retained nodes`
-                  : `${data.diffs.length} runtime files changed`}
+                  ? t("retainedNodes", { count: visibleNodes.length })
+                  : t("runtimeFilesChanged", { count: data.diffs.length })}
               </span>
               {canvasView === "diff" && data.diffs.length > 0 && (
                 <button
                   type="button"
                   className="icon-button"
-                  aria-label={focusMode ? "Exit diff focus mode" : "Enter diff focus mode"}
-                  title={focusMode ? "Exit focus mode" : "Focus on diff"}
+                  aria-label={focusMode ? t("exitDiffFocus") : t("enterDiffFocus")}
+                  title={focusMode ? t("exitFocus") : t("focusOnDiff")}
                   onClick={() => setFocusMode((current) => !current)}
                 >
                   {focusMode ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
@@ -443,14 +511,14 @@ export function EvidenceDashboard({
             <div className="evidence-stage">
               <div className="stage-intro">
                 <div>
-                  <span className="pane-kicker">Immutable run record</span>
-                  <h2>Evidence chain</h2>
-                  <p>Follow the decision from run inputs to retained artifacts.</p>
+                  <span className="pane-kicker">{t("immutableRunRecord")}</span>
+                  <h2>{t("evidenceChain")}</h2>
+                  <p>{t("evidenceChainDescription")}</p>
                 </div>
-                <div className="legend" aria-label="Status legend">
-                  <span><i className="legend-dot good" /> Passed</span>
-                  <span><i className="legend-dot warn" /> Pending</span>
-                  <span><i className="legend-dot bad" /> Blocked</span>
+                <div className="legend" aria-label={t("statusLegend")}>
+                  <span><i className="legend-dot good" /> {t("passed")}</span>
+                  <span><i className="legend-dot warn" /> {t("pending")}</span>
+                  <span><i className="legend-dot bad" /> {t("blocked")}</span>
                 </div>
               </div>
 
@@ -465,7 +533,7 @@ export function EvidenceDashboard({
                         selectedId === node.id ? "is-selected" : ""
                       }`}
                       key={node.id}
-                      aria-label={`Open evidence ${node.label}`}
+                      aria-label={t("openEvidence", { label: node.label })}
                       onClick={() => setSelectedId(node.id)}
                       style={{ "--node-depth": depth } as React.CSSProperties}
                     >
@@ -474,13 +542,15 @@ export function EvidenceDashboard({
                       </span>
                       <span className="node-copy">
                         <span className="node-meta">
-                          {node.kind}
+                          {localizeValue(locale, node.kind)}
                           {node.arm ? ` · ${node.arm}` : ""}
-                          {node.repeat ? ` · repeat ${node.repeat}` : ""}
+                          {node.repeat
+                            ? ` · ${t("repeatMeta", { count: node.repeat })}`
+                            : ""}
                         </span>
                         <strong>{node.label}</strong>
                         <small>
-                          {node.detail ?? node.path ?? "Retained evidence record"}
+                          {node.detail ?? node.path ?? t("retainedEvidenceRecord")}
                         </small>
                       </span>
                       <StatusChip status={node.status} />
@@ -494,7 +564,7 @@ export function EvidenceDashboard({
             <Suspense
               fallback={
                 <div className="diff-empty">
-                  <p>Loading diff renderer…</p>
+                  <p>{t("loadingDiffRenderer")}</p>
                 </div>
               }
             >
@@ -503,17 +573,19 @@ export function EvidenceDashboard({
           ) : (
             <div className="diff-empty">
               <GitCompareArrows size={24} />
-              <strong>No runtime changes</strong>
-              <p>The candidate matches the accepted runtime surface.</p>
+              <strong>{t("noRuntimeChanges")}</strong>
+              <p>{t("candidateMatchesRuntime")}</p>
             </div>
           )}
         </section>
 
-        <aside className="inspector pane" aria-label="Evidence inspector">
+        <aside className="inspector pane" aria-label={t("evidenceInspector")}>
           <div className="pane-heading">
             <div>
-              <span className="pane-kicker">Inspector</span>
-              <h2>{selected?.kind ?? "Evidence"}</h2>
+              <span className="pane-kicker">{t("inspector")}</span>
+              <h2>
+                {selected ? localizeValue(locale, selected.kind) : t("evidence")}
+              </h2>
             </div>
             <Fingerprint size={17} aria-hidden="true" />
           </div>
@@ -525,37 +597,38 @@ export function EvidenceDashboard({
                 <h3>{selected.label}</h3>
                 <p>
                   {selected.detail ??
-                    "Retained evidence from the immutable run workspace."}
+                    t("retainedEvidenceDescription")}
                 </p>
               </div>
 
               <dl className="fact-list">
                 <div>
-                  <dt>Evidence ID</dt>
+                  <dt>{t("evidenceId")}</dt>
                   <dd><code>{selected.id}</code></dd>
                 </div>
-                {selected.arm && <div><dt>Arm</dt><dd>{selected.arm}</dd></div>}
-                {selected.repeat && <div><dt>Repeat</dt><dd>{selected.repeat}</dd></div>}
+                {selected.arm && <div><dt>{t("arm")}</dt><dd>{selected.arm}</dd></div>}
+                {selected.repeat && <div><dt>{t("repeat")}</dt><dd>{selected.repeat}</dd></div>}
                 {selected.assertion_type && (
-                  <div><dt>Assertion</dt><dd>{selected.assertion_type}</dd></div>
+                  <div><dt>{t("assertion")}</dt><dd>{selected.assertion_type}</dd></div>
                 )}
                 {selected.path && (
-                  <div className="fact-path"><dt>Artifact path</dt><dd>{selected.path}</dd></div>
+                  <div className="fact-path"><dt>{t("artifactPath")}</dt><dd>{selected.path}</dd></div>
                 )}
                 {selected.artifact && (
-                  <div className="fact-path"><dt>Decision artifact</dt><dd>{selected.artifact}</dd></div>
+                  <div className="fact-path"><dt>{t("decisionArtifact")}</dt><dd>{selected.artifact}</dd></div>
                 )}
               </dl>
 
               {selectedCase && (
                 <div className="arm-matrix">
                   <div className="section-label">
-                    <GitCompareArrows size={13} /> Paired arms
+                    <GitCompareArrows size={13} /> {t("pairedArms")}
                   </div>
                   {selectedCase.missing_objective_metrics.length > 0 && (
                     <p className="arm-warning">
-                      Missing objective metrics:{" "}
-                      {selectedCase.missing_objective_metrics.join(", ")}
+                      {t("missingObjectiveMetrics", {
+                        metrics: selectedCase.missing_objective_metrics.join(", "),
+                      })}
                     </p>
                   )}
                   {selectedCase.arms.map((arm) => (
@@ -573,16 +646,21 @@ export function EvidenceDashboard({
                         />
                       </div>
                       <p>
-                        {arm.assertions.passed}/{arm.assertions.total} assertions ·{" "}
-                        {percent(arm.required_pass_rate)}
+                        {t("assertionsSummary", {
+                          passed: arm.assertions.passed,
+                          total: arm.assertions.total,
+                          rate: percent(arm.required_pass_rate),
+                        })}
                       </p>
                       {((arm.forbidden_actions?.length ?? 0) > 0 ||
                         (arm.side_effects?.length ?? 0) > 0 ||
                         (arm.binding_errors?.length ?? 0) > 0) && (
                         <p className="arm-warning">
-                          {arm.binding_errors?.length ?? 0} binding ·{" "}
-                          {arm.forbidden_actions?.length ?? 0} forbidden ·{" "}
-                          {arm.side_effects?.length ?? 0} side effects
+                          {t("bindingSummary", {
+                            binding: arm.binding_errors?.length ?? 0,
+                            forbidden: arm.forbidden_actions?.length ?? 0,
+                            effects: arm.side_effects?.length ?? 0,
+                          })}
                         </p>
                       )}
                     </article>
@@ -593,7 +671,7 @@ export function EvidenceDashboard({
               {selectedCase && selectedCase.semantic_assertions.length > 0 && (
                 <div className="arm-matrix semantic-matrix">
                   <div className="section-label">
-                    <Beaker size={13} /> Semantic evidence
+                    <Beaker size={13} /> {t("semanticEvidence")}
                   </div>
                   {selectedCase.semantic_assertions.map((assertion) => (
                     <article key={assertion.id}>
@@ -604,7 +682,9 @@ export function EvidenceDashboard({
                         />
                       </div>
                       <p>
-                        preference {assertion.preference ?? "unresolved"}
+                        {t("preference", {
+                          value: assertion.preference ?? t("unresolved"),
+                        })}
                         {assertion.resolved_winners?.length
                           ? ` · ${assertion.resolved_winners.join(" / ")}`
                           : ""}
@@ -620,43 +700,43 @@ export function EvidenceDashboard({
 
               <div className="provenance-card">
                 <div className="section-label">
-                  <Fingerprint size={13} /> Provenance
+                  <Fingerprint size={13} /> {t("provenance")}
                 </div>
                 <dl>
-                  <div><dt>Subject</dt><dd>{shortDigest(data.run.subject?.digest)}</dd></div>
-                  <div><dt>Baseline</dt><dd>{data.run.baseline?.kind ?? "none"}</dd></div>
-                  <div><dt>Plan</dt><dd>{shortDigest(data.run.integrity?.plan_digest)}</dd></div>
-                  <div><dt>Profile</dt><dd>{shortDigest(data.run.execution_profile?.digest)}</dd></div>
-                  <div><dt>Target</dt><dd>{data.run.execution_profile?.target ?? "unknown"}</dd></div>
-                  <div><dt>Harness</dt><dd>{data.run.execution_profile?.harness ?? "unknown"}</dd></div>
-                  <div><dt>Holdout</dt><dd>{data.run.holdout?.visibility ?? "public"}</dd></div>
-                  <div><dt>Evidence</dt><dd>{data.run.evidence_scope}</dd></div>
-                  <div><dt>Control anchor</dt><dd>{data.run.control_anchor ?? "not used"}</dd></div>
+                  <div><dt>{t("subject")}</dt><dd>{shortDigest(data.run.subject?.digest, t("notRecorded"))}</dd></div>
+                  <div><dt>{t("baseline")}</dt><dd>{data.run.baseline?.kind ? localizeValue(locale, data.run.baseline.kind) : t("none")}</dd></div>
+                  <div><dt>{t("plan")}</dt><dd>{shortDigest(data.run.integrity?.plan_digest, t("notRecorded"))}</dd></div>
+                  <div><dt>{t("profile")}</dt><dd>{shortDigest(data.run.execution_profile?.digest, t("notRecorded"))}</dd></div>
+                  <div><dt>{t("target")}</dt><dd>{data.run.execution_profile?.target ?? t("unknown")}</dd></div>
+                  <div><dt>{t("harness")}</dt><dd>{data.run.execution_profile?.harness ?? t("unknown")}</dd></div>
+                  <div><dt>{t("holdout")}</dt><dd>{localizeValue(locale, data.run.holdout?.visibility ?? "public")}</dd></div>
+                  <div><dt>{t("evidence")}</dt><dd>{localizeValue(locale, data.run.evidence_scope)}</dd></div>
+                  <div><dt>{t("controlAnchor")}</dt><dd>{data.run.control_anchor ?? t("notUsed")}</dd></div>
                 </dl>
               </div>
             </div>
           ) : (
-            <p className="empty-note">Select an evidence record.</p>
+            <p className="empty-note">{t("selectEvidence")}</p>
           )}
 
           <div className="limitations-card">
             <div className="section-label">
-              <CircleAlert size={13} /> Limitations
+              <CircleAlert size={13} /> {t("limitations")}
             </div>
             {data.limitations.length ? (
               <ul>
                 {data.limitations.map((item) => <li key={item}>{item}</li>)}
               </ul>
             ) : (
-              <p>No recorded limitations.</p>
+              <p>{t("noLimitations")}</p>
             )}
           </div>
         </aside>
       </div>
 
       <footer className="statusbar">
-        <span><Clock3 size={12} /> refresh {Math.round(data.refresh_interval_ms / 1000)}s</span>
-        <span><RefreshCw size={12} /> retained JSON artifacts</span>
+        <span><Clock3 size={12} /> {t("refreshEvery", { seconds: Math.round(data.refresh_interval_ms / 1000) })}</span>
+        <span><RefreshCw size={12} /> {t("retainedJsonArtifacts")}</span>
         <span><FileText size={12} /> {data.contract}</span>
       </footer>
     </main>
@@ -665,14 +745,15 @@ export function EvidenceDashboard({
 
 export default function App() {
   const { data, error, connectionState } = useDashboardData();
+  const { t } = useUiPreferences();
 
   if (!data) {
     return (
       <main className="loading-shell">
         <div className="loading-mark">SR</div>
         <p className="pane-kicker">Skill Reviewer</p>
-        <h1>Connecting to evidence</h1>
-        <p>{error ?? "Waiting for dashboard-data.json…"}</p>
+        <h1>{t("connectingToEvidence")}</h1>
+        <p>{error ?? t("waitingForData")}</p>
       </main>
     );
   }
