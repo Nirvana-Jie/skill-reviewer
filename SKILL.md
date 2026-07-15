@@ -1,13 +1,14 @@
 ---
 name: skill-reviewer
 description: >
-  Audit an existing agent skill package and return a falsifiable, paste-ready
-  review. Use for three branches: whole-skill readiness ("review this skill",
-  "is it production-ready?"), focused defects ("why does it over-trigger?",
-  "audit only safety/evals/scripts"), and evaluation evidence ("do these evals
-  prove it works?", paired subagent or old-skill/without-skill comparisons).
-  Do NOT use for creating a new skill, executing the skill's business task,
-  translation-only requests, generic prompt rewriting, or ordinary code review.
+  Audit, verify, or explicitly evolve an existing agent skill package and
+  return a falsifiable, paste-ready review. Use for whole-skill readiness
+  ("review this skill", "is it production-ready?"), focused defects ("why does
+  it over-trigger?", "audit safety/evals/scripts"), executable eval evidence
+  ("do these evals prove it works?", old-skill/without-skill comparisons), and
+  bounded improvement ("evolve this skill against its evals"). Do NOT use for
+  creating a new skill, executing the skill's business task, translation-only
+  requests, generic prompt rewriting, or ordinary application code review.
 ---
 
 # Skill Reviewer
@@ -17,7 +18,8 @@ claims from evidence, and return fixes the author can apply without
 reinterpreting the review.
 
 A skill package has `SKILL.md` and may include `references/`, `scripts/`,
-`assets/`, and `evals/`.
+`assets/`, and `evals/`. Declared v2 evals are executable release contracts;
+they are not passive prompt examples.
 
 ## Review contract
 
@@ -27,8 +29,11 @@ A skill package has `SKILL.md` and may include `references/`, `scripts/`,
   inspection; **design judgment** comes from the semantic rubric. One axis must
   not hide a failure on the other.
 - Distinguish a good-looking skill from a verified skill. Starting a worker or
-  observing exit code zero is not evidence; retained outputs and graded
-  assertions are.
+  observing exit code zero is not evidence; locked inputs, retained outputs,
+  and graded assertions are.
+- Keep optimizer, executor, deterministic grader, semantic grader, and lead
+  release-decider responsibilities separate. A worker never grades itself or
+  owns the final verdict.
 - Make every blocking finding falsifiable: identify the file/field, explain the
   consequence, and provide a paste-ready fix.
 - Prefer instruction-only skills. Recommend code only for work that is
@@ -41,11 +46,15 @@ A skill package has `SKILL.md` and may include `references/`, `scripts/`,
 Accept a skill directory, `SKILL.md`, one package artifact, or a concrete
 question about a dimension. Choose exactly one branch:
 
-- **Full review** — whole package, readiness, merge, or install judgment.
+- **Full review** — whole package, readiness, merge, or install judgment. A
+  valid declared executable manifest is run unless the user forbids runtime
+  work or the environment cannot safely dispatch it.
 - **Focused review** — one artifact or dimension; unrelated output sections are
   `N/A — focused review of <scope>`.
 - **Effect verification** — runtime eval, benchmark, snapshot, or old/new skill
   comparison. This branch includes a review and an evidence run.
+- **Evolution** — the user explicitly asks to improve/iterate the existing
+  skill. This branch adds at most three candidate rounds and a one-shot audit.
 
 Do not stall on optional files. Ask for exactly one artifact only when its
 absence blocks the requested branch; otherwise review what exists and name the
@@ -65,10 +74,14 @@ python3 scripts/lint_skill_package.py <skill-dir-or-SKILL.md> \
 ```
 
 The linter checks front matter, package shape, local links, resource reachability,
-eval manifest structure, and potentially dangerous command text. It does not
-execute the reviewed skill and does not decide semantic quality. Treat `error`
-as a structural defect, `warning` as a review lead, and `info` as context that
-still requires judgment.
+the strict `skill-reviewer.evals.v2` manifest contract, and potentially
+dangerous command text. It does not execute the reviewed skill and does not
+decide semantic quality. Treat `error` as a structural defect, `warning` as a
+review lead, and `info` as context that still requires judgment.
+
+If `evals/evals.json` exists but is invalid, stop before launching workers. The
+manifest is a release blocker: verification is `inconclusive`, the error becomes
+a Critical Issue, and a readiness verdict cannot exceed `Needs revision`.
 
 If the linter is unavailable or the user forbids command execution, perform the
 same checks read-only and report that deterministic static verification was not
@@ -106,7 +119,7 @@ the fixed output shape and mark the other sections `N/A`.
 Critical Issue has a paste-ready fix, and the verdict is mechanically derivable
 from the rubric.
 
-### 4. Handle evals at the requested evidence level
+### 4. Compile and execute evals when in scope
 
 - **Suggestion only:** evals remain unscored; propose them only when fuzzy
   triggers, sibling collisions, or regression risk justify their maintenance.
@@ -114,10 +127,25 @@ from the rubric.
 - **Snapshot/eval design:** read `references/local-eval-snapshot.md`. Separate
   router cases, behavior assertions, calibration fixtures, and structured
   artifact snapshots; do not freeze full prose by default.
-- **Runtime effect verification:** read and follow
-  `references/subagent-eval-workflow.md` completely. Freeze the subject and
-  baseline, launch paired configurations in the same turn, keep workers
-  read-only, grade retained artifacts, and let the lead agent aggregate.
+- **Executable behavior verification:** read
+  `references/executable-evals.md`, then read and follow
+  `references/subagent-eval-workflow.md` completely. Compile the requested
+  split into a plan and run lock. The lead agent launches native paired workers
+  in the same turn; the runtime itself stays agent-agnostic.
+
+For a full/readiness branch, auto-discover and execute a valid manifest. For a
+focused branch, execute only when evals or effect claims are in scope. An
+explicit “static only”, “do not run evals”, or “do not start subagents” request
+wins and yields `not-run`.
+
+Deterministic assertions run first. `semantic_pair` may supplement them through
+two anonymized, A/B-order-swapped judgments. If the semantic judgments disagree,
+or stochastic paired directions include both improvement and regression, the
+case is `inconclusive`; do not take a majority vote.
+
+Deterministic cases run once. Stochastic cases run three paired repeats. In an
+audit against `old_skill`, prefer three arms: candidate, accepted old skill, and
+without-skill; an inapplicable third arm needs a retained reason.
 
 Use exactly one verification level:
 
@@ -133,11 +161,45 @@ Missing evals never lower a normal review score. But when runtime verification
 was requested, a failed declared check, missing paired evidence, or false
 verification claim is a Critical Issue.
 
-**Completion criterion:** the verification level follows from artifact-backed
-evidence; missing, timed-out, mismatched, or conflicting evidence is
+After grading, project the read-only Dashboard model:
+
+```bash
+python3 scripts/skill_eval_runtime.py project-dashboard \
+  --workspace <workspace> \
+  --output <workspace>/dashboard-data.json
+```
+
+The Dashboard is a presentation of the retained evidence chain, not a new
+source of truth and not an execution/approval surface.
+
+**Completion criterion:** plan and input digests are locked; every configured
+arm/repeat has retained status; the verification level follows from graded
+artifacts; missing, timed-out, mismatched, drifted, or conflicting evidence is
 `inconclusive`, never silently passing.
 
-### 5. Aggregate without masking failures
+### 5. Evolve only on explicit request
+
+Read `references/evolution-workflow.md` completely. Keep evals, fixtures,
+snapshots, graders, and the accepted baseline immutable. The optimizer may
+restructure the rest of the skill package without an artificial diff-size
+limit.
+
+Use development cases for targeted screening, selection cases for candidate
+acceptance, and the audit split once after selection. A selection candidate is
+accepted only when every hard gate passes, no declared objective regresses
+beyond tolerance, and at least one primary objective improves materially.
+Averages never mask a failed gate or regression.
+
+Stop after three rounds. Audit failure is terminal and never returns to the
+optimizer. If an eval appears wrong, propose an eval change and ask the user to
+confirm it before starting a new locked run. Also ask before adding external
+dependencies or widening permissions.
+
+**Completion criterion:** `evolution-state.json` is terminal as `released`,
+`audit-failed`, or `exhausted`, or the user has a concrete approval request;
+every state transition cites its decision artifact.
+
+### 6. Aggregate without masking failures
 
 Keep package facts, design scores, and verification evidence visible as separate
 inputs:
@@ -146,12 +208,14 @@ inputs:
 - a passing linter cannot prove instruction quality;
 - a good review score cannot upgrade `not-run` to verified;
 - subagent majority vote cannot override missing evidence.
+- an improved average cannot override a failed hard gate, a regressed objective,
+  or a direction disagreement.
 
 Use the rubric's verdict rules exactly. When the user explicitly requested
 runtime verification, failed or contradictory required evidence caps the
 verdict at `Needs revision` until resolved.
 
-### 6. Emit one stable contract
+### 7. Emit one stable contract
 
 Read exactly one template based on the user's latest message:
 
@@ -189,8 +253,12 @@ consistent, and no claim exceeds the retained evidence.
   read only when calibration is useful.
 - `references/local-eval-snapshot.md` — structured snapshot design; read for
   eval/snapshot questions.
+- `references/executable-evals.md` — normative v2 manifest, plan, assertion,
+  executor-artifact, and grader contract; read before behavior execution.
 - `references/subagent-eval-workflow.md` — runtime effect verification; read
-  only for that branch.
+  for full/readiness auto-verification and explicit effect verification.
+- `references/evolution-workflow.md` — bounded optimizer/selection/audit state
+  machine; read only for explicit evolution.
 - `evals/skill-reviewer.csv` — trigger/router regression cases; consult when
   invocation boundaries change.
 - `evals/evals.json` — behavior cases and assertions; use for self-validation.
@@ -201,6 +269,10 @@ consistent, and no claim exceeds the retained evidence.
 - `scripts/run_codex_skill_evals.py` and
   `scripts/validate_local_snapshot.py` — controlled runtime artifact generation
   and validation; use only when runtime verification is in scope.
+- `scripts/skill_eval_runtime.py` — compile, lock, grade, decide, evolve-state,
+  and Dashboard projection adapter; it never spawns an agent or edits a skill.
+- `dashboard/` and `scripts/serve_skill_dashboard.py` — React Evidence Lab and
+  local read-only server; presentation only.
 
 ## Working style
 
@@ -209,3 +281,5 @@ consistent, and no claim exceeds the retained evidence.
   scores and residual risk separately.
 - Prefer one authoritative definition over repeated prose. If this file and a
   named source of truth disagree, follow the source of truth and flag the drift.
+- Do not change evals to make a candidate pass. Record an eval-change proposal
+  and wait for explicit user confirmation.

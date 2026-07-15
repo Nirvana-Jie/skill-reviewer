@@ -1,139 +1,139 @@
-# Subagent Eval Workflow
+# Native-Agent Eval Orchestration
 
-Use this workflow only when the user asks to verify a skill's runtime effect,
-benchmark a revision, or support a production-readiness claim with behavioral
-evidence. Ordinary static or semantic reviews should report `not-run` and avoid
-spending subagent runs that cannot change the decision.
+Read this workflow for full/readiness reviews that discover a valid executable
+manifest, and for explicit behavior or regression verification. Read
+`references/executable-evals.md` first for the manifest, assertion, and artifact
+contracts. If the user explicitly asks to improve the skill, also read
+`references/evolution-workflow.md`.
 
-## Verification contract
+## Boundary
 
-Subagents provide independent execution evidence; they do not replace the lead
-reviewer's judgment. A valid verification run must identify the exact subject,
-retain outputs, grade explicit assertions, and compare against the right
-baseline when a regression claim is made.
+The lead agent dispatches native subagents. `scripts/skill_eval_runtime.py` is
+agent-agnostic: it compiles a plan, verifies locks, grades artifacts, makes a
+mechanical acceptance decision, and projects a dashboard read model. It does
+not know how to create a worker.
 
-Use exactly one final level:
+Subagents supply isolated execution evidence. They do not own the final review,
+release verdict, skill edits, eval edits, or snapshot updates.
 
-- `not-run` — no runtime eval was executed.
-- `inconclusive` — execution was attempted, but required evidence is missing,
-  inconsistent, timed out, or refers to the wrong subject.
-- `behavior-verified` — all required assertions passed for the tested
-  `with_skill` cases; no baseline claim is made.
-- `regression-verified` — required assertions passed for `with_skill`, the
-  paired baseline completed, and no required assertion regressed.
+## When to execute
 
-## Preconditions
+- Full review or production-readiness review: if `evals/evals.json` exists and
+  compiles, execute the relevant full verification path unless the user forbids
+  runtime work.
+- Focused review: execute only when the focus concerns evals, runtime effect, or
+  a claim that requires behavioral evidence.
+- Explicit static-only / no-subagent request: do not execute; report `not-run`.
+- Explicit evolution request: follow the bounded evolution workflow.
 
-Before spawning workers, the lead agent must:
+An absent manifest is not a defect. An invalid present manifest is a release
+blocker and stops before worker launch.
 
-1. Read the target `SKILL.md` and every target resource needed to understand the
-   behavior under test.
-2. Confirm that runtime verification is in scope. Do not infer permission to run
-   target business scripts, install packages, make network calls, or mutate the
-   target repository.
-3. Freeze the subject under test and record a digest. For an existing skill,
-   freeze the pre-change version as `old_skill`; for a new skill, use
-   `without_skill` as the baseline.
-4. Define 2–3 realistic eval cases and objective assertions before looking at
-   the outputs. Subjective qualities may remain human-reviewed.
-5. Create a workspace outside the target skill directory. Never write generated
-   eval state into the reviewed package.
+## Lead preflight
 
-If any precondition fails, do not improvise a pass. Report `inconclusive` with
-the missing prerequisite.
+1. Read the target `SKILL.md` and every resource needed by the selected cases.
+2. Place the workspace outside candidate and baseline directories.
+3. Choose `old_skill` for revision comparison or `without_skill` for a new
+   skill. Freeze the accepted baseline before candidate edits.
+4. Compile the required split. Treat `execution-plan.json` and `run-lock.json`
+   as immutable.
+5. Check permissions. Default to no network and no writes outside each repeat
+   root. Ask before any external dependency or permission expansion.
+6. Count runs from case × arm × repeat. Respect the environment concurrency
+   limit; batch by configuration when needed.
 
-## Worker launch
+## Dispatch contract
 
-Launch `with_skill` and its paired baseline in the same turn. This reduces bias
-from model, environment, or instruction drift between configurations.
+Start paired configurations in the same lead-agent turn. If there are fewer
+worker slots than logical runs, give one worker several repeats for one arm,
+but launch candidate and baseline workers together. Use at most three eval
+workers concurrently unless the environment explicitly permits more.
 
-Respect the environment's concurrency limit. Prefer one bounded worker per
-case/configuration. When there are fewer slots than runs, batch cases by
-configuration, but still start the `with_skill` and baseline workers together.
-Do not exceed three concurrent eval workers.
+Each executor prompt includes:
 
-Each worker prompt must include:
+- exact plan path, run ID, case ID, arm, and repeat numbers;
+- immutable candidate or baseline path, or the `without_skill` marker;
+- subject/baseline digest and fixture paths from the plan;
+- the realistic user prompt, not a paraphrased success criterion;
+- exact writable repeat root and required artifact paths;
+- declared permissions and timeout;
+- assertion IDs to preserve, without telling the worker how to game them;
+- only the declared executor input files; never calibration `expected.md`,
+  assertion expected values, audit content, or grader references;
+- prohibition on editing candidate, baseline, manifest, fixtures, snapshots,
+  grader, git state, or another worker directory;
+- prohibition on making the overall release decision or recursively invoking
+  the complete review/evolution loop.
 
-- immutable skill path or `without_skill` marker;
-- subject digest and configuration name;
-- one or more explicit eval prompts;
-- input file paths, if any;
-- exact output directory;
-- assertions to preserve for grading;
-- read-only and no-network constraints;
-- a prohibition on editing the target skill, fixtures, snapshots, or git state.
+For `with_skill`, tell the executor to follow the frozen candidate skill. For
+`old_skill`, use only the frozen accepted version. For `without_skill`, do not
+load either package; solve from the user prompt and provided fixture only.
 
-Workers may create only their assigned workspace artifacts. They must not decide
-the overall verdict or recursively invoke the complete `skill-reviewer`
-workflow.
+The lead records failed, timed-out, or interrupted runs in `execution.json` and
+retains partial outputs. Never reconstruct a missing output from memory.
 
-## Workspace contract
+Do not hand the executor the full plan when it contains assertion expectations.
+Pass a sanitized assignment derived from the locked plan: identity, prompt,
+declared input files, permissions, and writable root only. Keep the plan itself
+with the lead and graders.
+
+## Workspace
 
 ```text
-<workspace>/iteration-N/
-├── eval-<case-name>/
-│   ├── eval_metadata.json
-│   ├── with_skill/
-│   │   ├── outputs/
-│   │   ├── transcript.md
-│   │   ├── timing.json
-│   │   └── grading.json
-│   └── old_skill/                 # or without_skill/
-│       ├── outputs/
-│       ├── transcript.md
-│       ├── timing.json
-│       └── grading.json
+<workspace>/
+├── execution-plan.json
+├── run-lock.json
+├── cases/
+│   └── <case-id>/
+│       ├── with_skill/
+│       │   ├── repeat-1/
+│       │   │   ├── execution.json
+│       │   │   └── outputs/...
+│       │   └── grading.json
+│       ├── old_skill/                 # or without_skill/
+│       │   └── repeat-1/...
+│       └── semantic/
+│           └── <assertion-id>.json
 ├── verification-evidence.json
-└── benchmark.json
+├── iteration-<N>/
+│   ├── acceptance-decision.json
+│   └── audit-decision.json             # only for the one-shot audit
+├── evolution-state.json                # only for explicit evolution
+└── dashboard-data.json
 ```
 
-Timing fields may be `null` when the subagent runtime does not expose them; do
-not fabricate values.
+Generated state never belongs inside the reviewed skill package.
 
-## Grading and aggregation
+## Semantic grader dispatch
 
-After execution:
+Run deterministic grading first. Only assertions declared `semantic_pair` may
+invoke a semantic grader. Give the grader anonymized output A and B plus the
+rubric; withhold configuration names, candidate age, and the optimizer's
+rationale. Run the same judgment again with A/B order swapped.
 
-1. Check that every output reports the expected subject digest and
-   configuration.
-2. Grade deterministic assertions with code when possible. Use a separate
-   grader subagent only for evidence that requires semantic judgment.
-3. Store every assertion as `{text, passed, evidence}`. A process exit code alone
-   is never a passing grade.
-4. Compare `with_skill` with the paired baseline. Always-pass assertions are
-   non-discriminating and do not prove skill value.
-5. Treat missing outputs, forbidden actions, digest mismatches, timeouts, and
-   grader disagreement as failures or `inconclusive` evidence.
-6. Let the lead agent aggregate the results and assign the verification level.
+The semantic grader writes only the artifact described in
+`references/executable-evals.md`. If the resolved winners disagree, retain both
+judgments and mark the case `inconclusive`. Do not add a third vote.
 
-Use this evidence shape:
+## Lead aggregation
 
-```json
-{
-  "schema_version": "skill-reviewer.verification.v1",
-  "subject": {"path": "...", "digest": "..."},
-  "baseline": {"kind": "old_skill", "path": "...", "digest": "..."},
-  "level": "regression-verified",
-  "cases": [
-    {
-      "id": "descriptive-case",
-      "with_skill": {"passed": true, "artifacts": ["..."]},
-      "old_skill": {"passed": false, "artifacts": ["..."]},
-      "regressed": false
-    }
-  ],
-  "limitations": []
-}
-```
+After all workers finish:
 
-## Release interpretation
+1. Run deterministic `grade`; it revalidates frozen inputs before inspecting
+   outputs.
+2. Inspect every incomplete arm, forbidden action, failed `must_pass`
+   assertion, direction disagreement, and semantic disagreement.
+3. Use one verification level:
+   - `not-run` — no behavior run;
+   - `inconclusive` — attempted evidence cannot support the claim;
+   - `behavior-verified` — candidate assertions passed without a baseline;
+   - `regression-verified` — paired baseline completed and declared objectives
+     did not regress.
+4. Keep design scores, static facts, runtime evidence, and release decision as
+   separate axes. None may average away another axis's blocker.
+5. Project `dashboard-data.json` for inspection, but cite retained JSON/output
+   paths as the evidence of record.
 
-- `not-run` is acceptable for an ordinary review and must be stated plainly.
-- `behavior-verified` supports only the tested cases, not a general regression
-  claim.
-- `regression-verified` requires a completed paired baseline and recorded
-  subject digests.
-- `inconclusive` never becomes passing evidence through majority vote.
-- A failed required eval or a claim of verification without retained evidence
-  is a Critical Issue. It caps a requested production-readiness verdict at
-  `Needs revision` until resolved.
+Optional `agent_provenance` may identify the executor surface. A model or
+subagent version is useful context but is not required evidence; artifact and
+input identity are load-bearing.

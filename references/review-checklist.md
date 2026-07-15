@@ -127,6 +127,13 @@ Evals are not scored and their absence is never a blocker. Only propose them whe
 - [ ] If runtime effect verification is requested: paired `with_skill` and baseline subagents start in the same turn.
 - [ ] If runtime effect verification is requested: workers are read-only, bounded, and cannot edit the target, update snapshots, or own the final verdict.
 - [ ] If runtime effect verification is requested: assertions are graded against retained outputs; exit code alone is not a pass.
+- [ ] If `evals/evals.json` is present: it is strict `skill-reviewer.evals.v2`; invalid/legacy manifests block worker launch and release rather than being skipped.
+- [ ] If behavior evals execute: `execution-plan.json` and `run-lock.json` freeze plan, subject, baseline, and selected fixtures before dispatch.
+- [ ] If behavior evals execute: deterministic cases run once and stochastic cases run three paired repeats; opposite paired directions are `inconclusive`.
+- [ ] If semantic grading is declared: deterministic assertions run first; A/B outputs are blind and order-swapped; disagreement stays `inconclusive`.
+- [ ] If evolution is requested: development / selection / audit roles are separated, selection uses hard gates + Pareto improvement, and audit runs once without feedback to the optimizer.
+- [ ] If evolution is requested: evals, fixtures, snapshots, graders, and accepted baseline stay immutable; proposed eval changes wait for user confirmation and a new run.
+- [ ] If a Dashboard is produced: it consumes versioned retained evidence and is read-only; it does not become an executor or approval authority.
 - [ ] Verification level is exactly one of `not-run`, `inconclusive`, `behavior-verified`, or `regression-verified`.
 
 ## L. Maintainability

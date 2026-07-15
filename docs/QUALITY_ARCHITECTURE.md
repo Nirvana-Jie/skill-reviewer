@@ -1,141 +1,236 @@
 # skill-reviewer Quality Architecture
 
-This document is the durable design map for `skill-reviewer`. It separates
-deterministic package facts, semantic design judgment, behavioral evidence, and
-release interpretation so one kind of evidence cannot impersonate another.
+This document is the durable system map for `skill-reviewer`. It separates
+package facts, semantic review, behavioral execution, mechanical acceptance,
+bounded evolution, and evidence presentation so no layer can impersonate
+another.
 
-## Design inputs
+## Design thesis
 
-The architecture adapts four ideas from
-[`mattpocock/skills`](https://github.com/mattpocock/skills):
+A well-written skill is a hypothesis. Its effect is established only by paired
+execution on the same task distribution, with frozen inputs and retained
+artifacts. Static review remains valuable for finding trigger, safety, package,
+and maintainability defects, but it cannot prove downstream utility.
 
-1. **Predictable process, not identical prose.** The
-   [`writing-great-skills` reference](https://github.com/mattpocock/skills/blob/main/skills/productivity/writing-great-skills/SKILL.md)
-   defines predictability as taking the same process every run and requires each
-   step to end on a checkable completion criterion.
-2. **Branch-based progressive disclosure.** Material needed by every branch
-   stays in `SKILL.md`; language templates and runtime eval mechanics sit behind
-   context pointers and load only when that branch fires.
-3. **Independent axes.** The
-   [`code-review` skill](https://github.com/mattpocock/skills/blob/main/skills/engineering/code-review/SKILL.md)
-   keeps Standards and Spec subagents separate so one axis cannot hide failure
-   on the other. `skill-reviewer` applies the same rule to package facts,
-   semantic design, and effect evidence.
-4. **Feedback at public seams.** The
-   [`tdd` skill](https://github.com/mattpocock/skills/blob/main/skills/engineering/tdd/SKILL.md)
-   rejects tautological tests and tests behavior at agreed seams. This project
-   treats CLI JSON, review output sections, and retained eval artifacts as its
-   public seams.
+The architecture therefore uses five independent evidence planes:
 
-These are adaptations, not copied workflows. `skill-reviewer` remains a
-model-invoked reviewer with a human-readable report and machine-readable
-evidence artifacts.
+1. **Package facts** — deterministic, read-only inspection.
+2. **Design judgment** — rubric-backed semantic analysis.
+3. **Behavior evidence** — isolated paired execution and typed assertions.
+4. **Release decision** — hard gates plus Pareto non-regression.
+5. **Presentation** — a read-only Dashboard projected from evidence artifacts.
 
-## Pipeline
+## Research inputs and project inferences
+
+The implementation is informed by primary research, with project-specific
+inferences called out rather than presented as paper claims:
+
+| Source | Evidence used here | Project inference |
+|---|---|---|
+| [SkillLens](https://arxiv.org/html/2605.23899v1) | Text-only judge accuracy can be poor; the same skill can cause target-dependent negative transfer; paired utility is load-bearing | A semantic review cannot claim “better”; run candidate and baseline on the same case/repeat |
+| [SkillOpt](https://arxiv.org/html/2605.23904v2) | Optimizer/target separation, bounded edits, train/selection/test separation, rejected candidate evidence | Evolution is an explicit, bounded propose → execute → grade → gate loop, not self-approved rewriting |
+| [GEPA v2](https://arxiv.org/pdf/2507.19457v2) | Minibatch screening, full validation, ancestry, Pareto candidate exploration | Release may use Pareto non-regression, but exploration never bypasses safety or evidence gates |
+| [SkillsBench](https://arxiv.org/html/2602.12670) | Same-task paired conditions, deterministic verifiers, task leakage from self-generated skills | Eval assets and graders stay frozen during one evolution run |
+| [CoEvoSkills](https://arxiv.org/html/2604.01687) | Generator/verifier isolation and the limits of a surrogate verifier | Semantic graders remain supplemental; deterministic or human authority wins on resolvable facts |
+| [LLM-as-a-Judge](https://arxiv.org/html/2306.05685) | Position and verbosity bias; order swapping reduces some pairwise bias | Semantic A/B judgments must be blind and order-swapped; disagreement is inconclusive |
+| [Zhao et al., EACL 2026](https://aclanthology.org/2026.eacl-long.100/) | Optimizer feedback and fake rewards can be poisoned | Optimizer feedback is structured and audit content never enters the improvement loop |
+
+The three-round limit and one-shot audit are conservative engineering controls
+for cost and adaptive overfitting. They are not claimed as a universal optimum.
+The detailed research record and limitations live in
+`docs/RESEARCH_SKILL_REVIEW_EVOLUTION.md`.
+
+## End-to-end flow
 
 ```mermaid
 flowchart LR
-    A["Pin subject and branch"] --> B["Package-facts axis"]
-    A --> C["Design-judgment axis"]
-    B --> D["Evidence gate"]
-    C --> D
-    A --> E{"Runtime effect requested?"}
-    E -->|"No"| D
-    E -->|"Yes"| F["Paired subagent eval"]
-    F --> D
-    D --> G["Stable review contract"]
+    A["Pin subject + branch"] --> B["Static package facts"]
+    A --> C["Semantic design review"]
+    A --> D{"Executable v2 manifest?"}
+    D -->|"invalid"| X["Block release · inconclusive"]
+    D -->|"valid + in scope"| E["Compile plan + run lock"]
+    E --> F["Lead dispatches native executors"]
+    F --> G["Deterministic grader"]
+    G --> H["Blind semantic pair grader"]
+    H --> I["Verification evidence"]
+    B --> J["Lead release aggregation"]
+    C --> J
+    I --> J
+    J --> K["Stable review contract"]
+    I --> L["Dashboard read model"]
 ```
 
-### Package-facts axis
+The Python runtime owns E, G, the mechanical portion of I, acceptance decisions,
+evolution state, and L. It does not own F: the lead agent uses whichever native
+subagent surface the environment exposes. This keeps the executor portable
+without erasing the lead-agent trust boundary.
 
-Authority: `scripts/lint_skill_package.py`.
+## Deep module seams
 
-It checks only facts that should be deterministic:
+The implementation is tested through five public transformations:
 
-- `SKILL.md` and front matter exist and parse at the supported structural level;
-- `name` and `description` are present and `name` is kebab-case;
-- local Markdown links resolve inside the package;
-- resources are reachable from `SKILL.md` through exact or directory pointers;
-- JSON eval manifests parse and behavior eval IDs are unique;
-- dangerous command text and sensitive files are surfaced for semantic review.
-
-It never executes reviewed scripts and never assigns semantic scores.
-
-Public seam:
-
-```json
-{
-  "schema_version": "skill-reviewer.static-analysis.v1",
-  "subject": {"path": "...", "digest": "...", "files_scanned": 0},
-  "passed": true,
-  "summary": {"errors": 0, "warnings": 0, "info": 0},
-  "findings": []
-}
-```
-
-### Design-judgment axis
-
-Authority: `references/review-rubric.md`.
-
-The model scores eight dimensions, applies safety and trigger blockers first,
-and produces paste-ready fixes. `references/review-checklist.md` is coverage
-only; it cannot introduce thresholds or verdict rules.
-
-### Effect-evidence axis
-
-Authority: `references/subagent-eval-workflow.md`.
-
-Runtime verification freezes the subject and baseline, starts paired
-configurations in the same turn, keeps workers read-only, retains outputs, and
-grades assertions. The lead agent owns aggregation and the final review.
-
-Verification levels form an evidence lattice:
-
-| Level | Proven claim |
-|---|---|
-| `not-run` | No behavioral claim; review/static inspection only |
-| `inconclusive` | A run was attempted but evidence cannot support a claim |
-| `behavior-verified` | Required assertions passed for tested `with_skill` cases |
-| `regression-verified` | Paired baseline completed and required behavior did not regress |
-
-## Quality gates
-
-| Gate | Evidence | Failure consequence |
+| Input | Module seam | Output |
 |---|---|---|
-| G0 Package integrity | Static linter JSON | Structural `error` must be addressed; semantic averages cannot hide it |
-| G1 Review integrity | Eight scores + rubric-derived verdict + paste-ready Critical Issues | Review is incomplete or internally inconsistent |
-| G2 Effect integrity | Paired artifacts, digests, assertion grading | Missing/mismatched evidence becomes `inconclusive` |
-| G3 Release integrity | Deterministic tests, snapshot validation, self-review artifacts | A failed declared check caps a requested production verdict at `Needs revision` |
+| `evals/evals.json` + subject + baseline | `compile` | `execution-plan.json` + `run-lock.json` |
+| retained execution artifacts | `grade` | arm grading + `verification-evidence.json` |
+| plan + verification evidence | `decide` | selection/audit acceptance decision |
+| decision history | `evolution-init` / `evolution-advance` | `evolution-state.json` |
+| workspace evidence | `project-dashboard` | `dashboard-data.json` |
 
-## Sources of truth
+The React UI consumes only the final read model. It does not parse arbitrary
+worker directories, execute a case, apply a candidate, or approve a release.
 
-Each behavior has one authority:
+## Executable manifest and integrity boundary
+
+Only `skill-reviewer.evals.v2` is executable. A present legacy or malformed
+manifest is a structural release blocker. Absence remains optional for an
+ordinary skill.
+
+Compilation records:
+
+- manifest digest;
+- candidate package tree digest;
+- accepted baseline tree digest when present;
+- every selected fixture digest;
+- execution-plan digest;
+- selected data splits and paired arms.
+
+Declared fixture inputs are copied into a read-only workspace view containing
+only allow-listed files. Executors receive this view rather than the source
+fixture directory, preventing a package linter or directory walk from reading
+an adjacent `expected.md` answer key.
+
+Before grading, the runtime recomputes each digest. Any drift stops grading
+before `verification-evidence.json` is emitted. The intended response to drift
+is recompilation into a new run, never hand-editing the lock.
+
+## Execution topology
+
+```mermaid
+flowchart TB
+    L["Lead release decider"] --> P["Immutable execution plan"]
+    P --> C["with_skill executor"]
+    P --> B["old_skill / without_skill executor"]
+    C --> CA["isolated repeat artifacts"]
+    B --> BA["isolated repeat artifacts"]
+    CA --> DG["deterministic grader"]
+    BA --> DG
+    DG --> SG["optional blind A/B grader"]
+    SG --> L
+    DG --> L
+```
+
+Each case/arm/repeat has an isolated writable root. Candidate and baseline start
+in the same lead-agent turn. A deterministic case runs once; a stochastic case
+runs three paired repeats. If repeat deltas include both positive and negative
+directions, the result is inconclusive even when the mean is positive.
+
+`agent_provenance` is optional. Artifact identity and input identity are
+required; a worker model version is not a hard gate.
+
+## Assertion and evidence model
+
+Deterministic assertions are typed and primary: file existence, text presence
+or absence, regex, JSON Pointer comparisons, numeric ranges, forbidden events,
+and digests. The grader computes required assertion pass rate and aggregates
+declared numeric execution metrics without inventing missing values.
+
+Semantic assertions use two blind, A/B-order-swapped judgments. The resolved
+winners must agree. No third-vote majority is allowed because correlated judge
+bias does not become ground truth through repetition.
+
+Verification levels remain intentionally narrow:
+
+| Level | Supported claim |
+|---|---|
+| `not-run` | No behavior claim |
+| `inconclusive` | Attempted evidence cannot support a claim |
+| `behavior-verified` | Candidate required assertions passed on tested cases |
+| `regression-verified` | A paired baseline completed and declared behavior did not regress |
+
+## Release acceptance
+
+An evolution selection decision is accepted only if all clauses are true:
+
+1. input integrity is verified;
+2. every candidate arm is complete;
+3. every `must_pass` deterministic assertion passes;
+4. no forbidden action is recorded;
+5. every required paired baseline is complete;
+6. evidence has no stochastic direction or semantic-judge disagreement;
+7. every declared objective stays within its non-regression tolerance;
+8. at least one primary objective reaches its material-improvement delta.
+
+This is a conjunction, not an average. A candidate can remain interesting for
+research when it trades one objective for another, but it cannot be
+automatically released.
+
+Audit uses the same hard and non-regression gates but does not require a second
+material delta; selection already established improvement.
+
+## Bounded evolution
+
+```mermaid
+stateDiagram-v2
+    [*] --> Optimizing
+    Optimizing --> Optimizing: rejected / no-change / inconclusive, round < 3
+    Optimizing --> Exhausted: round = 3
+    Optimizing --> AwaitingAudit: selection accepted
+    AwaitingAudit --> Released: audit accepted
+    AwaitingAudit --> AuditFailed: audit rejected or inconclusive
+    Released --> [*]
+    Exhausted --> [*]
+    AuditFailed --> [*]
+```
+
+Development data may guide the optimizer; selection decides candidate
+advancement; audit runs once and never returns feedback to the optimizer. Eval
+manifest, fixtures, snapshots, graders, and accepted baseline remain immutable.
+An eval-change proposal requires user confirmation and a new run. Candidate
+changes may otherwise restructure the full skill package. New external
+dependencies, network access, or wider permissions also require user authority.
+
+## Dashboard product boundary
+
+The Evidence Lab is a React + TypeScript + Vite application with Vitest UI
+tests. Its read model is versioned as `skill-reviewer.dashboard-data.v1`.
+
+The layout follows the evidence chain:
+
+- Run Rail: release posture, hard gates, split filters, case status;
+- Evidence Spine: run → gate → iteration → case → assertion → artifact;
+- Inspector: selected evidence, paired arms, provenance, and limitations.
+
+The local server accepts GET and HEAD only. `dashboard-data.json` is served with
+`no-store`; static assets may be cached briefly. A screenshot is not evidence:
+the plan, lock, grading, decisions, and output files remain the source of truth.
+
+## Authorities
 
 | Concern | Authority |
 |---|---|
-| Invocation branches | `SKILL.md` front matter |
-| Process and completion criteria | `SKILL.md` |
-| Scores, blockers, verdicts | `references/review-rubric.md` |
-| Coverage | `references/review-checklist.md` |
-| English/Chinese headings | `references/output-template-*.md` |
-| Static result schema | `scripts/lint_skill_package.py` |
-| Runtime eval mechanics | `references/subagent-eval-workflow.md` |
-| Behavior cases | `evals/evals.json` |
-| Calibration contract | `evals/local-skill-review-snapshot.json` |
+| Invocation and branch policy | `SKILL.md` |
+| Scores, blockers, ordinary verdicts | `references/review-rubric.md` |
+| v2 manifest and artifact schema | `references/executable-evals.md` |
+| Native worker orchestration | `references/subagent-eval-workflow.md` |
+| Bounded evolution state machine | `references/evolution-workflow.md` |
+| Deterministic static facts | `scripts/lint_skill_package.py` |
+| Compile/grade/decide/project behavior | `scripts/skill_eval_runtime.py` |
+| React presentation contract | `dashboard/src/types.ts` |
+| Calibration snapshot contract | `evals/local-skill-review-snapshot.json` |
 
-Duplicating an authority is a maintenance defect. Supporting documents may
-explain or link to an authority, but should not redefine it.
+Supporting documents may explain these authorities but must not redefine them.
 
-## Completion definition
+## Release completion
 
-A release-quality change is complete only when:
+A change to this project is complete only when:
 
-1. the package self-lints with zero structural errors;
-2. legacy Python compatibility tests and Vitest linter/runner tests pass;
-3. the snapshot contract validates;
-4. the skill reviews its calibration fixtures at the expected verdicts;
-5. an actual lead-agent run demonstrates the requested subagent branch and
-   retains evidence, or truthfully reports why that branch is inconclusive;
-6. a review viewer and machine-readable verification evidence are available;
-7. generated workspaces, credentials, auth files, and secrets remain outside
-   the repository.
+1. Python compatibility tests and all Vitest suites pass;
+2. the package linter reports no structural error;
+3. strict v2 JSON and local snapshot contracts validate;
+4. the Dashboard typecheck and production build pass;
+5. a real native-agent run retains candidate and baseline artifacts and can be
+   graded/projected, or the exact external blocker is recorded;
+6. no generated workspace, credential, auth state, or model artifact is added
+   to the repository;
+7. the branch passes repository static checks before merge.

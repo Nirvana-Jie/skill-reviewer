@@ -8,6 +8,7 @@ __MACOSX/
 .idea/
 node_modules/
 coverage/
+.playwright-cli/
 
 # Secrets
 .env

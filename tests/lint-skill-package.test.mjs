@@ -38,6 +38,48 @@ function fixture(callback) {
   }
 }
 
+function executableManifest(skillName, evals) {
+  return {
+    schema_version: "skill-reviewer.evals.v2",
+    skill_name: skillName,
+    defaults: {
+      permissions: { network: "deny", writable_roots: ["outputs"] },
+      repeats: { deterministic: 1, stochastic: 3 },
+      evolution: { max_rounds: 3 },
+    },
+    evals,
+  };
+}
+
+function evalCase(overrides = {}) {
+  return {
+    id: "one",
+    purpose: "Exercise the skill behavior.",
+    split: "selection",
+    prompt: "Review it.",
+    determinism: "deterministic",
+    files: [],
+    assertions: [
+      {
+        id: "response-exists",
+        type: "file_exists",
+        artifact: "outputs/response.md",
+        severity: "must_pass",
+      },
+    ],
+    objectives: [
+      {
+        id: "quality",
+        metric: "required_pass_rate",
+        direction: "maximize",
+        min_material_delta: 0.1,
+        non_regression_tolerance: 0,
+      },
+    ],
+    ...overrides,
+  };
+}
+
 describe("lint_skill_package.py", () => {
   it("accepts a structurally valid skill and resolves its resource graph", () => {
     fixture((root) => {
@@ -261,20 +303,24 @@ Use the \`evals/\` cases.
       write(
         root,
         "evals/evals.json",
-        JSON.stringify({
-          skill_name: "eval-skill",
-          evals: [
-            { id: 1, prompt: "one", expected_output: "one", files: [] },
-            { id: 1, prompt: "two", expected_output: "two", files: [] },
-          ],
-        }),
+        JSON.stringify(
+          executableManifest("eval-skill", [
+            evalCase({ id: "duplicate" }),
+            evalCase({ id: "duplicate" }),
+          ]),
+        ),
       );
 
       const { status, report } = run(root);
 
       expect(status).toBe(1);
-      expect(report.findings.map((finding) => finding.rule_id)).toContain(
-        "eval.duplicate-id",
+      expect(report.findings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            rule_id: "eval.invalid-manifest",
+            message: expect.stringContaining("duplicate eval id"),
+          }),
+        ]),
       );
     });
   });
@@ -297,24 +343,23 @@ Use the \`evals/\` cases.
       write(
         root,
         "evals/evals.json",
-        JSON.stringify({
-          skill_name: "file-eval-skill",
-          evals: [
-            {
-              id: 1,
-              prompt: "review it",
-              expected_output: "a review",
-              files: ["evals/files/missing.md"],
-            },
-          ],
-        }),
+        JSON.stringify(
+          executableManifest("file-eval-skill", [
+            evalCase({ files: ["evals/files/missing.md"] }),
+          ]),
+        ),
       );
 
       const { status, report } = run(root);
 
       expect(status).toBe(1);
-      expect(report.findings.map((finding) => finding.rule_id)).toContain(
-        "eval.case-file",
+      expect(report.findings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            rule_id: "eval.invalid-manifest",
+            message: expect.stringContaining("does not exist"),
+          }),
+        ]),
       );
     });
   });

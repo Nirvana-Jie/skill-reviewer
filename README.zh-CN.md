@@ -1,6 +1,7 @@
 # skill-reviewer
 
-> Agent skill 的静态分析器。把 `SKILL.md` 当源代码看，不当散文看。
+> Agent skill 的证据化评审与发布系统。把 `SKILL.md` 当源代码看，把声明的
+> eval 当作可执行契约，而不是说明文字。
 
 [![skill](https://img.shields.io/badge/type-agent--skill-000)](./SKILL.md)
 [![mode](https://img.shields.io/badge/mode-instruction%20%2B%20validator-111)](./SKILL.md)
@@ -23,7 +24,9 @@ npx skills add Nirvana-Jie/skill-reviewer --skill skill-reviewer
 > 帮我 review 这个 SKILL.md，看能不能发布
 ```
 
-你会拿到：判定、8 维评分卡、可直接粘贴的 `description`/指令改写、按风险给出的 eval 建议，以及触发了非可协商红线时的硬阻塞结论。
+你会拿到：判定、8 维评分卡、可直接粘贴的改写和非可协商红线结论。
+当范围内存在有效 v2 manifest 时，主 Agent 还会执行成对、保留 artifact 的
+真实验证；只有用户明确要求进化时，才会进入最多三轮优化与一次性 audit。
 
 ---
 
@@ -38,6 +41,9 @@ npx skills add Nirvana-Jie/skill-reviewer --skill skill-reviewer
 - **自身回归评测** → `evals/skill-reviewer.csv`
 - **校准 fixture** → `evals/fixtures/{ready,needs-revision,not-ready}-*`
 - **本地 snapshot** → `evals/local-skill-review-snapshot.json`
+- **可执行 eval runtime** → `scripts/skill_eval_runtime.py`（compile、lock、
+  grade、decide、evolve、project）
+- **证据产品** → React/Vite/Vitest `dashboard/` 与只读本地服务
 
 改完 rubric，重跑 fixture 和本地 snapshot，发版。不需要再去读 300 行散文，确认你那句“稍微严格一点”有没有把正向用例静默打挂。
 
@@ -55,6 +61,9 @@ npx skills add Nirvana-Jie/skill-reviewer --skill skill-reviewer
 | eval 建议                  | 仅在能显著降风险时给 5–10 条定向 prompt                         |
 | 本地 eval snapshot         | 结构化 fixture 契约 + 确定性 runner / validator 脚本             |
 | subagent 效果验证          | 成对运行 `with_skill` / baseline，记录 digest、artifact 和验证等级 |
+| 可执行 eval 契约           | 严格 `skill-reviewer.evals.v2`；无效 manifest 阻塞发布，不静默跳过 |
+| 有界连续进化               | development / selection / 一次性 audit，最多 3 轮，硬门禁 + Pareto 改进 |
+| 证据 Dashboard             | React + TypeScript + Vite Evidence Lab，只消费 read model，不执行或审批 |
 | full vs focused review     | 同样的 11 段结构；无关段落坍塌为 `N/A — focused review of <artifact>` |
 | 可直接粘贴的重写           | `Suggested Rewrites` 直接输出 YAML / Markdown                    |
 | 中英双模板                 | 按分支加载模板 + 可归一化的 snapshot 抽取                        |
@@ -106,7 +115,8 @@ focused review 保持同样的节序，没用到的段折叠成一行 `N/A`。
 `skill-reviewer` 使用四层互补的 eval：
 
 - `evals/skill-reviewer.csv` 检查触发与路由行为。
-- `evals/evals.json` 定义 subagent 效果验证使用的行为 prompt 与断言。
+- `evals/evals.json` 是严格的 v2 可执行 manifest，按 development、selection、audit
+  分层；确定性断言先执行，匿名顺序交换的语义判断只作补充。
 - `evals/fixtures/*/expected.md` 提供人工可读的校准锚点。
 - `evals/local-skill-review-snapshot.json` 提供机器可读的 snapshot 契约，覆盖判定、评分范围、必需 section、必须指出的问题、禁止行为、输出产物，以及可选的输出质量断言。
 - `scripts/run_codex_skill_evals.py` 生成或后处理模型驱动的本地 eval workspace。
@@ -114,7 +124,45 @@ focused review 保持同样的节序，没用到的段折叠成一行 `N/A`。
 
 snapshot 层故意不做全文逐字 diff。只要结构化契约稳定，评审措辞允许合理变化。工作区布局和更新规则见 [`references/local-eval-snapshot.md`](./references/local-eval-snapshot.md)。
 
+行为 runtime 与校准 snapshot runner 严格分离：前者冻结 plan、manifest、subject、
+baseline 和 fixture，再由主 Agent 分发 native worker；输入一旦漂移就拒绝评分。
+详见 [`references/executable-evals.md`](./references/executable-evals.md) 与
+[`references/subagent-eval-workflow.md`](./references/subagent-eval-workflow.md)。
+
 validator 有两种模式。只传 contract 路径时，只检查 JSON 形状，并输出 `contract_only: true`；这不证明模型输出质量。传入 workspace 路径时，才会继续检查保存的产物和 `extracted-review.json` 字段，例如 `critical_issues_have_problem_why_fix`、`has_paste_ready_rewrite_block`、`final_recommendation_is_ordered`。
+
+## 可执行 eval 与有界进化
+
+确定性 adapter 与具体 Agent 实现无关，native worker 的分发由主 Agent 负责：
+
+```bash
+python3 scripts/skill_eval_runtime.py compile \
+  --manifest <skill>/evals/evals.json \
+  --subject <candidate> \
+  --baseline-kind old_skill \
+  --baseline-path <accepted-version> \
+  --split selection \
+  --workspace /tmp/skill-reviewer-run
+
+python3 scripts/skill_eval_runtime.py grade \
+  --plan /tmp/skill-reviewer-run/execution-plan.json \
+  --workspace /tmp/skill-reviewer-run
+```
+
+候选只有在所有硬门禁通过、所有目标不退化、且至少一个 primary 目标达到
+实质提升时才会被 selection 接受。一次运行中 eval 与 grader 不可变；如需调整，
+必须先让用户确认并重新锁定。完整协议见
+[`references/evolution-workflow.md`](./references/evolution-workflow.md)。
+
+证据可投影为只读产品界面：
+
+```bash
+python3 scripts/skill_eval_runtime.py project-dashboard \
+  --workspace /tmp/skill-reviewer-run \
+  --output /tmp/skill-reviewer-run/dashboard-data.json
+pnpm dashboard:build
+pnpm dashboard:serve -- --workspace /tmp/skill-reviewer-run
+```
 
 ## Human-in-the-loop 评审流程
 
@@ -170,6 +218,7 @@ python3 -m unittest discover -s tests
 pnpm test
 python3 scripts/lint_skill_package.py . --format text --fail-on error
 python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json
+pnpm dashboard:build
 ```
 
 开 PR 后等待 `Static Checks`，需要时在 PR 中手动触发 Codex Cloud review：
@@ -201,7 +250,8 @@ pnpm test
 python3 scripts/lint_skill_package.py . --format text --fail-on error
 python3 -m json.tool evals/evals.json > /dev/null
 python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json
-python3 -m py_compile scripts/lint_skill_package.py scripts/run_codex_skill_evals.py scripts/validate_local_snapshot.py tests/test_run_codex_skill_evals.py
+pnpm dashboard:build
+python3 -m py_compile scripts/lint_skill_package.py scripts/run_codex_skill_evals.py scripts/skill_eval_runtime.py scripts/serve_skill_dashboard.py scripts/validate_local_snapshot.py tests/test_run_codex_skill_evals.py
 ```
 
 如果需要不在 GitHub Actions 中保存 API key 的模型辅助审查，在 PR 里使用 Codex Cloud：
@@ -257,10 +307,14 @@ npx skills add Nirvana-Jie/skill-reviewer --list
 │   ├── output-template-zh.md      # 中文输出契约
 │   ├── example-review-output.md   # 输出风格锚点
 │   ├── local-eval-snapshot.md     # 本地 snapshot 风格 eval 协议
+│   ├── executable-evals.md        # 严格 v2 manifest 与断言契约
 │   ├── subagent-eval-workflow.md  # 成对 subagent 效果验证协议
+│   ├── evolution-workflow.md      # 有界 optimize/select/audit 协议
 │   └── eval-prompts-template.csv  # eval 输出字段模板（只含 header）
 ├── scripts/
 │   ├── lint_skill_package.py      # 确定性只读 package linter
+│   ├── skill_eval_runtime.py      # plan/lock/grade/decide/evolve/project
+│   ├── serve_skill_dashboard.py   # 只读本地 Dashboard 服务
 │   ├── run_codex_skill_evals.py   # 模型驱动的 runner / 后处理器
 │   └── validate_local_snapshot.py # 确定性 snapshot 契约校验脚本
 └── evals/
@@ -272,12 +326,13 @@ npx skills add Nirvana-Jie/skill-reviewer --list
         ├── needs-revision-meeting-note/
         └── not-ready-repo-cleaner/
 ├── tests/                         # 既有 Python 测试 + Vitest linter/runner 测试
-├── package.json                   # Vitest 命令
+├── dashboard/                     # React + TypeScript + Vite Evidence Lab
+├── package.json                   # Vitest、typecheck 与 Dashboard 命令
 └── pnpm-lock.yaml                 # 固定 pnpm 测试依赖
 ```
 
-故意没有 `assets/`。三个脚本分别隔离确定性 package facts、模型 eval
-产物生成和 snapshot 校验；语义评审仍以指令为主。
+故意没有 skill package 的 `assets/`。runtime adapter 隔离确定性事实与证据
+处理；语义评审和 native Agent 分发仍以指令为主。
 
 ## i18n
 

@@ -17,10 +17,23 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import unquote
 
+from skill_eval_runtime import MANIFEST_SCHEMA, ManifestError, validate_manifest
+
 
 SCHEMA_VERSION = "skill-reviewer.static-analysis.v1"
 RESOURCE_DIRS = ("references", "scripts", "assets", "evals")
-IGNORED_PARTS = {".git", "__pycache__", "node_modules", ".DS_Store"}
+IGNORED_PARTS = {
+    ".git",
+    ".playwright-cli",
+    "__pycache__",
+    "node_modules",
+    ".DS_Store",
+    "coverage",
+    "dist",
+    "build",
+    ".codex-eval-workspace",
+    "skill-reviewer-workspace",
+}
 SEVERITY_ORDER = {"info": 0, "warning": 1, "error": 2}
 LOCAL_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 BACKTICK_PATH_RE = re.compile(r"`((?:references|scripts|assets|evals)/[^`]+)`")
@@ -304,6 +317,15 @@ def check_eval_manifest(
             "manifest must be a JSON object",
         )
         return
+    if manifest.get("schema_version") != MANIFEST_SCHEMA:
+        add_finding(
+            findings,
+            "eval.invalid-manifest",
+            "error",
+            "evals/evals.json",
+            f"schema_version must be {MANIFEST_SCHEMA}; legacy manifests are not executable",
+        )
+        return
     manifest_skill_name = manifest.get("skill_name")
     if not isinstance(manifest_skill_name, str) or not manifest_skill_name.strip():
         add_finding(
@@ -321,108 +343,16 @@ def check_eval_manifest(
             "evals/evals.json",
             f"skill_name {manifest_skill_name!r} does not match front matter name {expected_skill_name!r}",
         )
-    eval_items = manifest.get("evals")
-    if not isinstance(eval_items, list) or not eval_items:
+    try:
+        validate_manifest(manifest, root)
+    except ManifestError as error:
         add_finding(
             findings,
-            "eval.manifest-shape",
+            "eval.invalid-manifest",
             "error",
             "evals/evals.json",
-            "evals must be a non-empty array",
+            str(error),
         )
-        return
-
-    ids: set[str] = set()
-    for index, item in enumerate(eval_items):
-        prefix = f"evals[{index}]"
-        if not isinstance(item, dict):
-            add_finding(
-                findings,
-                "eval.case-shape",
-                "error",
-                "evals/evals.json",
-                f"{prefix} must be an object",
-            )
-            continue
-        eval_id = str(item.get("id", ""))
-        if not eval_id:
-            add_finding(
-                findings,
-                "eval.case-id",
-                "error",
-                "evals/evals.json",
-                f"{prefix}.id is required",
-            )
-        elif eval_id in ids:
-            add_finding(
-                findings,
-                "eval.duplicate-id",
-                "error",
-                "evals/evals.json",
-                f"duplicate eval id: {eval_id}",
-            )
-        ids.add(eval_id)
-        for field in ("prompt", "expected_output"):
-            if not isinstance(item.get(field), str) or not item[field].strip():
-                add_finding(
-                    findings,
-                    "eval.case-shape",
-                    "error",
-                    "evals/evals.json",
-                    f"{prefix}.{field} must be a non-empty string",
-                )
-        files = item.get("files", [])
-        if not isinstance(files, list):
-            add_finding(
-                findings,
-                "eval.case-shape",
-                "error",
-                "evals/evals.json",
-                f"{prefix}.files must be an array",
-            )
-        else:
-            for file_index, raw_path in enumerate(files):
-                if not isinstance(raw_path, str) or not raw_path.strip():
-                    add_finding(
-                        findings,
-                        "eval.case-file",
-                        "error",
-                        "evals/evals.json",
-                        f"{prefix}.files[{file_index}] must be a non-empty string",
-                    )
-                    continue
-                candidate = (root / raw_path).resolve()
-                try:
-                    candidate.relative_to(root)
-                except ValueError:
-                    add_finding(
-                        findings,
-                        "eval.case-file",
-                        "error",
-                        "evals/evals.json",
-                        f"{prefix}.files[{file_index}] leaves the skill package: {raw_path}",
-                    )
-                    continue
-                if not candidate.exists():
-                    add_finding(
-                        findings,
-                        "eval.case-file",
-                        "error",
-                        "evals/evals.json",
-                        f"{prefix}.files[{file_index}] does not exist: {raw_path}",
-                    )
-        expectations = item.get("expectations")
-        if expectations is not None and (
-            not isinstance(expectations, list)
-            or any(not isinstance(value, str) or not value.strip() for value in expectations)
-        ):
-            add_finding(
-                findings,
-                "eval.case-expectations",
-                "error",
-                "evals/evals.json",
-                f"{prefix}.expectations must be an array of non-empty strings",
-            )
 
 
 def check_sensitive_and_dangerous_text(text: str, findings: list[Finding]) -> None:

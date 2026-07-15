@@ -201,6 +201,8 @@ When the user explicitly asks whether a skill revision works better, subagents
 are useful for independent execution, not as a substitute for evidence.
 
 **Good looks like:**
+- A present behavior manifest uses `skill-reviewer.evals.v2`, compiles before
+  worker launch, and locks the plan, subject, baseline, and fixture digests.
 - The reviewed subject and baseline are frozen and identified by digest.
 - `with_skill` and `old_skill` / `without_skill` start in the same turn.
 - Workers are read-only, bounded to one case or configuration, and cannot edit
@@ -209,13 +211,34 @@ are useful for independent execution, not as a substitute for evidence.
   sufficient evidence.
 - Missing baselines, digest mismatches, timeouts, or conflicting results become
   `inconclusive`, not passing evidence.
+- Deterministic assertions are primary; semantic comparisons are anonymized,
+  order-swapped, and supplemental.
+- Deterministic cases run once, stochastic cases run three paired repeats, and
+  opposite paired directions remain `inconclusive`.
 
 **Red flags:**
+- A present invalid or legacy eval manifest is silently skipped while the skill
+  still claims a release check.
 - "Subagents were launched" is presented as proof of quality.
 - Only the new skill is run, but the report claims a regression improvement.
 - Workers evaluate different subject versions or mutate shared fixtures.
 - The lead agent delegates the final release decision to a worker or majority
   vote.
+- An optimizer can edit evals, fixtures, snapshots, graders, or audit cases to
+  make its candidate pass.
+
+### Bounded evolution acceptance
+
+When the user explicitly requests evolution, acceptance is not an average
+score. Every required hard gate must pass, no declared objective may regress
+beyond tolerance, and at least one primary objective must improve materially.
+Development, selection, and audit data stay separated. Stop after three
+selection rounds; audit runs once and its failure is terminal.
+
+Eval assets are immutable during a run. A proposed eval change requires user
+confirmation and a new locked run. The optimizer may otherwise restructure the
+skill package without an artificial diff-size limit. New dependencies, network
+access, or permission expansion require user approval.
 
 ## 8. Maintainability
 
@@ -264,3 +287,7 @@ verification was explicitly requested, a failed declared validation, a false
 verification claim, or contradictory grading is a Critical Issue and caps the
 verdict at **Needs revision** until resolved. Merely lacking evals does not
 trigger this cap.
+
+A present invalid `evals/evals.json` is also a Critical Issue in a full or
+readiness review: it is a broken declared quality gate, not an absent optional
+eval set. Do not start workers or silently downgrade it to `not-run`.

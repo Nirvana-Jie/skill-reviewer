@@ -1,0 +1,38 @@
+{
+  "schema_version": "skill-reviewer.dashboard-data.v1",
+  "generated_at": null,
+  "refresh_interval_ms": 3000,
+  "run": {
+    "id": "no-run-loaded",
+    "status": "planned",
+    "verification_level": "not-run",
+    "subject": null,
+    "baseline": null,
+    "splits": [],
+    "integrity": null
+  },
+  "summary": {
+    "case_count": 0,
+    "candidate_passed": 0,
+    "candidate_failed": 0,
+    "hard_gates_passed": 0,
+    "hard_gates_total": 0,
+    "decision_status": null,
+    "current_round": null,
+    "max_rounds": 3
+  },
+  "cases": [],
+  "iterations": [],
+  "spine": [
+    {
+      "id": "run:no-run-loaded",
+      "kind": "run",
+      "parent_id": null,
+      "label": "no-run-loaded",
+      "status": "planned"
+    }
+  ],
+  "limitations": [
+    "No evaluation workspace is connected."
+  ]
+}

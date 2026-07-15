@@ -9,9 +9,27 @@
   },
   "scripts": {
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "typecheck": "tsc -p dashboard/tsconfig.json --noEmit",
+    "dashboard:dev": "vite --config dashboard/vite.config.ts",
+    "dashboard:build": "pnpm typecheck && vite build --config dashboard/vite.config.ts",
+    "dashboard:serve": "python3 scripts/serve_skill_dashboard.py"
+  },
+  "dependencies": {
+    "lucide-react": "1.24.0",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "6.9.1",
+    "@testing-library/react": "16.3.2",
+    "@types/node": "26.1.1",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.3",
+    "jsdom": "29.1.1",
+    "typescript": "7.0.2",
+    "vite": "8.1.4",
     "vitest": "4.1.10"
   }
 }
