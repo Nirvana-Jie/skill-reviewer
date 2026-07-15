@@ -3,36 +3,32 @@ name: Static Checks
 on:
   pull_request:
     paths:
-      - "SKILL.md"
+      - "skills/**"
       - "README.md"
       - "README.zh-CN.md"
       - "AGENTS.md"
       - "dashboard/**"
       - "docs/**"
-      - "references/**"
-      - "scripts/**"
       - "tests/**"
-      - "evals/**"
       - "package.json"
       - "pnpm-lock.yaml"
+      - ".gitattributes"
       - ".gitignore"
       - ".github/workflows/static-checks.yml"
   push:
     branches:
       - main
     paths:
-      - "SKILL.md"
+      - "skills/**"
       - "README.md"
       - "README.zh-CN.md"
       - "AGENTS.md"
       - "dashboard/**"
       - "docs/**"
-      - "references/**"
-      - "scripts/**"
       - "tests/**"
-      - "evals/**"
       - "package.json"
       - "pnpm-lock.yaml"
+      - ".gitattributes"
       - ".gitignore"
       - ".github/workflows/static-checks.yml"
 
@@ -80,14 +76,19 @@ jobs:
       - name: Build Evidence Lab dashboard
         run: pnpm dashboard:build
 
+      - name: Verify committed Dashboard bundle
+        run: |
+          git diff --exit-code -- skills/skill-reviewer/dashboard/dist
+          test -z "$(git ls-files --others --exclude-standard -- skills/skill-reviewer/dashboard/dist)"
+
       - name: Self-lint the skill package
-        run: python3 scripts/lint_skill_package.py . --format text --fail-on error
+        run: python3 skills/skill-reviewer/scripts/lint_skill_package.py skills/skill-reviewer --format text --fail-on error
 
       - name: Validate behavior eval manifest
-        run: python3 -m json.tool evals/evals.json > /dev/null
+        run: python3 -m json.tool skills/skill-reviewer/evals/evals.json > /dev/null
 
       - name: Validate snapshot contract shape
-        run: python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json
+        run: python3 skills/skill-reviewer/scripts/validate_local_snapshot.py skills/skill-reviewer/evals/local-skill-review-snapshot.json
 
       - name: Compile Python scripts
-        run: python3 -m py_compile scripts/lint_skill_package.py scripts/run_codex_skill_evals.py scripts/skill_eval_runtime.py scripts/serve_skill_dashboard.py scripts/validate_local_snapshot.py tests/test_run_codex_skill_evals.py
+        run: python3 -m py_compile skills/skill-reviewer/scripts/lint_skill_package.py skills/skill-reviewer/scripts/run_codex_skill_evals.py skills/skill-reviewer/scripts/skill_eval_runtime.py skills/skill-reviewer/scripts/serve_skill_dashboard.py skills/skill-reviewer/scripts/validate_local_snapshot.py tests/test_run_codex_skill_evals.py

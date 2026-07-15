@@ -3,9 +3,9 @@
 > Evidence-backed review and release system for agent skills. Treats
 > `SKILL.md` like source code and declared evals like executable contracts.
 
-[![skill](https://img.shields.io/badge/type-agent--skill-000)](./SKILL.md)
-[![mode](https://img.shields.io/badge/mode-instruction%20%2B%20validator-111)](./SKILL.md)
-[![verdict](https://img.shields.io/badge/output-paste--ready-0a0)](./references/example-review-output.md)
+[![skill](https://img.shields.io/badge/type-agent--skill-000)](./skills/skill-reviewer/SKILL.md)
+[![mode](https://img.shields.io/badge/mode-instruction%20%2B%20validator-111)](./skills/skill-reviewer/SKILL.md)
+[![verdict](https://img.shields.io/badge/output-paste--ready-0a0)](./skills/skill-reviewer/references/example-review-output.md)
 [![lang](https://img.shields.io/badge/i18n-en%20%7C%20zh--CN-06c)](#i18n)
 
 中文版：[README.zh-CN.md](README.zh-CN.md)
@@ -100,7 +100,7 @@ Evaluated **before** dimension averaging. Two tripwires:
 - **Trigger reliability ≤ 1** → `Not ready`. Example: `description` triggers on any cleanup verb for a skill that runs `rm -rf`.
 - Score = 2 on either dimension caps the verdict at `Needs revision`.
 
-Defined in [`references/review-rubric.md`](./references/review-rubric.md). Exercised by the `not-ready-repo-cleaner` fixture.
+Defined in [`references/review-rubric.md`](./skills/skill-reviewer/references/review-rubric.md). Exercised by the `not-ready-repo-cleaner` fixture.
 
 ## Calibration fixtures
 
@@ -112,7 +112,7 @@ Three hand-labeled fixtures act as regression anchors for subjective scoring:
 | `needs-revision-meeting-note/`            | Needs revision       | Mid-range             |
 | `not-ready-repo-cleaner/`                 | Not ready            | Safety red line fires |
 
-Protocol in [`evals/fixtures/README.md`](./evals/fixtures/README.md). Run whenever you touch the rubric, workflow, or output template.
+Protocol in [`evals/fixtures/README.md`](./skills/skill-reviewer/evals/fixtures/README.md). Run whenever you touch the rubric, workflow, or output template.
 
 ## Local eval snapshots
 
@@ -127,7 +127,7 @@ anchors:
 - `scripts/run_codex_skill_evals.py` generates or post-processes model-backed local eval workspaces.
 - `scripts/validate_local_snapshot.py` validates those contracts against generated local eval workspaces.
 
-The snapshot layer intentionally avoids byte-for-byte full-text diffs. A review can phrase findings differently and still pass if its structured contract is stable. See [`references/local-eval-snapshot.md`](./references/local-eval-snapshot.md) for the workspace layout and update policy.
+The snapshot layer intentionally avoids byte-for-byte full-text diffs. A review can phrase findings differently and still pass if its structured contract is stable. See [`references/local-eval-snapshot.md`](./skills/skill-reviewer/references/local-eval-snapshot.md) for the workspace layout and update policy.
 
 The behavior runtime is separate from the calibration snapshot runner. It
 freezes authoritative selection/audit eval and deterministic/semantic grader authority,
@@ -137,8 +137,8 @@ execution/output and semantic judgment to its run evidence and external
 execution-profile digest, and refuses stale workspaces or input drift. Public
 audit fixtures are calibration-only; release evidence requires a trusted
 opaque holdout pack. See
-[`references/executable-evals.md`](./references/executable-evals.md) and
-[`references/subagent-eval-workflow.md`](./references/subagent-eval-workflow.md).
+[`references/executable-evals.md`](./skills/skill-reviewer/references/executable-evals.md) and
+[`references/subagent-eval-workflow.md`](./skills/skill-reviewer/references/subagent-eval-workflow.md).
 
 ## Executable evals and bounded evolution
 
@@ -146,7 +146,7 @@ The deterministic adapter is agent-agnostic; the lead agent owns native worker
 dispatch. Compile exactly one split into a fresh, empty workspace:
 
 ```bash
-python3 scripts/skill_eval_runtime.py compile \
+python3 skills/skill-reviewer/scripts/skill_eval_runtime.py compile \
   --manifest <skill>/evals/evals.json \
   --subject <candidate> \
   --execution-profile /absolute/path/to/execution-profile.json \
@@ -155,7 +155,7 @@ python3 scripts/skill_eval_runtime.py compile \
   --split selection \
   --workspace /tmp/skill-reviewer-run
 
-python3 scripts/skill_eval_runtime.py grade \
+python3 skills/skill-reviewer/scripts/skill_eval_runtime.py grade \
   --plan /tmp/skill-reviewer-run/execution-plan.json \
   --workspace /tmp/skill-reviewer-run
 ```
@@ -169,12 +169,12 @@ lineage, continuity epoch, trace IDs, and query budget. Authoritative
 selection/audit evals and graders are immutable during the run; the development
 surrogate may evolve under its own digest. Changing an authoritative eval needs
 user confirmation and a fresh lock. Full protocol:
-[`references/evolution-workflow.md`](./references/evolution-workflow.md).
+[`references/evolution-workflow.md`](./skills/skill-reviewer/references/evolution-workflow.md).
 
 Project and serve the evidence product locally:
 
 ```bash
-python3 scripts/skill_eval_runtime.py project-dashboard \
+python3 skills/skill-reviewer/scripts/skill_eval_runtime.py project-dashboard \
   --workspace /tmp/skill-reviewer-run \
   --state /tmp/skill-reviewer-control/evolution-state.json \
   --output /tmp/skill-reviewer-run/dashboard-data.json
@@ -249,33 +249,33 @@ Use `skill-reviewer` as the strict first-pass reviewer, then keep the human as t
    ```
 2. Run the deterministic package-facts axis:
    ```bash
-   python3 scripts/lint_skill_package.py <target-skill> --format json --fail-on never
+   python3 skills/skill-reviewer/scripts/lint_skill_package.py <target-skill> --format json --fail-on never
    ```
 3. Read the output in order: verdict, scorecard, critical issues, verification evidence, and suggested rewrites. Treat Critical Issues as the action queue.
 4. Apply only the fixes you agree with. Do not update fixtures or snapshots just to make a failing review pass.
 5. For regression coverage, run the calibration fixtures or a local workspace and save `review.md`, `extracted-review.json`, and `grading.json` for each eval case. To invoke Codex locally:
    ```bash
-   python3 scripts/run_codex_skill_evals.py \
+   python3 skills/skill-reviewer/scripts/run_codex_skill_evals.py \
      --workspace /tmp/skill-reviewer-evals/iteration-1
    ```
    To post-process `review.md` files that already exist in a workspace:
    ```bash
-   python3 scripts/run_codex_skill_evals.py \
+   python3 skills/skill-reviewer/scripts/run_codex_skill_evals.py \
      --workspace /tmp/skill-reviewer-evals/iteration-1 \
      --from-existing-reviews
    ```
-6. When effect verification is requested and subagents are available, freeze the subject and accepted baseline, then launch paired `with_skill` and `old_skill` / `without_skill` runs in the same turn. Follow [`references/subagent-eval-workflow.md`](./references/subagent-eval-workflow.md).
+6. When effect verification is requested and subagents are available, freeze the subject and accepted baseline, then launch paired `with_skill` and `old_skill` / `without_skill` runs in the same turn. Follow [`references/subagent-eval-workflow.md`](./skills/skill-reviewer/references/subagent-eval-workflow.md).
 7. Grade assertions against retained outputs and report one verification level: `not-run`, `inconclusive`, `behavior-verified`, or `regression-verified`.
 8. Validate the structured snapshot contract against that workspace:
    ```bash
-   python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json <workspace>/iteration-1
+   python3 skills/skill-reviewer/scripts/validate_local_snapshot.py skills/skill-reviewer/evals/local-skill-review-snapshot.json <workspace>/iteration-1
    ```
 9. If the validator fails, inspect whether the skill regressed or the review contract intentionally changed. Update `evals/local-skill-review-snapshot.json` only for intentional contract changes.
 
 For quick contract checks without a workspace:
 
 ```bash
-python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json
+python3 skills/skill-reviewer/scripts/validate_local_snapshot.py skills/skill-reviewer/evals/local-skill-review-snapshot.json
 pnpm dashboard:build
 ```
 
@@ -293,8 +293,8 @@ Before opening a PR, run:
 ```bash
 python3 -m unittest discover -s tests
 pnpm test
-python3 scripts/lint_skill_package.py . --format text --fail-on error
-python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json
+python3 skills/skill-reviewer/scripts/lint_skill_package.py skills/skill-reviewer --format text --fail-on error
+python3 skills/skill-reviewer/scripts/validate_local_snapshot.py skills/skill-reviewer/evals/local-skill-review-snapshot.json
 ```
 
 After opening a PR, wait for `Static Checks` and request Codex Cloud review when
@@ -324,11 +324,11 @@ The static workflow runs:
 ```bash
 python3 -m unittest discover -s tests
 pnpm test
-python3 scripts/lint_skill_package.py . --format text --fail-on error
-python3 -m json.tool evals/evals.json > /dev/null
-python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json
+python3 skills/skill-reviewer/scripts/lint_skill_package.py skills/skill-reviewer --format text --fail-on error
+python3 -m json.tool skills/skill-reviewer/evals/evals.json > /dev/null
+python3 skills/skill-reviewer/scripts/validate_local_snapshot.py skills/skill-reviewer/evals/local-skill-review-snapshot.json
 pnpm dashboard:build
-python3 -m py_compile scripts/lint_skill_package.py scripts/run_codex_skill_evals.py scripts/skill_eval_runtime.py scripts/serve_skill_dashboard.py scripts/validate_local_snapshot.py tests/test_run_codex_skill_evals.py
+python3 -m py_compile skills/skill-reviewer/scripts/lint_skill_package.py skills/skill-reviewer/scripts/run_codex_skill_evals.py skills/skill-reviewer/scripts/skill_eval_runtime.py skills/skill-reviewer/scripts/serve_skill_dashboard.py skills/skill-reviewer/scripts/validate_local_snapshot.py tests/test_run_codex_skill_evals.py
 ```
 
 For model-assisted review without storing an API key in GitHub Actions, use Codex Cloud on the pull request:
@@ -357,6 +357,14 @@ npx skills add Nirvana-Jie/skill-reviewer --list
 
 Installer CLI: [`vercel-labs/skills`](https://github.com/vercel-labs/skills).
 
+The installable boundary intentionally lives at `skills/skill-reviewer/`, and
+the repository intentionally has no root-level `SKILL.md`. The `skills` CLI
+treats a remote root skill as a single-file payload, while a nested skill keeps
+its supporting directory. Co-locating the entry point, references, scripts,
+evals, fixtures, and production Dashboard bundle makes the command above
+self-contained. A Vitest integration test exercises the actual CLI through a
+temporary Git remote and then runs the installed tools outside this checkout.
+
 ## Triggers
 
 Fires on requests like:
@@ -374,34 +382,17 @@ Explicitly does **not** fire for: creating a new skill (use `skill-creator`), ru
 
 ```text
 .
-├── SKILL.md                       # entry point, frontmatter + workflow
+├── skills/
+│   └── skill-reviewer/            # exact payload copied by `skills add`
+│       ├── SKILL.md               # entry point, frontmatter + workflow
+│       ├── references/            # rubric, contracts, templates, protocols
+│       ├── scripts/               # linter, eval runtime, validator, server
+│       ├── evals/                 # executable manifest, snapshots, fixtures
+│       └── dashboard/dist/        # install-ready React production bundle
 ├── docs/
 │   └── QUALITY_ARCHITECTURE.md    # design rationale + quality gates
-├── references/
-│   ├── review-rubric.md           # scoring + non-negotiable blockers
-│   ├── review-checklist.md        # flat MECE checklist
-│   ├── output-template-en.md      # exact English output contract
-│   ├── output-template-zh.md      # exact Chinese output contract
-│   ├── example-review-output.md   # style anchor
-│   ├── local-eval-snapshot.md     # local snapshot-style eval protocol
-│   ├── executable-evals.md        # strict executable manifest + assertion contract
-│   ├── subagent-eval-workflow.md  # paired effect-verification protocol
-│   └── evolution-workflow.md      # bounded optimize/select/audit protocol
-├── scripts/
-│   ├── lint_skill_package.py      # deterministic read-only package linter
-│   ├── skill_eval_runtime.py      # plan/lock/grade/decide/evolve/project
-│   ├── serve_skill_dashboard.py   # read-only local dashboard server
-│   ├── run_codex_skill_evals.py   # model-backed runner / post-processor
-│   └── validate_local_snapshot.py # deterministic snapshot contract validator
-└── evals/
-    ├── evals.json                  # executable prompts + assertions + objectives
-    ├── local-skill-review-snapshot.json # structured snapshot contract
-    └── fixtures/                  # calibration anchors
-        ├── ready-csv-column-renamer/
-        ├── needs-revision-meeting-note/
-        └── not-ready-repo-cleaner/
-├── tests/                         # Python unit tests + Vitest linter/runner tests
-├── dashboard/                     # React + TypeScript + Vite Evidence Lab
+├── tests/                         # Python unit tests + Vitest system tests
+├── dashboard/                     # React + TypeScript + Vite source
 ├── package.json                   # Vitest, typecheck, and Dashboard commands
 └── pnpm-lock.yaml                 # pinned pnpm test dependencies
 ```

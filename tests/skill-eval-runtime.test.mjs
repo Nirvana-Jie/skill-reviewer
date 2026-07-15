@@ -21,7 +21,13 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const runtime = join(repoRoot, "scripts", "skill_eval_runtime.py");
+const runtime = join(
+  repoRoot,
+  "skills",
+  "skill-reviewer",
+  "scripts",
+  "skill_eval_runtime.py",
+);
 const python = process.env.PYTHON ?? "python3";
 
 function write(root, relative, content) {

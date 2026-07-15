@@ -26,5 +26,5 @@ Run these before opening a pull request:
 
 ```bash
 python3 -m unittest discover -s tests
-python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json
+python3 skills/skill-reviewer/scripts/validate_local_snapshot.py skills/skill-reviewer/evals/local-skill-review-snapshot.json
 ```

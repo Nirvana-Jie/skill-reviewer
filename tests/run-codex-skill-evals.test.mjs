@@ -1,18 +1,23 @@
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const skillRoot = join(repoRoot, "skills", "skill-reviewer");
 const python = process.env.PYTHON ?? "python3";
 
 function runPython(source, ...args) {
   const result = spawnSync(python, ["-c", source, ...args], {
     cwd: repoRoot,
     encoding: "utf8",
+    env: {
+      ...process.env,
+      PYTHONPATH: [skillRoot, process.env.PYTHONPATH].filter(Boolean).join(delimiter),
+    },
   });
   if (result.status !== 0) {
     throw new Error(result.stderr || result.stdout);
@@ -30,6 +35,19 @@ function fixture(callback) {
 }
 
 describe("run_codex_skill_evals.py", () => {
+  it("resolves its default contract from the installed skill root", () => {
+    const result = runPython(`
+import json
+from scripts.run_codex_skill_evals import parse_args
+args = parse_args(["--workspace", "/tmp/skill-reviewer-test"])
+print(json.dumps(str(args.contract)))
+`);
+
+    expect(result).toBe(
+      join(skillRoot, "evals", "local-skill-review-snapshot.json"),
+    );
+  });
+
   it("extracts a verification level only from one explicit Level field", () => {
     const result = runPython(
       `

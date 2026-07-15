@@ -255,9 +255,9 @@ GEPA 和 SkillOpt 都采用训练/选择/最终测试分层，这支持数据职
 
 ### 5.1 当前仓库事实与缺口
 
-**仓库事实。** 当前 [`evals/evals.json`](../evals/evals.json) 已是严格可执行 manifest：五个场景被拆成 development、selection 与 audit，声明 deterministic/stochastic repeats、registered assertions、objectives、权限和三轮上限。确定性断言拥有发布优先权，`semantic_pair` 只能作为 supplemental blind A/B 证据；无效 manifest 在启动 worker 前阻塞。
+**仓库事实。** 当前 [`evals/evals.json`](../skills/skill-reviewer/evals/evals.json) 已是严格可执行 manifest：五个场景被拆成 development、selection 与 audit，声明 deterministic/stochastic repeats、registered assertions、objectives、权限和三轮上限。确定性断言拥有发布优先权，`semantic_pair` 只能作为 supplemental blind A/B 证据；无效 manifest 在启动 worker 前阻塞。
 
-**仓库事实。** [`scripts/skill_eval_runtime.py`](../scripts/skill_eval_runtime.py) 已实现 `compile → grade → decide → evolution-init/authorize/advance → project-dashboard`。它不绑定某个 agent SDK：lead agent 编译不可变 assignment 后，自行用当前可用的 subagent/worker surface 分发；runtime 只验证回传 artifact、assignment digest 与 execution-profile digest，不要求 subagent 版本证据。
+**仓库事实。** [`scripts/skill_eval_runtime.py`](../skills/skill-reviewer/scripts/skill_eval_runtime.py) 已实现 `compile → grade → decide → evolution-init/authorize/advance → project-dashboard`。它不绑定某个 agent SDK：lead agent 编译不可变 assignment 后，自行用当前可用的 subagent/worker surface 分发；runtime 只验证回传 artifact、assignment digest 与 execution-profile digest，不要求 subagent 版本证据。
 
 **仓库事实。** 当前实现已经补齐本轮论文审计发现的关键不变量：
 

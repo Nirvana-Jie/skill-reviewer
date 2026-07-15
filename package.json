@@ -12,7 +12,7 @@
     "typecheck": "tsc -p dashboard/tsconfig.json --noEmit",
     "dashboard:dev": "vite --config dashboard/vite.config.ts",
     "dashboard:build": "pnpm typecheck && vite build --config dashboard/vite.config.ts",
-    "dashboard:serve": "python3 scripts/serve_skill_dashboard.py"
+    "dashboard:serve": "python3 skills/skill-reviewer/scripts/serve_skill_dashboard.py"
   },
   "dependencies": {
     "@pierre/diffs": "1.2.12",
@@ -28,6 +28,7 @@
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.3",
     "jsdom": "29.1.1",
+    "skills": "1.5.17",
     "typescript": "7.0.2",
     "vite": "8.1.4",
     "vitest": "4.1.10"

@@ -10,8 +10,10 @@ export default defineConfig({
     format: "es",
   },
   build: {
-    outDir: "dist",
+    outDir: fileURLToPath(
+      new URL("../skills/skill-reviewer/dashboard/dist", import.meta.url),
+    ),
     emptyOutDir: true,
-    sourcemap: true,
+    sourcemap: false,
   },
 });

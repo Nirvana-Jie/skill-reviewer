@@ -9,7 +9,13 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const server = join(repoRoot, "scripts", "serve_skill_dashboard.py");
+const server = join(
+  repoRoot,
+  "skills",
+  "skill-reviewer",
+  "scripts",
+  "serve_skill_dashboard.py",
+);
 const python = process.env.PYTHON ?? "python3";
 
 function write(root, relative, content) {

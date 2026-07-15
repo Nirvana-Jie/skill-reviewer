@@ -25,7 +25,7 @@
 本调研将外部产品作为交互先例，而不是直接复制它们的权限模型。仓库自己的事实边界优先：
 
 - React 只消费一个 `skill-reviewer.dashboard-data` read model；正文 diff 通过 digest-bound sidecar 按需读取。[DashboardData 类型](../dashboard/src/types.ts)
-- Dashboard 是 GET/HEAD-only 的展示面，POST 明确返回 `405 dashboard is read-only`。[本地 Dashboard server](../scripts/serve_skill_dashboard.py)
+- Dashboard 是 GET/HEAD-only 的展示面，POST 明确返回 `405 dashboard is read-only`。[本地 Dashboard server](../skills/skill-reviewer/scripts/serve_skill_dashboard.py)
 - 截图不是证据，plan、lock、grading、decision 与 retained artifacts 才是事实来源。[QUALITY_ARCHITECTURE.md](./QUALITY_ARCHITECTURE.md#dashboard-product-boundary)
 - 显示语言、主题、筛选、布局和选中项属于 presentation state；它们不得写回或改写 evidence state。[QUALITY_ARCHITECTURE.md](./QUALITY_ARCHITECTURE.md#dashboard-product-boundary)
 
@@ -35,11 +35,11 @@
 
 | 维度 | 已有能力 | 关键缺口 | 依据 |
 |---|---|---|---|
-| 数据边界 | 单运行 read model、原子代切换、digest-bound diff sidecar、GET/HEAD-only | 没有跨运行索引或可信 evidence bundle route | [架构说明](./QUALITY_ARCHITECTURE.md#dashboard-product-boundary)、[server](../scripts/serve_skill_dashboard.py) |
+| 数据边界 | 单运行 read model、原子代切换、digest-bound diff sidecar、GET/HEAD-only | 没有跨运行索引或可信 evidence bundle route | [架构说明](./QUALITY_ARCHITECTURE.md#dashboard-product-boundary)、[server](../skills/skill-reviewer/scripts/serve_skill_dashboard.py) |
 | 导航 | split filter、case rail、evidence spine、diff 文件导航、focus mode | 选中 node、split、view、diff 文件与布局没有进入 URL，刷新/分享后丢失 | [App.tsx](../dashboard/src/App.tsx)、[DiffViewer.tsx](../dashboard/src/DiffViewer.tsx) |
 | 检索 | changed-file path filter | 没有跨 case/evidence/diff 的统一检索、状态 facets、结果计数和 Clear all | [DiffViewer.tsx](../dashboard/src/DiffViewer.tsx) |
-| 新鲜度 | 按 `refresh_interval_ms` 轮询，区分 connecting/live/stale | UI 不显示 last success/last attempt；无手动刷新；`generated_at` 虽在类型中存在，但 projector 当前写入 `null` | [App.tsx](../dashboard/src/App.tsx)、[types.ts](../dashboard/src/types.ts)、[skill_eval_runtime.py](../scripts/skill_eval_runtime.py) |
-| 分享/导出 | 浏览器可直接访问 read model 和 sidecar | 没有 Copy permalink、Copy evidence reference、下载当前 projection 的显式入口 | [server](../scripts/serve_skill_dashboard.py) |
+| 新鲜度 | 按 `refresh_interval_ms` 轮询，区分 connecting/live/stale | UI 不显示 last success/last attempt；无手动刷新；`generated_at` 虽在类型中存在，但 projector 当前写入 `null` | [App.tsx](../dashboard/src/App.tsx)、[types.ts](../dashboard/src/types.ts)、[skill_eval_runtime.py](../skills/skill-reviewer/scripts/skill_eval_runtime.py) |
+| 分享/导出 | 浏览器可直接访问 read model 和 sidecar | 没有 Copy permalink、Copy evidence reference、下载当前 projection 的显式入口 | [server](../skills/skill-reviewer/scripts/serve_skill_dashboard.py) |
 | 状态 | 初次 loading、部分 diff error/empty、连接状态 | 未完整区分 no-data、no-match、stale-with-data、invalid-contract、sidecar-integrity-error | [App.tsx](../dashboard/src/App.tsx)、[DiffViewer.tsx](../dashboard/src/DiffViewer.tsx) |
 | 可访问性 | 多数按钮有可访问名称，locale 更新 document language | 复合列表没有统一方向键模型；无 skip link、命令帮助和完整 focus restoration；动态刷新反馈有限 | [App.tsx](../dashboard/src/App.tsx) |
 | 性能 | Pierre virtualization、worker pool、render cache、按选中文件加载 sidecar | case/evidence 列表仍是无界 DOM；缺少大型 fixture 与交互延迟门禁 | [DiffViewer.tsx](../dashboard/src/DiffViewer.tsx)、[Pierre Diffs](https://diffs.com/docs) |
@@ -104,13 +104,13 @@ GitHub Command Palette 目前仍标为 public preview，因此它是可参考的
 
 | ID | Todo | 所需契约 | 为什么不能只做前端 | 官方依据 |
 |---|---|---|---|---|
-| L1 | 可验证的 projection generation identity | `projected_at`、generation ID 或响应 ETag/digest | 浏览器 last load time 不能证明 evidence 生成时间；当前 projector 写入 `generated_at: null` | [Grafana refresh](https://grafana.com/docs/grafana/latest/visualizations/dashboards/use-dashboards/)、[当前 projector](../scripts/skill_eval_runtime.py) |
+| L1 | 可验证的 projection generation identity | `projected_at`、generation ID 或响应 ETag/digest | 浏览器 last load time 不能证明 evidence 生成时间；当前 projector 写入 `generated_at: null` | [Grafana refresh](https://grafana.com/docs/grafana/latest/visualizations/dashboards/use-dashboards/)、[当前 projector](../skills/skill-reviewer/scripts/skill_eval_runtime.py) |
 | L2 | 历史运行索引与永久 run URL | allow-listed run index、稳定 run route、retention metadata | 当前 read model 只含一个 run，前端无法发现或证明其它 workspace | [GitHub workflow run history](https://docs.github.com/en/actions/monitoring-and-troubleshooting-workflows/monitoring-workflows/viewing-workflow-run-history) |
 | L3 | artifact 全文搜索 | 后端只读索引、字段/visibility policy、结果到 digest-bound route 的映射 | 前端全量抓取 sidecar 会破坏按需加载并可能扩大 opaque evidence 暴露面 | [GitHub Actions log search](https://docs.github.com/en/actions/how-tos/monitor-workflows/use-workflow-run-logs)、[Sentry issue query API](https://docs.sentry.io/api/events/list-an-organizations-issues/) |
 | L4 | 可信 evidence bundle 下载 | allow-list manifest、每项 digest/size、bundle digest、权限与 retention | 浏览器生成 ZIP 不能证明来源完整性，也不能安全读取未投影 artifact | [GitHub artifact download](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/download-workflow-artifacts)、[GitHub artifacts](https://docs.github.com/en/actions/concepts/workflows-and-actions/workflow-artifacts) |
 | L5 | 跨运行比较与趋势 | 多 run read model、同一 metric/contract 的可比性声明、baseline identity | 单 run summary 无法可靠推导趋势；不能把不同 profile/eval scope 直接拼接 | [Grafana dashboards](https://grafana.com/docs/grafana/latest/visualizations/dashboards/)、[本仓库 evidence boundary](./QUALITY_ARCHITECTURE.md#dashboard-product-boundary) |
 | L6 | 远程分享与权限 | 身份认证、viewer authorization、审计日志、内容寻址 URL | localhost permalink 只复现本机上下文；分享不能绕过 evidence 权限 | [Grafana sharing authorization](https://grafana.com/docs/grafana/latest/dashboards/share-dashboards-panels/)、[GitHub artifact read access](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/download-workflow-artifacts) |
-| L7 | 协作批注 overlay | 独立写服务、author/time/source、immutable evidence pointer | 批注是新的可变数据，不属于 canonical evidence，也不能写入当前 GET-only workspace | [Sentry Issue Details](https://docs.sentry.io/product/issues/issue-details/)、[本地 server](../scripts/serve_skill_dashboard.py) |
+| L7 | 协作批注 overlay | 独立写服务、author/time/source、immutable evidence pointer | 批注是新的可变数据，不属于 canonical evidence，也不能写入当前 GET-only workspace | [Sentry Issue Details](https://docs.sentry.io/product/issues/issue-details/)、[本地 server](../skills/skill-reviewer/scripts/serve_skill_dashboard.py) |
 
 ## 推荐 URL 状态模型
 

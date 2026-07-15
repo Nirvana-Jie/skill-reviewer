@@ -3,9 +3,9 @@
 > Agent skill 的证据化评审与发布系统。把 `SKILL.md` 当源代码看，把声明的
 > eval 当作可执行契约，而不是说明文字。
 
-[![skill](https://img.shields.io/badge/type-agent--skill-000)](./SKILL.md)
-[![mode](https://img.shields.io/badge/mode-instruction%20%2B%20validator-111)](./SKILL.md)
-[![verdict](https://img.shields.io/badge/output-paste--ready-0a0)](./references/example-review-output.md)
+[![skill](https://img.shields.io/badge/type-agent--skill-000)](./skills/skill-reviewer/SKILL.md)
+[![mode](https://img.shields.io/badge/mode-instruction%20%2B%20validator-111)](./skills/skill-reviewer/SKILL.md)
+[![verdict](https://img.shields.io/badge/output-paste--ready-0a0)](./skills/skill-reviewer/references/example-review-output.md)
 [![lang](https://img.shields.io/badge/i18n-en%20%7C%20zh--CN-06c)](#i18n)
 
 English: [README.md](README.md)
@@ -97,7 +97,7 @@ focused review 保持同样的节序，没用到的段折叠成一行 `N/A`。
 - **Trigger reliability ≤ 1** → `Not ready`。例如：一个会跑 `rm -rf` 的 skill，description 里却把任何“清理”动词都当触发词。
 - 任一维度 = 2 时，判定被封顶在 `Needs revision`。
 
-规则在 [`references/review-rubric.md`](./references/review-rubric.md)。`not-ready-repo-cleaner` fixture 专门用来触发这条红线。
+规则在 [`references/review-rubric.md`](./skills/skill-reviewer/references/review-rubric.md)。`not-ready-repo-cleaner` fixture 专门用来触发这条红线。
 
 ## 校准 fixture
 
@@ -109,7 +109,7 @@ focused review 保持同样的节序，没用到的段折叠成一行 `N/A`。
 | `needs-revision-meeting-note/`       | Needs revision   | 中段判断                          |
 | `not-ready-repo-cleaner/`            | Not ready        | 安全红线是否真的触发               |
 
-协议写在 [`evals/fixtures/README.md`](./evals/fixtures/README.md)。改 rubric、workflow 或输出模板之前都应该重跑一次。
+协议写在 [`evals/fixtures/README.md`](./skills/skill-reviewer/evals/fixtures/README.md)。改 rubric、workflow 或输出模板之前都应该重跑一次。
 
 ## 本地 eval snapshot
 
@@ -122,13 +122,13 @@ focused review 保持同样的节序，没用到的段折叠成一行 `N/A`。
 - `scripts/run_codex_skill_evals.py` 生成或后处理模型驱动的本地 eval workspace。
 - `scripts/validate_local_snapshot.py` 用生成的本地 eval workspace 校验这些契约。
 
-snapshot 层故意不做全文逐字 diff。只要结构化契约稳定，评审措辞允许合理变化。工作区布局和更新规则见 [`references/local-eval-snapshot.md`](./references/local-eval-snapshot.md)。
+snapshot 层故意不做全文逐字 diff。只要结构化契约稳定，评审措辞允许合理变化。工作区布局和更新规则见 [`references/local-eval-snapshot.md`](./skills/skill-reviewer/references/local-eval-snapshot.md)。
 
 行为 runtime 与校准 snapshot runner 严格分离：前者冻结 eval/grader 权威，生成
 不含答案键的 skill snapshot 与 arm/repeat 独立输入，并把执行和输出绑定到 assignment；
 复用旧 workspace 或输入漂移都会被拒绝。
-详见 [`references/executable-evals.md`](./references/executable-evals.md) 与
-[`references/subagent-eval-workflow.md`](./references/subagent-eval-workflow.md)。
+详见 [`references/executable-evals.md`](./skills/skill-reviewer/references/executable-evals.md) 与
+[`references/subagent-eval-workflow.md`](./skills/skill-reviewer/references/subagent-eval-workflow.md)。
 
 validator 有两种模式。只传 contract 路径时，只检查 JSON 形状，并输出 `contract_only: true`；这不证明模型输出质量。传入 workspace 路径时，才会继续检查保存的产物和 `extracted-review.json` 字段，例如 `critical_issues_have_problem_why_fix`、`has_paste_ready_rewrite_block`、`final_recommendation_is_ordered`。
 
@@ -138,7 +138,7 @@ validator 有两种模式。只传 contract 路径时，只检查 JSON 形状，
 每次只编译一个 split，且 workspace 必须是全新或空目录：
 
 ```bash
-python3 scripts/skill_eval_runtime.py compile \
+python3 skills/skill-reviewer/scripts/skill_eval_runtime.py compile \
   --manifest <skill>/evals/evals.json \
   --subject <candidate> \
   --execution-profile /absolute/path/to/execution-profile.json \
@@ -147,7 +147,7 @@ python3 scripts/skill_eval_runtime.py compile \
   --split selection \
   --workspace /tmp/skill-reviewer-run
 
-python3 scripts/skill_eval_runtime.py grade \
+python3 skills/skill-reviewer/scripts/skill_eval_runtime.py grade \
   --plan /tmp/skill-reviewer-run/execution-plan.json \
   --workspace /tmp/skill-reviewer-run
 ```
@@ -157,12 +157,12 @@ python3 scripts/skill_eval_runtime.py grade \
 都必须先执行 `evolution-authorize`，把 accepted baseline 绑定为 parent，并保留候选谱系、continuity epoch、trace
 与查询预算。权威 selection/audit eval 与 grader 在一次运行中不可变；development
 surrogate 可在独立 digest 下演进。权威 eval 如需调整，必须先让用户确认并重新锁定。完整协议见
-[`references/evolution-workflow.md`](./references/evolution-workflow.md)。
+[`references/evolution-workflow.md`](./skills/skill-reviewer/references/evolution-workflow.md)。
 
 证据可投影为只读产品界面：
 
 ```bash
-python3 scripts/skill_eval_runtime.py project-dashboard \
+python3 skills/skill-reviewer/scripts/skill_eval_runtime.py project-dashboard \
   --workspace /tmp/skill-reviewer-run \
   --state /tmp/skill-reviewer-control/evolution-state.json \
   --output /tmp/skill-reviewer-run/dashboard-data.json
@@ -206,33 +206,33 @@ diff sidecar 的传输失败可以重试；metadata/payload 绑定失败会作�
    ```
 2. 运行确定性的 package-facts 轴：
    ```bash
-   python3 scripts/lint_skill_package.py <target-skill> --format json --fail-on never
+   python3 skills/skill-reviewer/scripts/lint_skill_package.py <target-skill> --format json --fail-on never
    ```
 3. 按顺序读输出：判定、评分卡、关键问题、验证证据、改写建议。把 Critical Issues 当作行动队列。
 4. 只应用你认可的修复。不要为了让评测变绿而随手改 fixture 或 snapshot。
 5. 做回归覆盖时，运行校准 fixture 或本地 workspace，并为每个 eval case 保存 `review.md`、`extracted-review.json`、`grading.json`。本地调用 Codex：
    ```bash
-   python3 scripts/run_codex_skill_evals.py \
+   python3 skills/skill-reviewer/scripts/run_codex_skill_evals.py \
      --workspace /tmp/skill-reviewer-evals/iteration-1
    ```
    如果 workspace 里已经有 `review.md`，只想后处理：
    ```bash
-   python3 scripts/run_codex_skill_evals.py \
+   python3 skills/skill-reviewer/scripts/run_codex_skill_evals.py \
      --workspace /tmp/skill-reviewer-evals/iteration-1 \
      --from-existing-reviews
    ```
-6. 用户要求效果验证且环境支持 subagent 时，冻结 subject 和 accepted baseline，并在同一轮启动成对的 `with_skill` 与 `old_skill` / `without_skill`。具体按 [`references/subagent-eval-workflow.md`](./references/subagent-eval-workflow.md) 执行。
+6. 用户要求效果验证且环境支持 subagent 时，冻结 subject 和 accepted baseline，并在同一轮启动成对的 `with_skill` 与 `old_skill` / `without_skill`。具体按 [`references/subagent-eval-workflow.md`](./skills/skill-reviewer/references/subagent-eval-workflow.md) 执行。
 7. 对保留的输出进行断言评分，并给出唯一验证等级：`not-run`、`inconclusive`、`behavior-verified` 或 `regression-verified`。
 8. 针对该 workspace 校验结构化 snapshot 契约：
    ```bash
-   python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json <workspace>/iteration-1
+   python3 skills/skill-reviewer/scripts/validate_local_snapshot.py skills/skill-reviewer/evals/local-skill-review-snapshot.json <workspace>/iteration-1
    ```
 9. 如果 validator 失败，先判断是 skill 退化了，还是评审契约有意变化。只有契约有意变化时，才更新 `evals/local-skill-review-snapshot.json`。
 
 只想快速检查契约文件本身时：
 
 ```bash
-python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json
+python3 skills/skill-reviewer/scripts/validate_local_snapshot.py skills/skill-reviewer/evals/local-skill-review-snapshot.json
 ```
 
 这个快速检查故意是 contract-only。开 PR 前它应该是绿色，但当你需要证明模型输出质量时，仍要使用带 workspace 的 eval。
@@ -248,8 +248,8 @@ python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.jso
 ```bash
 python3 -m unittest discover -s tests
 pnpm test
-python3 scripts/lint_skill_package.py . --format text --fail-on error
-python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json
+python3 skills/skill-reviewer/scripts/lint_skill_package.py skills/skill-reviewer --format text --fail-on error
+python3 skills/skill-reviewer/scripts/validate_local_snapshot.py skills/skill-reviewer/evals/local-skill-review-snapshot.json
 pnpm dashboard:build
 ```
 
@@ -279,11 +279,11 @@ pnpm test
 ```bash
 python3 -m unittest discover -s tests
 pnpm test
-python3 scripts/lint_skill_package.py . --format text --fail-on error
-python3 -m json.tool evals/evals.json > /dev/null
-python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json
+python3 skills/skill-reviewer/scripts/lint_skill_package.py skills/skill-reviewer --format text --fail-on error
+python3 -m json.tool skills/skill-reviewer/evals/evals.json > /dev/null
+python3 skills/skill-reviewer/scripts/validate_local_snapshot.py skills/skill-reviewer/evals/local-skill-review-snapshot.json
 pnpm dashboard:build
-python3 -m py_compile scripts/lint_skill_package.py scripts/run_codex_skill_evals.py scripts/skill_eval_runtime.py scripts/serve_skill_dashboard.py scripts/validate_local_snapshot.py tests/test_run_codex_skill_evals.py
+python3 -m py_compile skills/skill-reviewer/scripts/lint_skill_package.py skills/skill-reviewer/scripts/run_codex_skill_evals.py skills/skill-reviewer/scripts/skill_eval_runtime.py skills/skill-reviewer/scripts/serve_skill_dashboard.py skills/skill-reviewer/scripts/validate_local_snapshot.py tests/test_run_codex_skill_evals.py
 ```
 
 如果需要不在 GitHub Actions 中保存 API key 的模型辅助审查，在 PR 里使用 Codex Cloud：
@@ -312,6 +312,12 @@ npx skills add Nirvana-Jie/skill-reviewer --list
 
 安装器：[`vercel-labs/skills`](https://github.com/vercel-labs/skills)。
 
+可安装边界有意放在 `skills/skill-reviewer/`，仓库根目录也有意不再保留
+`SKILL.md`。`skills` CLI 会把远程根级 skill 当成单文件安装，而嵌套 skill
+会保留所在目录的 supporting files。入口、references、scripts、evals、fixtures
+和 Dashboard 生产构建因此物理共置，原安装命令即可得到自包含产物。Vitest
+安装集成测试会通过临时 Git remote 调用真实 CLI，再在仓库外运行已安装工具。
+
 ## 触发条件
 
 会在这类请求上触发：
@@ -329,34 +335,17 @@ npx skills add Nirvana-Jie/skill-reviewer --list
 
 ```text
 .
-├── SKILL.md                       # 入口：frontmatter + 工作流
+├── skills/
+│   └── skill-reviewer/            # `skills add` 实际复制的完整产物
+│       ├── SKILL.md               # 入口：frontmatter + 工作流
+│       ├── references/            # 评分、契约、模板与协议
+│       ├── scripts/               # linter、eval runtime、validator、server
+│       ├── evals/                 # 可执行 manifest、snapshot 与 fixtures
+│       └── dashboard/dist/        # 可直接服务的 React 生产构建
 ├── docs/
 │   └── QUALITY_ARCHITECTURE.md    # 设计理由 + 质量门禁
-├── references/
-│   ├── review-rubric.md           # 评分规则 + 非可协商红线
-│   ├── review-checklist.md        # 平铺 MECE 检查清单
-│   ├── output-template-en.md      # 英文输出契约
-│   ├── output-template-zh.md      # 中文输出契约
-│   ├── example-review-output.md   # 输出风格锚点
-│   ├── local-eval-snapshot.md     # 本地 snapshot 风格 eval 协议
-│   ├── executable-evals.md        # 严格 manifest 与断言契约
-│   ├── subagent-eval-workflow.md  # 成对 subagent 效果验证协议
-│   └── evolution-workflow.md      # 有界 optimize/select/audit 协议
-├── scripts/
-│   ├── lint_skill_package.py      # 确定性只读 package linter
-│   ├── skill_eval_runtime.py      # plan/lock/grade/decide/evolve/project
-│   ├── serve_skill_dashboard.py   # 只读本地 Dashboard 服务
-│   ├── run_codex_skill_evals.py   # 模型驱动的 runner / 后处理器
-│   └── validate_local_snapshot.py # 确定性 snapshot 契约校验脚本
-└── evals/
-    ├── evals.json                  # 可执行 prompt、断言与目标
-    ├── local-skill-review-snapshot.json # 结构化 snapshot 契约
-    └── fixtures/                  # 校准锚点
-        ├── ready-csv-column-renamer/
-        ├── needs-revision-meeting-note/
-        └── not-ready-repo-cleaner/
-├── tests/                         # 既有 Python 测试 + Vitest linter/runner 测试
-├── dashboard/                     # React + TypeScript + Vite Evidence Lab
+├── tests/                         # Python 单测 + Vitest 系统测试
+├── dashboard/                     # React + TypeScript + Vite 源码
 ├── package.json                   # Vitest、typecheck 与 Dashboard 命令
 └── pnpm-lock.yaml                 # 固定 pnpm 测试依赖
 ```

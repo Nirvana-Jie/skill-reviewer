@@ -5,6 +5,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+SKILL_ROOT = Path(__file__).resolve().parents[1] / "skills" / "skill-reviewer"
+sys.path.insert(0, str(SKILL_ROOT))
+
 from scripts import run_codex_skill_evals as runner
 from scripts import validate_local_snapshot as validator
 
@@ -249,6 +252,7 @@ class ExistingReviewWorkspaceTests(unittest.TestCase):
             (outputs / "review.md").write_text(SAMPLE_REVIEW, encoding="utf-8")
 
             gradings = runner.materialize_existing_reviews(
+                repo_root=SKILL_ROOT,
                 contract=contract,
                 workspace=workspace,
                 configuration="with_skill",
@@ -330,7 +334,11 @@ class SnapshotValidatorTests(unittest.TestCase):
             )
 
             completed = subprocess.run(
-                [sys.executable, "scripts/validate_local_snapshot.py", str(contract_path)],
+                [
+                    sys.executable,
+                    str(SKILL_ROOT / "scripts" / "validate_local_snapshot.py"),
+                    str(contract_path),
+                ],
                 cwd=Path(__file__).resolve().parents[1],
                 text=True,
                 capture_output=True,
@@ -379,7 +387,7 @@ class SnapshotValidatorTests(unittest.TestCase):
             completed = subprocess.run(
                 [
                     sys.executable,
-                    "scripts/validate_local_snapshot.py",
+                    str(SKILL_ROOT / "scripts" / "validate_local_snapshot.py"),
                     str(contract_path),
                     str(workspace),
                 ],
