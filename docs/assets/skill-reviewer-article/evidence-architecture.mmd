@@ -1,0 +1,31 @@
+flowchart LR
+    A["Skill package\nSKILL.md · scripts · references"] --> C["Compiler\nlock · digest · assignments"]
+    E["Evaluation authority\nevals.json · profile · baseline · holdout"] --> C
+    C --> W1["Candidate worker\nfresh workspace"]
+    C --> W2["Baseline worker\nfresh workspace"]
+    W1 --> D["Deterministic assertions\nschema · file · exit · exact value"]
+    W2 --> D
+    D --> S["Blind semantic supplement\nA/B + B/A"]
+    S --> G{"Release gate\nall hard gates\n+ no objective regression\n+ material primary gain"}
+    G -->|"selection passed"| Q["One-shot opaque audit"]
+    G -->|"failed / inconclusive"| R["Reject candidate\nnever becomes parent"]
+    Q -->|"passed"| P["Evidence-backed release"]
+    Q -->|"failed"| R
+    O["Optimizer / proposer\nmay change candidate\nmay suggest new eval"] -. "no write authority" .-> E
+    G -. "bounded feedback" .-> O
+    C --> V["Read-only Dashboard\nrun · artifact · diff · lineage · gate"]
+    D --> V
+    S --> V
+    G --> V
+
+    classDef authority fill:#FFF2CC,stroke:#B7791F,color:#5F370E,stroke-width:1.5px
+    classDef execution fill:#EAF2FF,stroke:#3168C6,color:#153E75,stroke-width:1.5px
+    classDef decision fill:#E8F6EF,stroke:#2F855A,color:#22543D,stroke-width:1.5px
+    classDef reject fill:#FDECEC,stroke:#C53030,color:#742A2A,stroke-width:1.5px
+    classDef product fill:#F2EEFF,stroke:#6B46C1,color:#44337A,stroke-width:1.5px
+
+    class E authority
+    class A,C,W1,W2,D,S execution
+    class G,Q,P decision
+    class R reject
+    class O,V product

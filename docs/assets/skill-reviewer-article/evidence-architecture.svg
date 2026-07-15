@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 3829.1700000000005 804.3000000000002" width="3829.1700000000005" height="804.3000000000002" style="--bg:#ffffff;--fg:#1f2328;--line:#d1d9e0;--accent:#0969da;--muted:#59636e;background:var(--bg)">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap');
+  text { font-family: 'Inter', system-ui, sans-serif; }
+  svg {
+    /* Derived from --bg and --fg (overridable via --line, --accent, etc.) */
+    --_text:          var(--fg);
+    --_text-sec:      var(--muted, color-mix(in srgb, var(--fg) 60%, var(--bg)));
+    --_text-muted:    var(--muted, color-mix(in srgb, var(--fg) 40%, var(--bg)));
+    --_text-faint:    color-mix(in srgb, var(--fg) 25%, var(--bg));
+    --_line:          var(--line, color-mix(in srgb, var(--fg) 30%, var(--bg)));
+    --_arrow:         var(--accent, color-mix(in srgb, var(--fg) 50%, var(--bg)));
+    --_node-fill:     var(--surface, color-mix(in srgb, var(--fg) 3%, var(--bg)));
+    --_node-stroke:   var(--border, color-mix(in srgb, var(--fg) 20%, var(--bg)));
+    --_group-fill:    var(--bg);
+    --_group-hdr:     color-mix(in srgb, var(--fg) 5%, var(--bg));
+    --_inner-stroke:  color-mix(in srgb, var(--fg) 12%, var(--bg));
+    --_key-badge:     color-mix(in srgb, var(--fg) 10%, var(--bg));
+  }
+</style>
+<defs>
+  <marker id="arrowhead" markerWidth="8" markerHeight="4.8" refX="8" refY="2.4" orient="auto">
+    <polygon points="0 0, 8 2.4, 0 4.8" fill="var(--_arrow)" />
+  </marker>
+  <marker id="arrowhead-start" markerWidth="8" markerHeight="4.8" refX="0" refY="2.4" orient="auto-start-reverse">
+    <polygon points="8 0, 0 2.4, 8 4.8" fill="var(--_arrow)" />
+  </marker>
+</defs>
+<polyline points="479.55000000000007,596.9750000000001 739.325,596.9750000000001 739.325,608.9750000000001" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="540.325,656.9750000000001 739.325,656.9750000000001 739.325,644.9750000000001" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="894.75,626.9750000000001 914.7500000000001,626.9750000000001 914.7500000000001,546.9750000000001 934.75,546.9750000000001" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="894.75,626.9750000000001 914.7500000000001,626.9750000000001 914.7500000000001,694.3000000000002 938.325,694.3000000000002" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="1217,546.9750000000001 1494.65,546.9750000000001 1494.65,558.9750000000001" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="1213.425,694.3000000000002 1494.65,694.3000000000002 1494.65,594.9750000000001" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="1732.3000000000002,576.9750000000001 1752.3,576.9750000000001 1752.3,556.9750000000001 1772.3000000000002,556.9750000000001" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="2076,556.9750000000001 2096,556.9750000000001 2096,361.1500000000001 2116,361.1500000000001" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="2739.796180621555,342.6461806215549 2833.78,342.6461806215549 2833.78,336.9000000000001 3045.11,336.9000000000001" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="2726.0669944202505,393.38300557974964 2833.78,393.38300557974964 2833.78,405.4000000000001 3630.1700000000005,405.4000000000001 3630.1700000000005,409.1500000000001" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="3241.56,336.9000000000001 3424.2900000000004,336.9000000000001 3424.2900000000004,318.4000000000001 3524.7950000000005,318.4000000000001" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="3241.56,336.9000000000001 3424.2900000000004,336.9000000000001 3424.2900000000004,366.9000000000001 3630.1700000000005,366.9000000000001 3630.1700000000005,373.1500000000001" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="894.75,626.9750000000001 914.7500000000001,626.9750000000001 914.7500000000001,764.3000000000002 3143.335,764.3000000000002 3143.335,762.3000000000002" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="1732.3000000000002,576.9750000000001 1752.3,576.9750000000001 1752.3,734.3000000000002 3143.335,734.3000000000002 3143.335,726.3000000000002" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="2076,556.9750000000001 2096,556.9750000000001 2096,704.3000000000001 3143.335,704.3000000000001 3143.335,726.3000000000002" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="2661.325648753531,458.12435124646925 2833.78,458.12435124646925 2833.78,532.7250000000001 3143.335,532.7250000000001 3143.335,726.3000000000002" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<rect x="2774.3" y="323.4000000000001" width="118.96000000000001" height="27" rx="4" ry="4" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="0.5" />
+<text x="2833.78" y="336.9000000000001" text-anchor="middle" dy="0.35em" font-size="11" font-weight="400" fill="var(--_text-muted)">&quot;selection passed&quot;</text>
+<rect x="3069.555" y="391.9000000000001" width="147.56" height="27" rx="4" ry="4" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="0.5" />
+<text x="3143.335" y="405.4000000000001" text-anchor="middle" dy="0.35em" font-size="11" font-weight="400" fill="var(--_text-muted)">&quot;failed / inconclusive&quot;</text>
+<rect x="3393.4100000000003" y="304.9000000000001" width="61.760000000000005" height="27" rx="4" ry="4" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="0.5" />
+<text x="3424.2900000000004" y="318.4000000000001" text-anchor="middle" dy="0.35em" font-size="11" font-weight="400" fill="var(--_text-muted)">&quot;passed&quot;</text>
+<rect x="3393.4100000000003" y="353.4000000000001" width="61.760000000000005" height="27" rx="4" ry="4" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="0.5" />
+<text x="3424.2900000000004" y="366.9000000000001" text-anchor="middle" dy="0.35em" font-size="11" font-weight="400" fill="var(--_text-muted)">&quot;failed&quot;</text>
+<rect x="104.35000000000002" y="578.9750000000001" width="375.20000000000005" height="36" rx="0" ry="0" fill="#EAF2FF" stroke="#3168C6" stroke-width="1.5px" />
+<rect x="583.9000000000001" y="608.9750000000001" width="310.85" height="36" rx="0" ry="0" fill="#EAF2FF" stroke="#3168C6" stroke-width="1.5px" />
+<rect x="43.57500000000002" y="638.9750000000001" width="496.75000000000006" height="36" rx="0" ry="0" fill="#FFF2CC" stroke="#B7791F" stroke-width="1.5px" />
+<rect x="934.75" y="528.9750000000001" width="282.25" height="36" rx="0" ry="0" fill="#EAF2FF" stroke="#3168C6" stroke-width="1.5px" />
+<rect x="938.325" y="676.3000000000002" width="275.1" height="36" rx="0" ry="0" fill="#EAF2FF" stroke="#3168C6" stroke-width="1.5px" />
+<rect x="1257" y="558.9750000000001" width="475.3" height="36" rx="0" ry="0" fill="#EAF2FF" stroke="#3168C6" stroke-width="1.5px" />
+<rect x="1772.3000000000002" y="538.9750000000001" width="303.70000000000005" height="36" rx="0" ry="0" fill="#EAF2FF" stroke="#3168C6" stroke-width="1.5px" />
+<polygon points="2437.15,40.00000000000006 2758.3,361.1500000000001 2437.15,682.3000000000002 2116,361.1500000000001" fill="#E8F6EF" stroke="#2F855A" stroke-width="1.5px" />
+<rect x="3045.11" y="318.9000000000001" width="196.45000000000002" height="36" rx="0" ry="0" fill="#E8F6EF" stroke="#2F855A" stroke-width="1.5px" />
+<rect x="3471.1700000000005" y="373.1500000000001" width="318" height="36" rx="0" ry="0" fill="#FDECEC" stroke="#C53030" stroke-width="1.5px" />
+<rect x="3524.7950000000005" y="300.4000000000001" width="210.75000000000003" height="36" rx="0" ry="0" fill="#E8F6EF" stroke="#2F855A" stroke-width="1.5px" />
+<rect x="40.00000000000003" y="698.9750000000001" width="503.90000000000003" height="36" rx="0" ry="0" fill="#F2EEFF" stroke="#6B46C1" stroke-width="1.5px" />
+<rect x="2909.26" y="726.3000000000002" width="468.15000000000003" height="36" rx="0" ry="0" fill="#F2EEFF" stroke="#6B46C1" stroke-width="1.5px" />
+<text x="291.95000000000005" y="596.9750000000001" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="#153E75">&quot;Skill package\nSKILL.md · scripts · references&quot;</text>
+<text x="739.325" y="626.9750000000001" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="#153E75">&quot;Compiler\nlock · digest · assignments&quot;</text>
+<text x="291.95000000000005" y="656.9750000000001" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="#5F370E">&quot;Evaluation authority\nevals.json · profile · baseline · holdout&quot;</text>
+<text x="1075.875" y="546.9750000000001" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="#153E75">&quot;Candidate worker\nfresh workspace&quot;</text>
+<text x="1075.875" y="694.3000000000002" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="#153E75">&quot;Baseline worker\nfresh workspace&quot;</text>
+<text x="1494.65" y="576.9750000000001" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="#153E75">&quot;Deterministic assertions\nschema · file · exit · exact value&quot;</text>
+<text x="1924.15" y="556.9750000000001" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="#153E75">&quot;Blind semantic supplement\nA/B + B/A&quot;</text>
+<text x="2437.15" y="361.1500000000001" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="#22543D">&quot;Release gate\nall hard gates\n+ no objective regression\n+ material primary gain&quot;</text>
+<text x="3143.335" y="336.9000000000001" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="#22543D">&quot;One-shot opaque audit&quot;</text>
+<text x="3630.1700000000005" y="391.1500000000001" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="#742A2A">&quot;Reject candidate\nnever becomes parent&quot;</text>
+<text x="3630.1700000000005" y="318.4000000000001" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="#22543D">&quot;Evidence-backed release&quot;</text>
+<text x="291.95000000000005" y="716.9750000000001" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="#44337A">&quot;Optimizer / proposer\nmay change candidate\nmay suggest new eval&quot;</text>
+<text x="3143.335" y="744.3000000000002" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="#44337A">&quot;Read-only Dashboard\nrun · artifact · diff · lineage · gate&quot;</text>
+</svg>
