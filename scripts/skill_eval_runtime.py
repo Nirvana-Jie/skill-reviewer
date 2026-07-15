@@ -23,17 +23,20 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-MANIFEST_SCHEMA = "skill-reviewer.evals.v2"
-PLAN_SCHEMA = "skill-reviewer.execution-plan.v1"
-RUN_LOCK_SCHEMA = "skill-reviewer.run-lock.v1"
-VERIFICATION_SCHEMA = "skill-reviewer.verification.v1"
-ACCEPTANCE_SCHEMA = "skill-reviewer.acceptance-decision.v1"
-ASSIGNMENT_SCHEMA = "skill-reviewer.executor-assignment.v1"
-EXECUTION_SCHEMA = "skill-reviewer.executor-execution.v1"
-SEMANTIC_JUDGMENT_SCHEMA = "skill-reviewer.semantic-judgment.v1"
-DASHBOARD_SCHEMA = "skill-reviewer.dashboard-data.v1"
-EVOLUTION_STATE_SCHEMA = "skill-reviewer.evolution-state.v1"
-EVOLUTION_TRANSITION_SCHEMA = "skill-reviewer.evolution-transition.v1"
+MANIFEST_CONTRACT = "skill-reviewer.evals"
+PLAN_CONTRACT = "skill-reviewer.execution-plan"
+RUN_LOCK_CONTRACT = "skill-reviewer.run-lock"
+VERIFICATION_CONTRACT = "skill-reviewer.verification"
+ACCEPTANCE_CONTRACT = "skill-reviewer.acceptance-decision"
+ASSIGNMENT_CONTRACT = "skill-reviewer.executor-assignment"
+EXECUTION_CONTRACT = "skill-reviewer.executor-execution"
+SEMANTIC_JUDGMENT_CONTRACT = "skill-reviewer.semantic-judgment"
+DASHBOARD_CONTRACT = "skill-reviewer.dashboard-data"
+DASHBOARD_DIFF_CONTRACT = "skill-reviewer.dashboard-diff"
+EVOLUTION_STATE_CONTRACT = "skill-reviewer.evolution-state"
+EVOLUTION_TRANSITION_CONTRACT = "skill-reviewer.evolution-transition"
+
+DASHBOARD_DIFF_RENDER_LIMIT_BYTES = 512 * 1024
 
 PATH_SAFE_SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 RUNTIME_SKILL_ENTRIES = ("SKILL.md", "references", "scripts", "assets")
@@ -66,6 +69,38 @@ PERMISSION_FIELDS = {
     "network_allowlist",
     "external_side_effects",
     "writable_roots",
+}
+EXECUTION_PROFILE_FIELDS = {
+    "target",
+    "harness",
+    "capabilities",
+    "isolation",
+    "sampling",
+}
+CANDIDATE_AUTHORIZATION_FIELDS = {
+    "phase",
+    "round",
+    "run_id",
+    "plan_path",
+    "plan_digest",
+    "parent_digest",
+    "candidate_digest",
+    "subject_path",
+    "change",
+    "change_digest",
+    "continuity",
+    "continuity_epoch",
+    "training_trace_ids",
+}
+AUDIT_AUTHORIZATION_FIELDS = {
+    "phase",
+    "round",
+    "run_id",
+    "plan_path",
+    "plan_digest",
+    "candidate_digest",
+    "holdout_visibility",
+    "holdout_digest",
 }
 
 
@@ -112,6 +147,67 @@ def load_json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ManifestError("manifest root must be an object")
     return value
+
+
+def _load_execution_profile(
+    path: Path, *, protected_roots: Iterable[Path]
+) -> dict[str, Any]:
+    provided = Path(os.path.abspath(path))
+    if (
+        provided.is_symlink()
+        or not provided.is_file()
+        or provided.lstat().st_nlink != 1
+    ):
+        raise ManifestError("execution profile must be a canonical regular file")
+    lexical = provided.resolve()
+    if any(
+        _is_within(lexical, root) or _is_within(root, lexical)
+        for root in protected_roots
+    ):
+        raise ManifestError(
+            "execution profile must stay outside candidate, baseline, and run workspaces"
+        )
+    raw = load_json(lexical)
+    unknown = sorted(set(raw) - EXECUTION_PROFILE_FIELDS)
+    if unknown:
+        raise ManifestError(
+            "execution profile contains unsupported fields: " + ", ".join(unknown)
+        )
+    target = _require_string(raw.get("target"), "execution_profile.target")
+    harness = _require_string(raw.get("harness"), "execution_profile.harness")
+    isolation = _require_string(
+        raw.get("isolation"), "execution_profile.isolation"
+    )
+    if isolation not in {"trusted-orchestrator", "local-unattested"}:
+        raise ManifestError(
+            "execution_profile.isolation must be trusted-orchestrator or local-unattested"
+        )
+    capabilities = raw.get("capabilities")
+    if (
+        not isinstance(capabilities, list)
+        or not capabilities
+        or not all(isinstance(item, str) and item.strip() for item in capabilities)
+        or len(set(capabilities)) != len(capabilities)
+    ):
+        raise ManifestError(
+            "execution_profile.capabilities must be a non-empty unique string array"
+        )
+    sampling = raw.get("sampling")
+    if not isinstance(sampling, dict) or not sampling:
+        raise ManifestError("execution_profile.sampling must be a non-empty object")
+    _require_finite_json(sampling, "execution_profile.sampling")
+    normalized = {
+        "target": target,
+        "harness": harness,
+        "capabilities": sorted(capabilities),
+        "isolation": isolation,
+        "sampling": sampling,
+    }
+    return {
+        **normalized,
+        "source_path": str(lexical),
+        "digest": sha256_json(normalized),
+    }
 
 
 def write_json(path: Path, value: dict[str, Any]) -> None:
@@ -439,33 +535,66 @@ def _build_authority(subject: Path, manifest_path: Path) -> dict[str, Any]:
     if not semantic_contract_path.is_file():
         raise ManifestError("semantic grader contract is missing")
     manifest = load_json(manifest_path)
-    declared_fixture_digests: dict[str, str] = {}
+    authoritative_fixture_digests: dict[str, str] = {}
+    development_fixture_digests: dict[str, str] = {}
     raw_evals = manifest.get("evals")
+    authoritative_evals: list[dict[str, Any]] = []
+    development_evals: list[dict[str, Any]] = []
     if isinstance(raw_evals, list):
         for raw_case in raw_evals:
-            if not isinstance(raw_case, dict) or not isinstance(
-                raw_case.get("files", []), list
-            ):
+            if not isinstance(raw_case, dict):
                 continue
+            target_evals = (
+                development_evals
+                if raw_case.get("split") == "development"
+                else authoritative_evals
+            )
+            target_evals.append(raw_case)
+            if not isinstance(raw_case.get("files", []), list):
+                continue
+            holdout = raw_case.get("holdout", {})
+            if isinstance(holdout, dict) and holdout.get("visibility") == "opaque":
+                continue
+            target_digests = (
+                development_fixture_digests
+                if raw_case.get("split") == "development"
+                else authoritative_fixture_digests
+            )
             for relative in raw_case.get("files", []):
                 if not isinstance(relative, str):
                     continue
-                declared_fixture_digests[relative] = sha256_runtime_file(
+                target_digests[relative] = sha256_runtime_file(
                     _safe_subject_file(subject, relative, "declared eval fixture")
                 )
+    shared_manifest = {
+        key: value for key, value in manifest.items() if key != "evals"
+    }
     identity = {
-        "manifest_digest": sha256_file(manifest_path),
-        "evals_digest": sha256_strict_tree(eval_root, "eval authority"),
-        "declared_fixture_digests": dict(sorted(declared_fixture_digests.items())),
+        "authoritative_manifest_digest": sha256_json(
+            {**shared_manifest, "evals": authoritative_evals}
+        ),
+        "authoritative_fixture_digests": dict(
+            sorted(authoritative_fixture_digests.items())
+        ),
         "grader_digest": sha256_file(Path(__file__).resolve()),
         "semantic_grader_contract_digest": sha256_file(semantic_contract_path),
     }
+    development_identity = {
+        "development_manifest_digest": sha256_json(
+            {**shared_manifest, "evals": development_evals}
+        ),
+        "development_fixture_digests": dict(
+            sorted(development_fixture_digests.items())
+        ),
+    }
     return {
         **identity,
+        **development_identity,
         "evals_root": str(eval_root),
         "grader_path": str(Path(__file__).resolve()),
         "semantic_grader_contract_path": str(semantic_contract_path),
         "digest": sha256_json(identity),
+        "development_digest": sha256_json(development_identity),
     }
 
 
@@ -738,8 +867,8 @@ def _normalize_permissions(
 
 
 def validate_manifest(manifest: dict[str, Any], subject: Path) -> list[dict[str, Any]]:
-    if manifest.get("schema_version") != MANIFEST_SCHEMA:
-        raise ManifestError(f"schema_version must be {MANIFEST_SCHEMA}")
+    if manifest.get("contract") != MANIFEST_CONTRACT:
+        raise ManifestError(f"contract must be {MANIFEST_CONTRACT}")
     _require_string(manifest.get("skill_name"), "skill_name")
     defaults = manifest.get("defaults")
     if not isinstance(defaults, dict):
@@ -798,35 +927,86 @@ def validate_manifest(manifest: dict[str, Any], subject: Path) -> list[dict[str,
                 f"{label}.determinism must be deterministic or stochastic"
             )
         _require_string(item.get("purpose"), f"{label}.purpose")
-        _require_string(item.get("prompt"), f"{label}.prompt")
-        files = item.get("files", [])
-        if not isinstance(files, list) or not all(isinstance(value, str) for value in files):
-            raise ManifestError(f"{label}.files must be an array of paths")
-        files = [
-            _validate_artifact_path(value, f"{label}.files[{file_index}]")
-            for file_index, value in enumerate(files)
-        ]
-        if len(set(files)) != len(files):
-            raise ManifestError(f"{label}.files must be unique")
-        file_records = [
-            {
-                "path": relative,
-                "digest": sha256_runtime_file(
-                    _safe_subject_file(subject, relative, f"{label}.files")
-                ),
-            }
-            for relative in files
-        ]
-        assertions = _validate_assertions(item.get("assertions"), f"{label}.assertions")
-        if not any(
-            assertion.get("type") in DETERMINISTIC_ASSERTION_TYPES
-            and assertion.get("severity") == "must_pass"
-            for assertion in assertions
-        ):
+        raw_holdout = item.get("holdout", {"visibility": "public"})
+        if not isinstance(raw_holdout, dict):
+            raise ManifestError(f"{label}.holdout must be an object")
+        holdout_unknown = sorted(set(raw_holdout) - {"visibility", "asset_id"})
+        if holdout_unknown:
             raise ManifestError(
-                f"{label}.assertions requires at least one deterministic must_pass assertion"
+                f"{label}.holdout contains unsupported fields: "
+                + ", ".join(holdout_unknown)
             )
-        objectives = _validate_objectives(item.get("objectives"), f"{label}.objectives")
+        visibility = raw_holdout.get("visibility", "public")
+        if visibility not in {"public", "opaque"}:
+            raise ManifestError(
+                f"{label}.holdout.visibility must be public or opaque"
+            )
+        if visibility == "opaque":
+            if split != "audit":
+                raise ManifestError(
+                    f"{label}.holdout.visibility opaque is allowed only for audit"
+                )
+            exposed_oracle_fields = sorted(
+                {"prompt", "files", "assertions", "objectives"} & set(item)
+            )
+            if exposed_oracle_fields:
+                raise ManifestError(
+                    f"{label} opaque audit must not expose oracle fields: "
+                    + ", ".join(exposed_oracle_fields)
+                )
+            asset_id = _require_string(
+                raw_holdout.get("asset_id"), f"{label}.holdout.asset_id"
+            )
+            if not PATH_SAFE_SLUG.fullmatch(asset_id):
+                raise ManifestError(
+                    f"{label}.holdout.asset_id must be a path-safe lowercase kebab-case slug"
+                )
+            holdout = {"visibility": "opaque", "asset_id": asset_id}
+            prompt: str | None = None
+            file_records: list[dict[str, Any]] = []
+            assertions: list[dict[str, Any]] = []
+            objectives: list[dict[str, Any]] = []
+        else:
+            if "asset_id" in raw_holdout:
+                raise ManifestError(
+                    f"{label}.holdout.asset_id is allowed only for opaque holdout"
+                )
+            holdout = {"visibility": "public", "asset_id": None}
+            prompt = _require_string(item.get("prompt"), f"{label}.prompt")
+            files = item.get("files", [])
+            if not isinstance(files, list) or not all(
+                isinstance(value, str) for value in files
+            ):
+                raise ManifestError(f"{label}.files must be an array of paths")
+            files = [
+                _validate_artifact_path(value, f"{label}.files[{file_index}]")
+                for file_index, value in enumerate(files)
+            ]
+            if len(set(files)) != len(files):
+                raise ManifestError(f"{label}.files must be unique")
+            file_records = [
+                {
+                    "path": relative,
+                    "digest": sha256_runtime_file(
+                        _safe_subject_file(subject, relative, f"{label}.files")
+                    ),
+                }
+                for relative in files
+            ]
+            assertions = _validate_assertions(
+                item.get("assertions"), f"{label}.assertions"
+            )
+            if not any(
+                assertion.get("type") in DETERMINISTIC_ASSERTION_TYPES
+                and assertion.get("severity") == "must_pass"
+                for assertion in assertions
+            ):
+                raise ManifestError(
+                    f"{label}.assertions requires at least one deterministic must_pass assertion"
+                )
+            objectives = _validate_objectives(
+                item.get("objectives"), f"{label}.objectives"
+            )
         timeout_seconds = item.get("timeout_seconds", default_timeout)
         if (
             not isinstance(timeout_seconds, int)
@@ -843,7 +1023,9 @@ def validate_manifest(manifest: dict[str, Any], subject: Path) -> list[dict[str,
         normalized.append(
             {
                 **item,
+                **({"prompt": prompt} if prompt is not None else {}),
                 "files": file_records,
+                "holdout": holdout,
                 "assertions": assertions,
                 "objectives": objectives,
                 "repeats": repeats[determinism],
@@ -852,6 +1034,165 @@ def validate_manifest(manifest: dict[str, Any], subject: Path) -> list[dict[str,
             }
         )
     return normalized
+
+
+def _resolve_holdout_cases(
+    cases: list[dict[str, Any]],
+    *,
+    subject: Path,
+    holdout_pack_path: Path | None,
+    protected_roots: Iterable[Path],
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[tuple[str, str], Path]]:
+    visibilities = {
+        str(case.get("holdout", {}).get("visibility", "public")) for case in cases
+    }
+    if len(visibilities) != 1:
+        raise ManifestError("one execution split cannot mix public and opaque holdout")
+    visibility = next(iter(visibilities))
+    if visibility == "public":
+        if holdout_pack_path is not None:
+            raise ManifestError("--holdout-pack is allowed only for an opaque audit")
+        return (
+            cases,
+            {
+                "visibility": "public",
+                "issuer": None,
+                "source_path": None,
+                "digest": None,
+            },
+            {
+                (str(case["id"]), str(record["path"])): _safe_subject_file(
+                    subject, str(record["path"]), "public eval fixture"
+                )
+                for case in cases
+                for record in case.get("files", [])
+            },
+        )
+    if visibility != "opaque":
+        raise ManifestError("holdout visibility is invalid")
+    if holdout_pack_path is None:
+        raise ManifestError("an opaque audit requires --holdout-pack")
+    provided = Path(os.path.abspath(holdout_pack_path))
+    if (
+        provided.is_symlink()
+        or not provided.is_file()
+        or provided.lstat().st_nlink != 1
+    ):
+        raise ManifestError("holdout pack must be a canonical regular file")
+    pack_path = provided.resolve()
+    if any(
+        _is_within(pack_path, root) or _is_within(root, pack_path)
+        for root in protected_roots
+    ):
+        raise ManifestError(
+            "holdout pack must stay outside candidate, baseline, and run workspaces"
+        )
+    pack = load_json(pack_path)
+    if set(pack) != {"issuer", "assets"}:
+        raise ManifestError("holdout pack must contain only issuer and assets")
+    issuer = _require_string(pack.get("issuer"), "holdout_pack.issuer")
+    assets = pack.get("assets")
+    if not isinstance(assets, dict):
+        raise ManifestError("holdout_pack.assets must be an object")
+    resolved_cases: list[dict[str, Any]] = []
+    sources: dict[tuple[str, str], Path] = {}
+    fixture_digests: dict[str, str] = {}
+    for case in cases:
+        case_id = str(case["id"])
+        asset_id = _require_string(
+            case.get("holdout", {}).get("asset_id"),
+            f"eval {case_id}.holdout.asset_id",
+        )
+        asset = assets.get(asset_id)
+        if not isinstance(asset, dict) or set(asset) != {
+            "prompt",
+            "files",
+            "assertions",
+            "objectives",
+        }:
+            raise ManifestError(f"opaque holdout asset is missing or invalid: {asset_id}")
+        prompt = _require_string(
+            asset.get("prompt"), f"holdout_pack.assets.{asset_id}.prompt"
+        )
+        asset_files = asset.get("files")
+        if not isinstance(asset_files, dict):
+            raise ManifestError(f"opaque holdout asset files are invalid: {asset_id}")
+        logical_paths = [
+            _validate_artifact_path(
+                logical_path,
+                f"holdout_pack.assets.{asset_id}.files.{logical_path}",
+            )
+            for logical_path in asset_files
+        ]
+        if len(set(logical_paths)) != len(logical_paths):
+            raise ManifestError(f"opaque holdout asset files are duplicated: {asset_id}")
+        assertions = _validate_assertions(
+            asset.get("assertions"),
+            f"holdout_pack.assets.{asset_id}.assertions",
+        )
+        if not any(
+            assertion.get("type") in DETERMINISTIC_ASSERTION_TYPES
+            and assertion.get("severity") == "must_pass"
+            for assertion in assertions
+        ):
+            raise ManifestError(
+                f"holdout_pack.assets.{asset_id}.assertions requires at least one deterministic must_pass assertion"
+            )
+        objectives = _validate_objectives(
+            asset.get("objectives"),
+            f"holdout_pack.assets.{asset_id}.objectives",
+        )
+        resolved_records: list[dict[str, Any]] = []
+        for logical_path in logical_paths:
+            source_value = asset_files.get(logical_path)
+            if not isinstance(source_value, str) or not source_value:
+                raise ManifestError(
+                    f"opaque holdout source is invalid: {case_id}/{logical_path}"
+                )
+            source_provided = Path(source_value)
+            if not source_provided.is_absolute():
+                raise ManifestError("opaque holdout sources must use absolute paths")
+            if (
+                source_provided.is_symlink()
+                or not source_provided.is_file()
+                or source_provided.lstat().st_nlink != 1
+            ):
+                raise ManifestError("opaque holdout source must be a regular file")
+            source = source_provided.resolve()
+            if any(
+                _is_within(source, root) or _is_within(root, source)
+                for root in protected_roots
+            ):
+                raise ManifestError(
+                    "opaque holdout sources must stay outside candidate, baseline, and run workspaces"
+                )
+            digest = sha256_runtime_file(source)
+            resolved_records.append({"path": logical_path, "digest": digest})
+            sources[(case_id, logical_path)] = source
+            fixture_digests[f"{case_id}/{logical_path}"] = digest
+        resolved_cases.append(
+            {
+                **case,
+                "prompt": prompt,
+                "files": resolved_records,
+                "assertions": assertions,
+                "objectives": objectives,
+            }
+        )
+    pack_identity = {
+        "pack_digest": sha256_file(pack_path),
+        "fixture_digests": dict(sorted(fixture_digests.items())),
+    }
+    return (
+        resolved_cases,
+        {
+            "visibility": "opaque",
+            "issuer": issuer,
+            "source_path": str(pack_path),
+            "digest": sha256_json(pack_identity),
+        },
+        sources,
+    )
 
 
 def _cases_with_execution_arms(
@@ -948,6 +1289,8 @@ def compile_manifest(
     manifest_path: Path,
     subject: Path,
     workspace: Path,
+    execution_profile_path: Path,
+    holdout_pack_path: Path | None = None,
     baseline_kind: str,
     baseline_path: Path | None = None,
     splits: list[str] | None = None,
@@ -1026,6 +1369,16 @@ def compile_manifest(
     if baseline_path is not None:
         protected_roots.append(baseline_path)
     _ensure_empty_workspace(workspace, protected_roots)
+    execution_profile = _load_execution_profile(
+        execution_profile_path,
+        protected_roots=[*protected_roots, workspace.resolve()],
+    )
+    cases, holdout, fixture_sources = _resolve_holdout_cases(
+        cases,
+        subject=subject,
+        holdout_pack_path=holdout_pack_path,
+        protected_roots=[*protected_roots, workspace.resolve()],
+    )
     manifest_digest = sha256_file(manifest_path)
     subject_digest = runtime_skill_digest(subject)
     authority = _build_authority(subject, manifest_path)
@@ -1037,7 +1390,10 @@ def compile_manifest(
         [
             subject_digest,
             str(authority["digest"]),
+            str(authority["development_digest"]),
             str(baseline.get("digest")),
+            str(execution_profile["digest"]),
+            str(holdout["digest"]),
             selected_split,
             ",".join(str(case["id"]) for case in cases),
         ]
@@ -1080,22 +1436,23 @@ def compile_manifest(
         strict_tree_manifest(snapshot_root, "skill snapshot tree")
     )
     plan = {
-        "schema_version": PLAN_SCHEMA,
+        "contract": PLAN_CONTRACT,
         "run_id": run_id,
         "manifest": {
             "path": str(manifest_path),
             "digest": manifest_digest,
-            "schema_version": MANIFEST_SCHEMA,
+            "contract": MANIFEST_CONTRACT,
         },
         "subject": {"path": str(subject), "digest": subject_digest},
         "baseline": baseline,
         "authority": authority,
+        "execution_profile": execution_profile,
+        "holdout": holdout,
         "skill_snapshots": snapshot_records,
         "skill_snapshot_tree_digest": skill_snapshot_tree_digest,
         "splits": selected_splits,
         "case_ids": [str(case["id"]) for case in cases],
         "cases": cases_with_arms,
-        "agent_provenance": None,
     }
     plan_path = workspace / "execution-plan.json"
     (workspace / "inputs").mkdir(parents=True, exist_ok=True)
@@ -1151,9 +1508,9 @@ def compile_manifest(
                         / "package"
                         / str(record["path"])
                     )
-                    source_path = _safe_subject_file(
-                        subject, str(record["path"]), "eval input"
-                    )
+                    source_path = fixture_sources[
+                        (str(case["id"]), str(record["path"]))
+                    ]
                     isolated_path = _safe_artifact(
                         workspace, input_relative.as_posix()
                     )
@@ -1172,7 +1529,7 @@ def compile_manifest(
                 if input_root.exists():
                     _make_read_only(input_root)
                 assignment = {
-                    "schema_version": ASSIGNMENT_SCHEMA,
+                    "contract": ASSIGNMENT_CONTRACT,
                     "run_id": run_id,
                     "case_id": case["id"],
                     "arm": arm,
@@ -1191,6 +1548,7 @@ def compile_manifest(
                         *(str(record["path"]) for record in input_files),
                     ],
                     "permissions": case["permissions"],
+                    "execution_profile_digest": execution_profile["digest"],
                     "writable_root": str(repeat_root.resolve()),
                     "execution_artifact": "execution.json",
                     "expected_artifacts": expected_artifacts,
@@ -1209,13 +1567,15 @@ def compile_manifest(
     plan["input_tree_digest"] = input_tree_digest
     write_json(plan_path, plan)
     run_lock = {
-        "schema_version": RUN_LOCK_SCHEMA,
+        "contract": RUN_LOCK_CONTRACT,
         "run_id": run_id,
         "plan_digest": sha256_file(plan_path),
         "manifest_digest": manifest_digest,
         "subject_digest": subject_digest,
         "baseline": baseline,
         "authority": authority,
+        "execution_profile": execution_profile,
+        "holdout": holdout,
         "skill_snapshot_digests": {
             arm: record["digest"] for arm, record in snapshot_records.items()
         },
@@ -1539,7 +1899,7 @@ def grade_arm(
         assignment_path = _safe_artifact(workspace, assignment_relative)
         assignment = load_json(assignment_path)
         for key, expected_value in {
-            "schema_version": ASSIGNMENT_SCHEMA,
+            "contract": ASSIGNMENT_CONTRACT,
             "run_id": run_id,
             "case_id": case["id"],
             "arm": arm,
@@ -1573,12 +1933,15 @@ def grade_arm(
                 }
                 repeat_binding_errors.append(str(error))
         expected_identity = {
-            "schema_version": EXECUTION_SCHEMA,
+            "contract": EXECUTION_CONTRACT,
             "run_id": run_id,
             "case_id": case["id"],
             "arm": arm,
             "repeat": repeat,
             "assignment_digest": expected_assignment_digest,
+            "execution_profile_digest": assignment.get(
+                "execution_profile_digest"
+            ),
         }
         for key, expected_value in expected_identity.items():
             if execution.get(key) != expected_value:
@@ -1863,7 +2226,7 @@ def grade_semantic_assertion(
         }
     judgments = judgment.get("judgments")
     if (
-        judgment.get("schema_version") != SEMANTIC_JUDGMENT_SCHEMA
+        judgment.get("contract") != SEMANTIC_JUDGMENT_CONTRACT
         or judgment.get("blind") is not True
         or not isinstance(judgments, list)
         or len(judgments) != 2
@@ -2039,8 +2402,8 @@ def verify_locked_inputs(
     if not lock_path.is_file():
         raise ManifestError("run-lock.json is required before grading")
     lock = load_json(lock_path)
-    if lock.get("schema_version") != RUN_LOCK_SCHEMA:
-        raise ManifestError(f"run lock schema must be {RUN_LOCK_SCHEMA}")
+    if lock.get("contract") != RUN_LOCK_CONTRACT:
+        raise ManifestError(f"run lock contract must be {RUN_LOCK_CONTRACT}")
 
     manifest = plan.get("manifest")
     subject = plan.get("subject")
@@ -2072,6 +2435,10 @@ def verify_locked_inputs(
     authority = plan.get("authority")
     if authority != recomputed_authority:
         raise ManifestError("locked eval or grader authority changed after compilation")
+
+    execution_profile = plan.get("execution_profile")
+    if not isinstance(execution_profile, dict):
+        raise ManifestError("execution plan is missing the execution profile")
 
     baseline_kind = baseline.get("kind")
     baseline_path: Path | None = None
@@ -2124,6 +2491,18 @@ def verify_locked_inputs(
         raise ManifestError(
             "run workspace overlaps the candidate or baseline package"
         )
+    profile_path = Path(
+        _require_string(
+            execution_profile.get("source_path"),
+            "plan.execution_profile.source_path",
+        )
+    )
+    expected_execution_profile = _load_execution_profile(
+        profile_path,
+        protected_roots=[*protected_roots, workspace],
+    )
+    if execution_profile != expected_execution_profile:
+        raise ManifestError("locked execution profile changed after compilation")
     manifest_cases = validate_manifest(load_json(manifest_path), subject_path)
     all_split_case_ids = [
         str(case["id"])
@@ -2139,6 +2518,22 @@ def verify_locked_inputs(
     ]
     if [case["id"] for case in expected_cases_without_arms] != case_ids:
         raise ManifestError("execution plan case ids do not match manifest order")
+    planned_holdout = plan.get("holdout")
+    if not isinstance(planned_holdout, dict):
+        raise ManifestError("execution plan is missing holdout authority")
+    holdout_source = planned_holdout.get("source_path")
+    expected_cases_without_arms, expected_holdout, _fixture_sources = (
+        _resolve_holdout_cases(
+            expected_cases_without_arms,
+            subject=subject_path,
+            holdout_pack_path=Path(holdout_source)
+            if isinstance(holdout_source, str)
+            else None,
+            protected_roots=[*protected_roots, workspace],
+        )
+    )
+    if planned_holdout != expected_holdout:
+        raise ManifestError("locked holdout authority changed after compilation")
     expected_cases = _cases_with_execution_arms(
         expected_cases_without_arms, str(baseline_kind)
     )
@@ -2149,7 +2544,10 @@ def verify_locked_inputs(
         [
             subject_digest,
             str(recomputed_authority["digest"]),
+            str(recomputed_authority["development_digest"]),
             str(baseline_digest),
+            str(expected_execution_profile["digest"]),
+            str(expected_holdout["digest"]),
             selected_split,
             ",".join(case_ids),
         ]
@@ -2248,23 +2646,24 @@ def verify_locked_inputs(
     expected_input_tree_digest = sha256_json(expected_input_tree_manifest)
 
     expected_plan = {
-        "schema_version": PLAN_SCHEMA,
+        "contract": PLAN_CONTRACT,
         "run_id": expected_run_id,
         "manifest": {
             "path": str(manifest_path),
             "digest": manifest_digest,
-            "schema_version": MANIFEST_SCHEMA,
+            "contract": MANIFEST_CONTRACT,
         },
         "subject": {"path": str(subject_path), "digest": subject_digest},
         "baseline": expected_baseline,
         "authority": recomputed_authority,
+        "execution_profile": expected_execution_profile,
+        "holdout": expected_holdout,
         "skill_snapshots": expected_snapshots,
         "skill_snapshot_tree_digest": expected_snapshot_tree_digest,
         "input_tree_digest": expected_input_tree_digest,
         "splits": [selected_split],
         "case_ids": case_ids,
         "cases": expected_cases,
-        "agent_provenance": None,
     }
     if plan != expected_plan:
         raise ManifestError("execution plan does not match the manifest-derived contract")
@@ -2331,7 +2730,7 @@ def verify_locked_inputs(
                 ).as_posix()
                 assignment_path = workspace / assignment_relative
                 expected_assignment = {
-                    "schema_version": ASSIGNMENT_SCHEMA,
+                    "contract": ASSIGNMENT_CONTRACT,
                     "run_id": expected_run_id,
                     "case_id": case["id"],
                     "arm": arm,
@@ -2350,6 +2749,7 @@ def verify_locked_inputs(
                         *(str(record["path"]) for record in input_files),
                     ],
                     "permissions": case["permissions"],
+                    "execution_profile_digest": expected_execution_profile["digest"],
                     "writable_root": str(repeat_root.resolve()),
                     "execution_artifact": "execution.json",
                     "expected_artifacts": expected_artifacts,
@@ -2374,13 +2774,15 @@ def verify_locked_inputs(
         for record in case["files"]
     }
     expected_lock = {
-        "schema_version": RUN_LOCK_SCHEMA,
+        "contract": RUN_LOCK_CONTRACT,
         "run_id": expected_run_id,
         "plan_digest": sha256_file(plan_path),
         "manifest_digest": manifest_digest,
         "subject_digest": subject_digest,
         "baseline": expected_baseline,
         "authority": recomputed_authority,
+        "execution_profile": expected_execution_profile,
+        "holdout": expected_holdout,
         "skill_snapshot_digests": expected_snapshot_digests,
         "skill_snapshot_tree_digest": expected_snapshot_tree_digest,
         "input_tree_digest": expected_input_tree_digest,
@@ -2406,8 +2808,8 @@ def grade_run(
     plan_path = plan_path.resolve()
     workspace = workspace.resolve()
     plan = load_json(plan_path)
-    if plan.get("schema_version") != PLAN_SCHEMA:
-        raise ManifestError(f"execution plan schema must be {PLAN_SCHEMA}")
+    if plan.get("contract") != PLAN_CONTRACT:
+        raise ManifestError(f"execution plan contract must be {PLAN_CONTRACT}")
     integrity = verify_locked_inputs(
         plan_path=plan_path.resolve(), workspace=workspace.resolve(), plan=plan
     )
@@ -2556,6 +2958,11 @@ def grade_run(
         any(arm != "with_skill" for arm in case.get("arms", []))
         for case in plan.get("cases", [])
     )
+    is_audit = any(case.get("split") == "audit" for case in plan.get("cases", []))
+    holdout = plan.get("holdout")
+    holdout_visibility = (
+        holdout.get("visibility") if isinstance(holdout, dict) else None
+    )
     if (
         any_incomplete
         or not all_with_skill_passed
@@ -2563,6 +2970,7 @@ def grade_run(
         or any_direction_disagreement
         or any_semantic_problem
         or any_safety_violation
+        or (is_audit and holdout_visibility != "opaque")
     ):
         level = "inconclusive"
     elif has_baseline:
@@ -2570,7 +2978,7 @@ def grade_run(
     else:
         level = "behavior-verified"
     evidence = {
-        "schema_version": VERIFICATION_SCHEMA,
+        "contract": VERIFICATION_CONTRACT,
         "run_id": plan.get("run_id"),
         "subject": plan.get("subject"),
         "baseline": plan.get("baseline"),
@@ -2578,11 +2986,18 @@ def grade_run(
         "cases": case_results,
         "limitations": limitations,
         "integrity": integrity,
-        "agent_provenance": plan.get("agent_provenance"),
+        "execution_profile": plan.get("execution_profile"),
+        "holdout": holdout,
+        "evidence_scope": (
+            "opaque-holdout" if holdout_visibility == "opaque" else "public-calibration"
+        ),
+        "release_eligible": bool(
+            is_audit and holdout_visibility == "opaque" and level != "inconclusive"
+        ),
     }
-    if any(case.get("split") == "audit" for case in plan.get("cases", [])):
+    if is_audit and holdout_visibility != "opaque":
         evidence["limitations"].append(
-            "public audit fixtures are not a hidden holdout; hidden release evidence requires a trusted external runner"
+            "public audit fixtures are calibration-only and cannot authorize release; use a trusted opaque holdout pack"
         )
     if persist:
         write_json(workspace / "verification-evidence.json", evidence)
@@ -2613,6 +3028,23 @@ def _compute_decision_core(
     }
     hard_gates: list[dict[str, Any]] = []
     objective_results: list[dict[str, Any]] = []
+    opaque_holdout = (
+        phase == "audit"
+        and isinstance(plan.get("holdout"), dict)
+        and plan["holdout"].get("visibility") == "opaque"
+    )
+    if phase == "audit":
+        hard_gates.append(
+            {
+                "id": "audit:opaque-holdout",
+                "passed": opaque_holdout,
+                "reason": (
+                    "audit fixtures are bound to a trusted opaque holdout pack"
+                    if opaque_holdout
+                    else "public calibration fixtures cannot authorize release"
+                ),
+            }
+        )
     for case in plan.get("cases", []):
         case_id = str(case.get("id"))
         result = evidence_cases.get(case_id)
@@ -2754,7 +3186,7 @@ def _compute_decision_core(
     else:
         status = "accepted"
     return {
-        "schema_version": ACCEPTANCE_SCHEMA,
+        "contract": ACCEPTANCE_CONTRACT,
         "run_id": plan.get("run_id"),
         "iteration": iteration,
         "phase": phase,
@@ -2763,6 +3195,7 @@ def _compute_decision_core(
         "hard_gates_passed": hard_gates_passed,
         "pareto_admissible": pareto_admissible,
         "material_improvement": material_improvement,
+        "release_eligible": bool(phase == "audit" and accepted and opaque_holdout),
         "hard_gates": hard_gates,
         "objectives": objective_results,
         "reason": {
@@ -2796,8 +3229,8 @@ def decide_candidate(
             "decision evidence must be the workspace verification-evidence.json"
         )
     plan = load_json(plan_path)
-    if plan.get("schema_version") != PLAN_SCHEMA:
-        raise ManifestError(f"execution plan schema must be {PLAN_SCHEMA}")
+    if plan.get("contract") != PLAN_CONTRACT:
+        raise ManifestError(f"execution plan contract must be {PLAN_CONTRACT}")
     plan_splits = plan.get("splits")
     if plan_splits != [phase] or any(
         case.get("split") != phase for case in plan.get("cases", [])
@@ -2806,8 +3239,8 @@ def decide_candidate(
             f"{phase} decisions require a plan containing only the {phase} split"
         )
     evidence = grade_run(plan_path=plan_path, workspace=workspace)
-    if evidence.get("schema_version") != VERIFICATION_SCHEMA:
-        raise ManifestError(f"verification evidence schema must be {VERIFICATION_SCHEMA}")
+    if evidence.get("contract") != VERIFICATION_CONTRACT:
+        raise ManifestError(f"verification evidence contract must be {VERIFICATION_CONTRACT}")
     if plan.get("run_id") != evidence.get("run_id"):
         raise ManifestError("execution plan and evidence use different run ids")
     if iteration < 1:
@@ -2841,8 +3274,8 @@ def decide_candidate(
 def _validate_bound_decision(
     decision: dict[str, Any], decision_path: Path
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    if decision.get("schema_version") != ACCEPTANCE_SCHEMA:
-        raise ManifestError(f"acceptance decision schema must be {ACCEPTANCE_SCHEMA}")
+    if decision.get("contract") != ACCEPTANCE_CONTRACT:
+        raise ManifestError(f"acceptance decision contract must be {ACCEPTANCE_CONTRACT}")
     plan_path = Path(
         _require_string(decision.get("plan_path"), "decision.plan_path")
     )
@@ -2859,10 +3292,10 @@ def _validate_bound_decision(
         raise ManifestError("decision evidence digest is missing or mismatched")
     plan = load_json(plan_path)
     evidence = load_json(evidence_path)
-    if plan.get("schema_version") != PLAN_SCHEMA:
-        raise ManifestError(f"execution plan schema must be {PLAN_SCHEMA}")
-    if evidence.get("schema_version") != VERIFICATION_SCHEMA:
-        raise ManifestError(f"verification evidence schema must be {VERIFICATION_SCHEMA}")
+    if plan.get("contract") != PLAN_CONTRACT:
+        raise ManifestError(f"execution plan contract must be {PLAN_CONTRACT}")
+    if evidence.get("contract") != VERIFICATION_CONTRACT:
+        raise ManifestError(f"verification evidence contract must be {VERIFICATION_CONTRACT}")
     if not (
         decision.get("run_id") == plan.get("run_id") == evidence.get("run_id")
     ):
@@ -2925,11 +3358,258 @@ def _validate_bound_decision(
     return plan, fresh_evidence
 
 
+def _plan_snapshot_path(plan: dict[str, Any], arm: str) -> Path:
+    snapshots = plan.get("skill_snapshots")
+    if not isinstance(snapshots, dict):
+        raise ManifestError("candidate plan is missing skill snapshots")
+    records = [
+        record
+        for record in snapshots.values()
+        if isinstance(record, dict) and record.get("arm") == arm
+    ]
+    if not records:
+        raise ManifestError(f"candidate plan has no {arm} snapshot")
+    path = Path(_require_string(records[0].get("path"), f"{arm} snapshot.path"))
+    expected_digest = records[0].get("digest")
+    if not path.is_dir() or runtime_skill_digest(path) != expected_digest:
+        raise ManifestError(f"candidate plan {arm} snapshot changed")
+    return path
+
+
+def _candidate_change(
+    *, parent_snapshot: Path, candidate_snapshot: Path
+) -> dict[str, Any]:
+    parent_files = _runtime_skill_file_digests(parent_snapshot)
+    candidate_files = _runtime_skill_file_digests(candidate_snapshot)
+    added = sorted(set(candidate_files) - set(parent_files))
+    removed = sorted(set(parent_files) - set(candidate_files))
+    modified = sorted(
+        path
+        for path in set(parent_files) & set(candidate_files)
+        if parent_files[path] != candidate_files[path]
+    )
+    change = {"added": added, "removed": removed, "modified": modified}
+    return {**change, "digest": sha256_json(change)}
+
+
+def _prepare_dashboard_diff_payload_root(workspace: Path) -> Path:
+    payload_root = workspace / "dashboard-diffs"
+    if payload_root.exists():
+        if (
+            payload_root.is_symlink()
+            or not payload_root.is_dir()
+            or payload_root.resolve() != payload_root
+        ):
+            raise ManifestError("dashboard diff payload root must be a canonical directory")
+        for entry in payload_root.iterdir():
+            if (
+                entry.is_symlink()
+                or not entry.is_file()
+                or entry.parent.resolve() != payload_root
+                or not re.fullmatch(r"[a-f0-9]{24}\.json", entry.name)
+            ):
+                raise ManifestError("dashboard diff payload root contains an invalid entry")
+    else:
+        payload_root.mkdir()
+    return payload_root
+
+
+def _dashboard_diff_text(path: Path) -> tuple[str | None, int]:
+    size = path.stat().st_size
+    if size > DASHBOARD_DIFF_RENDER_LIMIT_BYTES:
+        return None, size
+    raw = path.read_bytes()
+    if len(raw) > DASHBOARD_DIFF_RENDER_LIMIT_BYTES:
+        raise ManifestError("dashboard diff source grew while projecting")
+    try:
+        return raw.decode("utf-8"), len(raw)
+    except UnicodeDecodeError:
+        return None, len(raw)
+
+
+def _dashboard_skill_diffs(
+    plan: dict[str, Any], *, workspace: Path
+) -> list[dict[str, Any]]:
+    payload_root = _prepare_dashboard_diff_payload_root(workspace)
+    if plan.get("baseline", {}).get("kind") != "old_skill":
+        return []
+    old_snapshot = _plan_snapshot_path(plan, "old_skill")
+    new_snapshot = _plan_snapshot_path(plan, "with_skill")
+    old_files = {
+        path: digest
+        for path, digest in _runtime_skill_file_digests(old_snapshot).items()
+        if not path.endswith("/")
+    }
+    new_files = {
+        path: digest
+        for path, digest in _runtime_skill_file_digests(new_snapshot).items()
+        if not path.endswith("/")
+    }
+    rows: list[dict[str, Any]] = []
+    for relative_path in sorted(set(old_files) | set(new_files)):
+        old_digest = old_files.get(relative_path)
+        new_digest = new_files.get(relative_path)
+        if old_digest == new_digest:
+            continue
+        if old_digest is None:
+            status = "added"
+        elif new_digest is None:
+            status = "removed"
+        else:
+            status = "modified"
+        binary = False
+        oversized = False
+        contents: dict[str, str] = {"old": "", "new": ""}
+        sizes: dict[str, int] = {"old": 0, "new": 0}
+        for side, snapshot, digest in (
+            ("old", old_snapshot, old_digest),
+            ("new", new_snapshot, new_digest),
+        ):
+            if digest is None:
+                continue
+            source = _safe_subject_file(
+                snapshot, relative_path, f"dashboard {side} diff source"
+            )
+            text, size = _dashboard_diff_text(source)
+            sizes[side] = size
+            if size > DASHBOARD_DIFF_RENDER_LIMIT_BYTES:
+                oversized = True
+            elif text is None:
+                binary = True
+            else:
+                contents[side] = text
+        diff_id = sha256_json(
+            {
+                "path": relative_path,
+                "old_digest": old_digest,
+                "new_digest": new_digest,
+            }
+        )[:24]
+        render_mode = "summary" if oversized else "binary" if binary else "lazy"
+        content_url = (
+            f"/dashboard-diffs/{diff_id}.json" if render_mode == "lazy" else None
+        )
+        payload_digest: str | None = None
+        if content_url is not None:
+            payload_path = payload_root / f"{diff_id}.json"
+            write_json(
+                payload_path,
+                {
+                    "contract": DASHBOARD_DIFF_CONTRACT,
+                    "id": diff_id,
+                    "path": relative_path,
+                    "old_digest": old_digest,
+                    "new_digest": new_digest,
+                    "old_content": contents["old"],
+                    "new_content": contents["new"],
+                },
+            )
+            payload_digest = sha256_file(payload_path)
+        rows.append(
+            {
+                "id": diff_id,
+                "path": relative_path,
+                "status": status,
+                "old_digest": old_digest,
+                "new_digest": new_digest,
+                "old_size": sizes["old"],
+                "new_size": sizes["new"],
+                "binary": binary,
+                "render_mode": render_mode,
+                "content_url": content_url,
+                "payload_digest": payload_digest,
+                "summary": (
+                    f"Interactive preview omitted because one side exceeds {DASHBOARD_DIFF_RENDER_LIMIT_BYTES} bytes; full evidence remains bound by digest."
+                    if oversized
+                    else "Binary content is retained by digest and is not rendered."
+                    if binary
+                    else None
+                ),
+            }
+        )
+    return rows
+
+
+def _candidate_authorization(
+    *,
+    plan: dict[str, Any],
+    plan_path: Path,
+    round_number: int,
+    parent_digest: str,
+    parent_snapshot: Path,
+    continuity: str,
+    continuity_epoch: int,
+    training_trace_ids: list[str],
+) -> dict[str, Any]:
+    candidate = plan.get("subject")
+    if not isinstance(candidate, dict):
+        raise ManifestError("candidate plan subject is missing")
+    candidate_digest = _require_string(
+        candidate.get("digest"), "plan.subject.digest"
+    )
+    change = _candidate_change(
+        parent_snapshot=parent_snapshot,
+        candidate_snapshot=_plan_snapshot_path(plan, "with_skill"),
+    )
+    return {
+        "phase": "selection",
+        "round": round_number,
+        "run_id": _require_string(plan.get("run_id"), "plan.run_id"),
+        "plan_path": str(plan_path.resolve()),
+        "plan_digest": sha256_file(plan_path.resolve()),
+        "parent_digest": parent_digest,
+        "candidate_digest": candidate_digest,
+        "subject_path": _require_string(candidate.get("path"), "plan.subject.path"),
+        "change": {
+            "added": change["added"],
+            "removed": change["removed"],
+            "modified": change["modified"],
+        },
+        "change_digest": change["digest"],
+        "continuity": continuity,
+        "continuity_epoch": continuity_epoch,
+        "training_trace_ids": training_trace_ids,
+    }
+
+
+def _normalize_training_trace_ids(values: list[str] | None) -> list[str]:
+    trace_ids = list(values or [])
+    if (
+        not all(isinstance(value, str) and value.strip() for value in trace_ids)
+        or len(set(trace_ids)) != len(trace_ids)
+    ):
+        raise ManifestError("training trace ids must be unique non-empty strings")
+    return trace_ids
+
+
+def _audit_authorization(
+    *, plan: dict[str, Any], plan_path: Path, round_number: int
+) -> dict[str, Any]:
+    subject = plan.get("subject")
+    if not isinstance(subject, dict):
+        raise ManifestError("audit plan subject is missing")
+    holdout = plan.get("holdout")
+    if not isinstance(holdout, dict):
+        raise ManifestError("audit plan holdout is missing")
+    return {
+        "phase": "audit",
+        "round": round_number,
+        "run_id": _require_string(plan.get("run_id"), "plan.run_id"),
+        "plan_path": str(plan_path.resolve()),
+        "plan_digest": sha256_file(plan_path.resolve()),
+        "candidate_digest": _require_string(
+            subject.get("digest"), "plan.subject.digest"
+        ),
+        "holdout_visibility": holdout.get("visibility"),
+        "holdout_digest": holdout.get("digest"),
+    }
+
+
 def initialize_evolution(*, plan_path: Path, workspace: Path) -> dict[str, Any]:
     plan_path = plan_path.resolve()
     plan = load_json(plan_path)
-    if plan.get("schema_version") != PLAN_SCHEMA:
-        raise ManifestError(f"execution plan schema must be {PLAN_SCHEMA}")
+    if plan.get("contract") != PLAN_CONTRACT:
+        raise ManifestError(f"execution plan contract must be {PLAN_CONTRACT}")
     if plan.get("splits") != ["selection"]:
         raise ManifestError("evolution must initialize from a selection plan")
     subject = plan.get("subject")
@@ -2952,6 +3632,10 @@ def initialize_evolution(*, plan_path: Path, workspace: Path) -> dict[str, Any]:
     authority_digest = _require_string(
         plan.get("authority", {}).get("digest"), "plan.authority.digest"
     )
+    execution_profile_digest = _require_string(
+        plan.get("execution_profile", {}).get("digest"),
+        "plan.execution_profile.digest",
+    )
     if (
         not isinstance(baseline, dict)
         or baseline.get("kind") != "old_skill"
@@ -2965,24 +3649,160 @@ def initialize_evolution(*, plan_path: Path, workspace: Path) -> dict[str, Any]:
     (workspace / "transitions").mkdir(exist_ok=False)
     (workspace / ".transition-staging").mkdir(exist_ok=False)
     evolution_id = f"evo-{sha256_json({'authority': authority_digest, 'baseline': baseline.get('digest')})[:20]}"
+    initial_authorization = _candidate_authorization(
+        plan=plan,
+        plan_path=plan_path,
+        round_number=1,
+        parent_digest=str(baseline["digest"]),
+        parent_snapshot=_plan_snapshot_path(plan, "old_skill"),
+        continuity="continue",
+        continuity_epoch=1,
+        training_trace_ids=[],
+    )
     state = {
-        "schema_version": EVOLUTION_STATE_SCHEMA,
+        "contract": EVOLUTION_STATE_CONTRACT,
         "evolution_id": evolution_id,
         "authority_digest": authority_digest,
+        "execution_profile_digest": execution_profile_digest,
         "baseline": baseline,
         "initialized_from_plan": str(plan_path.resolve()),
         "control_workspace": str(workspace),
         "max_rounds": 3,
         "current_round": 1,
         "status": "optimizing",
-        "next_action": "propose_candidate",
+        "next_action": "run_authorized_selection",
         "terminal": False,
         "audit_consumed": False,
         "selected_subject_digest": None,
+        "authorized_query": initial_authorization,
+        "selection_query_count": 1,
+        "audit_query_count": 0,
+        "continuity_epoch": 1,
+        "candidate_lineage": [initial_authorization],
+        "rejected_candidates": [],
+        "optimizer_rejected_buffer": [],
         "seen_run_ids": [],
         "history": [],
         "journal_head_digest": None,
     }
+    write_json(state_path, state)
+    return state
+
+
+def authorize_evolution(
+    *,
+    state_path: Path,
+    plan_path: Path,
+    parent_digest: str | None,
+    training_trace_ids: list[str] | None,
+    continuity: str,
+) -> dict[str, Any]:
+    state_path = Path(os.path.abspath(state_path))
+    if state_path.is_symlink():
+        raise ManifestError("evolution state path must not be a symbolic link")
+    state_path = state_path.resolve()
+    plan_path = plan_path.resolve()
+    state = load_json(state_path)
+    plan = load_json(plan_path)
+    if state.get("contract") != EVOLUTION_STATE_CONTRACT:
+        raise ManifestError(f"evolution state contract must be {EVOLUTION_STATE_CONTRACT}")
+    if plan.get("contract") != PLAN_CONTRACT:
+        raise ManifestError(f"execution plan contract must be {PLAN_CONTRACT}")
+    verify_locked_inputs(plan_path=plan_path, workspace=plan_path.parent, plan=plan)
+    _validate_evolution_state(state, plan, state_path, plan_path)
+    if state.get("terminal") is True:
+        raise ManifestError("evolution is already terminal")
+    if state.get("authorized_query") is not None:
+        raise ManifestError("the current round already has an authorized evaluation query")
+    if state.get("authority_digest") != plan.get("authority", {}).get("digest"):
+        raise ManifestError("evolution authority changed; user confirmation requires a new run")
+    if state.get("baseline") != plan.get("baseline"):
+        raise ManifestError("accepted old_skill baseline changed during evolution")
+    if state.get("execution_profile_digest") != plan.get(
+        "execution_profile", {}
+    ).get("digest"):
+        raise ManifestError("execution profile changed during evolution")
+    round_number = int(state.get("current_round", 0))
+    splits = plan.get("splits")
+    trace_ids = _normalize_training_trace_ids(training_trace_ids)
+    if state.get("status") == "optimizing":
+        if splits != ["selection"]:
+            raise ManifestError("optimizing evolution can authorize only selection")
+        if parent_digest is None:
+            raise ManifestError("selection authorization requires --parent-digest")
+        if continuity not in {"continue", "reset"}:
+            raise ManifestError("continuity must be continue or reset")
+        baseline_digest = _require_string(
+            state.get("baseline", {}).get("digest"), "state.baseline.digest"
+        )
+        if parent_digest != baseline_digest:
+            raise ManifestError(
+                "selection candidates must branch from the accepted baseline; rejected candidates cannot become parents"
+            )
+        lineage = state.get("candidate_lineage")
+        if not isinstance(lineage, list):
+            raise ManifestError("candidate_lineage must be an array")
+        if int(state.get("selection_query_count", 0)) >= int(
+            state.get("max_rounds", 3)
+        ):
+            raise ManifestError("selection query budget is exhausted")
+        if any(
+            isinstance(record, dict) and record.get("run_id") == plan.get("run_id")
+            for record in lineage
+        ):
+            raise ManifestError("selection run is already present in candidate lineage")
+        parent_snapshot = _plan_snapshot_path(plan, "old_skill")
+        epoch = int(state.get("continuity_epoch", 1))
+        authorization = _candidate_authorization(
+            plan=plan,
+            plan_path=plan_path,
+            round_number=round_number,
+            parent_digest=parent_digest,
+            parent_snapshot=parent_snapshot,
+            continuity=continuity,
+            continuity_epoch=epoch,
+            training_trace_ids=trace_ids,
+        )
+        topology_changed = bool(
+            authorization["change"]["added"]
+            or authorization["change"]["removed"]
+        )
+        if topology_changed and continuity != "reset":
+            raise ManifestError(
+                "topology-changing candidates require --continuity reset"
+            )
+        if continuity == "reset":
+            epoch += 1
+            state["continuity_epoch"] = epoch
+            state["optimizer_rejected_buffer"] = []
+            authorization["continuity_epoch"] = epoch
+        lineage.append(authorization)
+        state["candidate_lineage"] = lineage
+        state["selection_query_count"] = int(
+            state.get("selection_query_count", 0)
+        ) + 1
+        state["authorized_query"] = authorization
+        state["next_action"] = "run_authorized_selection"
+    elif state.get("status") == "awaiting-audit":
+        if splits != ["audit"]:
+            raise ManifestError("awaiting-audit evolution can authorize only audit")
+        if parent_digest is not None or trace_ids:
+            raise ManifestError("audit authorization cannot carry optimizer lineage")
+        if continuity != "continue":
+            raise ManifestError("audit authorization cannot reset continuity")
+        if int(state.get("audit_query_count", 0)) != 0:
+            raise ManifestError("audit may be authorized only once")
+        subject_digest = plan.get("subject", {}).get("digest")
+        if subject_digest != state.get("selected_subject_digest"):
+            raise ManifestError("audit subject is not the accepted selection candidate")
+        authorization = _audit_authorization(
+            plan=plan, plan_path=plan_path, round_number=round_number
+        )
+        state["audit_query_count"] = 1
+        state["authorized_query"] = authorization
+        state["next_action"] = "run_authorized_audit"
+    else:
+        raise ManifestError("evolution state cannot authorize another query")
     write_json(state_path, state)
     return state
 
@@ -2995,13 +3815,17 @@ def advance_evolution(*, state_path: Path, decision_path: Path) -> dict[str, Any
     decision_path = decision_path.resolve()
     state = load_json(state_path)
     decision = load_json(decision_path)
-    if state.get("schema_version") != EVOLUTION_STATE_SCHEMA:
-        raise ManifestError(f"evolution state schema must be {EVOLUTION_STATE_SCHEMA}")
+    if state.get("contract") != EVOLUTION_STATE_CONTRACT:
+        raise ManifestError(f"evolution state contract must be {EVOLUTION_STATE_CONTRACT}")
     plan, _evidence = _validate_bound_decision(decision, decision_path)
     if state.get("authority_digest") != decision.get("authority_digest"):
         raise ManifestError("evolution authority changed; user confirmation requires a new run")
     if state.get("baseline") != decision.get("baseline"):
         raise ManifestError("accepted old_skill baseline changed during evolution")
+    if state.get("execution_profile_digest") != plan.get(
+        "execution_profile", {}
+    ).get("digest"):
+        raise ManifestError("execution profile changed during evolution")
     decision_plan_path = Path(
         _require_string(decision.get("plan_path"), "decision.plan_path")
     ).resolve()
@@ -3030,6 +3854,16 @@ def advance_evolution(*, state_path: Path, decision_path: Path) -> dict[str, Any
     run_id = _require_string(decision.get("run_id"), "decision.run_id")
     if run_id in seen_run_ids:
         raise ManifestError("the same evaluation run cannot advance evolution twice")
+    authorized_query = state.get("authorized_query")
+    if (
+        not isinstance(authorized_query, dict)
+        or authorized_query.get("phase") != phase
+        or authorized_query.get("round") != iteration
+        or authorized_query.get("run_id") != run_id
+        or authorized_query.get("plan_digest") != sha256_file(decision_plan_path)
+        or authorized_query.get("plan_path") != str(decision_plan_path)
+    ):
+        raise ManifestError("decision is not the authorized evaluation query")
 
     history = state.get("history")
     if not isinstance(history, list):
@@ -3057,6 +3891,7 @@ def advance_evolution(*, state_path: Path, decision_path: Path) -> dict[str, Any
             "accepted": decision.get("accepted") is True,
             "decision_path": str(decision_path.resolve()),
             "decision_digest": sha256_file(decision_path),
+            "authorization": dict(authorized_query),
         }
     )
 
@@ -3067,7 +3902,7 @@ def advance_evolution(*, state_path: Path, decision_path: Path) -> dict[str, Any
             state.update(
                 {
                     "status": "awaiting-audit",
-                    "next_action": "run_audit",
+                    "next_action": "authorize_audit",
                     "terminal": False,
                     "selected_subject_digest": plan.get("subject", {}).get("digest"),
                 }
@@ -3085,6 +3920,33 @@ def advance_evolution(*, state_path: Path, decision_path: Path) -> dict[str, Any
                     "terminal": False,
                 }
             )
+        if decision.get("accepted") is not True:
+            rejected_record = {
+                "round": iteration,
+                "run_id": run_id,
+                "candidate_digest": plan.get("subject", {}).get("digest"),
+                "status": decision.get("status"),
+                "reason": decision.get("reason"),
+                "decision_digest": sha256_file(decision_path),
+                "objective_deltas": [
+                    {
+                        "case_id": objective.get("case_id"),
+                        "id": objective.get("id"),
+                        "delta": objective.get("delta"),
+                    }
+                    for objective in decision.get("objectives", [])
+                    if isinstance(objective, dict)
+                ],
+                "continuity_epoch": authorized_query.get("continuity_epoch"),
+            }
+            rejected_candidates = state.get("rejected_candidates")
+            optimizer_buffer = state.get("optimizer_rejected_buffer")
+            if not isinstance(rejected_candidates, list) or not isinstance(
+                optimizer_buffer, list
+            ):
+                raise ManifestError("rejected candidate buffers must be arrays")
+            state["rejected_candidates"] = [*rejected_candidates, rejected_record]
+            state["optimizer_rejected_buffer"] = [*optimizer_buffer, rejected_record]
     else:
         if state.get("status") != "awaiting-audit":
             raise ManifestError("audit is allowed only after a selection candidate is accepted")
@@ -3094,17 +3956,20 @@ def advance_evolution(*, state_path: Path, decision_path: Path) -> dict[str, Any
             "selected_subject_digest"
         ):
             raise ManifestError("audit subject is not the accepted selection candidate")
-        released = decision.get("accepted") is True
+        audit_passed = decision.get("accepted") is True
         state.update(
             {
-                "status": "released" if released else "audit-failed",
-                "next_action": "stop",
+                "status": "audit-passed" if audit_passed else "audit-failed",
+                "next_action": (
+                    "request_user_release" if audit_passed else "stop"
+                ),
                 "terminal": True,
                 "audit_consumed": True,
             }
         )
     state["history"] = history
     state["seen_run_ids"] = [*seen_run_ids, run_id]
+    state["authorized_query"] = None
     transition_path = _safe_artifact(
         Path(_require_string(state.get("control_workspace"), "state.control_workspace"))
         / "transitions",
@@ -3113,7 +3978,7 @@ def advance_evolution(*, state_path: Path, decision_path: Path) -> dict[str, Any
     write_json_exclusive(
         transition_path,
         {
-            "schema_version": EVOLUTION_TRANSITION_SCHEMA,
+            "contract": EVOLUTION_TRANSITION_CONTRACT,
             "sequence": len(history),
             "previous_digest": state.get("journal_head_digest"),
             "record": history[-1],
@@ -3146,14 +4011,175 @@ def _arm_metrics(arm: dict[str, Any]) -> dict[str, float]:
     }
 
 
+def _validate_authorization_plan(
+    authorization: dict[str, Any],
+    *,
+    expected_split: str,
+    authority_digest: str,
+    baseline: dict[str, Any],
+    execution_profile_digest: str,
+    label: str,
+) -> tuple[Path, dict[str, Any]]:
+    plan_path = Path(
+        _require_string(authorization.get("plan_path"), f"{label}.plan_path")
+    )
+    if (
+        not plan_path.is_absolute()
+        or plan_path.is_symlink()
+        or not plan_path.is_file()
+        or plan_path.resolve() != plan_path
+        or plan_path.name != "execution-plan.json"
+    ):
+        raise ManifestError(f"{label} plan path is not canonical")
+    if sha256_file(plan_path) != authorization.get("plan_digest"):
+        raise ManifestError(f"{label} plan digest is invalid")
+    plan = load_json(plan_path)
+    if (
+        plan.get("contract") != PLAN_CONTRACT
+        or plan.get("splits") != [expected_split]
+        or plan.get("run_id") != authorization.get("run_id")
+        or plan.get("authority", {}).get("digest") != authority_digest
+        or plan.get("baseline") != baseline
+        or plan.get("execution_profile", {}).get("digest")
+        != execution_profile_digest
+    ):
+        raise ManifestError(f"{label} plan is incompatible with evolution authority")
+    verify_locked_inputs(
+        plan_path=plan_path, workspace=plan_path.parent, plan=plan
+    )
+    return plan_path, plan
+
+
+def _authorization_binds_exact_plan(
+    authorization: dict[str, Any], plan_path: Path
+) -> bool:
+    canonical_plan_path = plan_path.resolve()
+    return (
+        authorization.get("plan_path") == str(canonical_plan_path)
+        and authorization.get("plan_digest") == sha256_file(canonical_plan_path)
+    )
+
+
+def _validate_candidate_lineage(
+    lineage: list[Any],
+    *,
+    authority_digest: str,
+    baseline: dict[str, Any],
+    execution_profile_digest: str,
+    initialized_run_id: str,
+) -> dict[str, dict[str, Any]]:
+    if not lineage or len(lineage) > 3:
+        raise ManifestError("candidate lineage must contain one to three queries")
+    baseline_digest = _require_string(
+        baseline.get("digest"), "state.baseline.digest"
+    )
+    by_run_id: dict[str, dict[str, Any]] = {}
+    previous_epoch: int | None = None
+    for index, raw_record in enumerate(lineage):
+        label = f"candidate_lineage[{index}]"
+        if not isinstance(raw_record, dict) or set(raw_record) != CANDIDATE_AUTHORIZATION_FIELDS:
+            raise ManifestError(f"{label} contract is invalid")
+        record = raw_record
+        expected_round = index + 1
+        if (
+            record.get("phase") != "selection"
+            or record.get("round") != expected_round
+            or record.get("parent_digest") != baseline_digest
+        ):
+            raise ManifestError(f"{label} phase, round, or parent is invalid")
+        run_id = _require_string(record.get("run_id"), f"{label}.run_id")
+        if run_id in by_run_id or (index == 0 and run_id != initialized_run_id):
+            raise ManifestError("candidate lineage run sequence is invalid")
+        plan_path, candidate_plan = _validate_authorization_plan(
+            record,
+            expected_split="selection",
+            authority_digest=authority_digest,
+            baseline=baseline,
+            execution_profile_digest=execution_profile_digest,
+            label=label,
+        )
+        subject = candidate_plan.get("subject")
+        if not isinstance(subject, dict) or (
+            record.get("candidate_digest") != subject.get("digest")
+            or record.get("subject_path") != subject.get("path")
+        ):
+            raise ManifestError(f"{label} candidate identity is invalid")
+        change = _candidate_change(
+            parent_snapshot=_plan_snapshot_path(candidate_plan, "old_skill"),
+            candidate_snapshot=_plan_snapshot_path(candidate_plan, "with_skill"),
+        )
+        expected_change = {
+            "added": change["added"],
+            "removed": change["removed"],
+            "modified": change["modified"],
+        }
+        if (
+            record.get("change") != expected_change
+            or record.get("change_digest") != change["digest"]
+        ):
+            raise ManifestError(f"{label} change evidence is invalid")
+        trace_ids = record.get("training_trace_ids")
+        if not isinstance(trace_ids, list) or _normalize_training_trace_ids(trace_ids) != trace_ids:
+            raise ManifestError(f"{label} training trace ids are invalid")
+        continuity = record.get("continuity")
+        epoch = record.get("continuity_epoch")
+        if continuity not in {"continue", "reset"} or not isinstance(epoch, int):
+            raise ManifestError(f"{label} continuity is invalid")
+        if index == 0:
+            if continuity != "continue" or epoch != 1:
+                raise ManifestError("initial candidate must start continuity epoch 1")
+        elif continuity == "reset":
+            if epoch != int(previous_epoch) + 1:
+                raise ManifestError(f"{label} reset epoch is invalid")
+        elif epoch != previous_epoch:
+            raise ManifestError(f"{label} continuity epoch is invalid")
+        if index > 0 and (change["added"] or change["removed"]) and continuity != "reset":
+            raise ManifestError(
+                f"{label} topology change is missing a continuity reset"
+            )
+        previous_epoch = epoch
+        by_run_id[run_id] = {"authorization": record, "plan": candidate_plan, "path": plan_path}
+    return by_run_id
+
+
+def _validate_audit_authorization(
+    authorization: dict[str, Any],
+    *,
+    authority_digest: str,
+    baseline: dict[str, Any],
+    execution_profile_digest: str,
+    round_number: int,
+    selected_subject_digest: str,
+    label: str,
+) -> tuple[Path, dict[str, Any]]:
+    if set(authorization) != AUDIT_AUTHORIZATION_FIELDS:
+        raise ManifestError(f"{label} contract is invalid")
+    plan_path, audit_plan = _validate_authorization_plan(
+        authorization,
+        expected_split="audit",
+        authority_digest=authority_digest,
+        baseline=baseline,
+        execution_profile_digest=execution_profile_digest,
+        label=label,
+    )
+    expected = _audit_authorization(
+        plan=audit_plan, plan_path=plan_path, round_number=round_number
+    )
+    if authorization != expected or authorization.get(
+        "candidate_digest"
+    ) != selected_subject_digest:
+        raise ManifestError(f"{label} is not bound to the selected candidate")
+    return plan_path, audit_plan
+
+
 def _validate_evolution_state(
     state: dict[str, Any],
     plan: dict[str, Any],
     state_path: Path,
     plan_path: Path,
 ) -> list[tuple[Path, dict[str, Any]]]:
-    if state.get("schema_version") != EVOLUTION_STATE_SCHEMA:
-        raise ManifestError(f"evolution state schema must be {EVOLUTION_STATE_SCHEMA}")
+    if state.get("contract") != EVOLUTION_STATE_CONTRACT:
+        raise ManifestError(f"evolution state contract must be {EVOLUTION_STATE_CONTRACT}")
     plan_authority = plan.get("authority")
     baseline = plan.get("baseline")
     subject = plan.get("subject")
@@ -3162,7 +4188,13 @@ def _validate_evolution_state(
         for value in (plan_authority, baseline, subject)
     ):
         raise ManifestError("dashboard plan authority, subject, and baseline must be objects")
-    authority_digest = plan_authority.get("digest")
+    authority_digest = _require_string(
+        plan_authority.get("digest"), "plan.authority.digest"
+    )
+    execution_profile_digest = _require_string(
+        plan.get("execution_profile", {}).get("digest"),
+        "plan.execution_profile.digest",
+    )
     control_workspace = Path(
         _require_string(state.get("control_workspace"), "state.control_workspace")
     )
@@ -3194,6 +4226,8 @@ def _validate_evolution_state(
         raise ManifestError("dashboard state authority does not match the current run")
     if state.get("baseline") != baseline:
         raise ManifestError("dashboard state baseline does not match the current run")
+    if state.get("execution_profile_digest") != execution_profile_digest:
+        raise ManifestError("dashboard state execution profile does not match the current run")
     if state.get("max_rounds") != 3:
         raise ManifestError("dashboard state max_rounds must be 3")
     expected_evolution_id = f"evo-{sha256_json({'authority': authority_digest, 'baseline': baseline.get('digest') if isinstance(baseline, dict) else None})[:20]}"
@@ -3211,14 +4245,17 @@ def _validate_evolution_state(
     initialized_authority = initialized_plan.get("authority")
     initialized_subject = initialized_plan.get("subject")
     initialized_baseline = initialized_plan.get("baseline")
+    initialized_execution_profile = initialized_plan.get("execution_profile")
     if (
-        initialized_plan.get("schema_version") != PLAN_SCHEMA
+        initialized_plan.get("contract") != PLAN_CONTRACT
         or not isinstance(initialized_authority, dict)
         or not isinstance(initialized_subject, dict)
         or not isinstance(initialized_baseline, dict)
         or initialized_authority.get("digest") != authority_digest
         or initialized_baseline != baseline
         or initialized_plan.get("splits") != ["selection"]
+        or not isinstance(initialized_execution_profile, dict)
+        or initialized_execution_profile.get("digest") != execution_profile_digest
     ):
         raise ManifestError("dashboard state initialization plan is incompatible")
     protected_roots = [
@@ -3253,6 +4290,40 @@ def _validate_evolution_state(
         or len(set(seen_run_ids)) != len(seen_run_ids)
     ):
         raise ManifestError("dashboard state contains duplicate run ids")
+    candidate_lineage = state.get("candidate_lineage")
+    rejected_candidates = state.get("rejected_candidates")
+    optimizer_rejected_buffer = state.get("optimizer_rejected_buffer")
+    if not all(
+        isinstance(value, list)
+        for value in (
+            candidate_lineage,
+            rejected_candidates,
+            optimizer_rejected_buffer,
+        )
+    ):
+        raise ManifestError("evolution lineage and rejected buffers must be arrays")
+    if (
+        state.get("selection_query_count") != len(candidate_lineage)
+        or not 1 <= len(candidate_lineage) <= 3
+        or state.get("audit_query_count") not in {0, 1}
+        or not isinstance(state.get("continuity_epoch"), int)
+        or int(state.get("continuity_epoch")) < 1
+    ):
+        raise ManifestError("evolution query accounting is invalid")
+    lineage_by_run_id = _validate_candidate_lineage(
+        candidate_lineage,
+        authority_digest=authority_digest,
+        baseline=baseline,
+        execution_profile_digest=execution_profile_digest,
+        initialized_run_id=_require_string(
+            initialized_plan.get("run_id"), "initialized plan.run_id"
+        ),
+    )
+    lineage_run_ids = list(lineage_by_run_id)
+    if state.get("continuity_epoch") != candidate_lineage[-1].get(
+        "continuity_epoch"
+    ):
+        raise ManifestError("evolution continuity epoch does not match lineage")
 
     staging_files: list[Path] = []
     for staging_path in staging_root.iterdir():
@@ -3296,7 +4367,7 @@ def _validate_evolution_state(
         transition = load_json(path)
         record = transition.get("record")
         if (
-            transition.get("schema_version") != EVOLUTION_TRANSITION_SCHEMA
+            transition.get("contract") != EVOLUTION_TRANSITION_CONTRACT
             or transition.get("sequence") != index
             or transition.get("previous_digest") != previous_digest
             or not isinstance(record, dict)
@@ -3318,14 +4389,20 @@ def _validate_evolution_state(
     projection: dict[str, Any] = {
         "current_round": 1,
         "status": "optimizing",
-        "next_action": "propose_candidate",
+        "next_action": "run_authorized_selection",
         "terminal": False,
         "audit_consumed": False,
         "selected_subject_digest": None,
     }
     validated: list[tuple[Path, dict[str, Any]]] = []
     history_run_ids: list[str] = []
+    selection_history_run_ids: list[str] = []
+    audit_history_count = 0
+    reconstructed_rejected: list[dict[str, Any]] = []
     state_projection = dict(projection) if state_history_length == 0 else None
+    rejected_projection: list[dict[str, Any]] | None = (
+        [] if state_history_length == 0 else None
+    )
     for index, record in enumerate(history):
         decision_path = Path(
             _require_string(
@@ -3339,6 +4416,9 @@ def _validate_evolution_state(
             raise ManifestError("dashboard state decision digest is missing or mismatched")
         decision = load_json(decision_path)
         decision_plan, _ = _validate_bound_decision(decision, decision_path)
+        decision_plan_path = Path(
+            _require_string(decision.get("plan_path"), "decision.plan_path")
+        ).resolve()
         run_id = _require_string(decision.get("run_id"), "decision.run_id")
         expected_record = {
             "phase": decision.get("phase"),
@@ -3349,9 +4429,48 @@ def _validate_evolution_state(
             "accepted": decision.get("accepted") is True,
             "decision_path": str(decision_path),
             "decision_digest": sha256_file(decision_path),
+            "authorization": record.get("authorization"),
         }
         if record != expected_record:
             raise ManifestError("dashboard state history does not match its decision")
+        authorization = record.get("authorization")
+        if not isinstance(authorization, dict):
+            raise ManifestError("dashboard history is missing query authorization")
+        if decision.get("phase") == "selection":
+            lineage_entry = lineage_by_run_id.get(run_id)
+            if (
+                lineage_entry is None
+                or authorization != lineage_entry["authorization"]
+                or decision_plan != lineage_entry["plan"]
+                or decision_plan_path != lineage_entry["path"]
+            ):
+                raise ManifestError(
+                    "dashboard selection history is not bound to candidate lineage"
+                )
+            selection_history_run_ids.append(run_id)
+        elif decision.get("phase") == "audit":
+            authorized_plan_path, authorized_plan = _validate_audit_authorization(
+                authorization,
+                authority_digest=authority_digest,
+                baseline=baseline,
+                execution_profile_digest=execution_profile_digest,
+                round_number=int(projection["current_round"]),
+                selected_subject_digest=_require_string(
+                    projection.get("selected_subject_digest"),
+                    "selected subject digest",
+                ),
+                label=f"state.history[{index}].authorization",
+            )
+            if (
+                decision_plan_path != authorized_plan_path
+                or decision_plan != authorized_plan
+            ):
+                raise ManifestError(
+                    "dashboard audit history is not bound to the exact authorized plan"
+                )
+            audit_history_count += 1
+        else:
+            raise ManifestError("dashboard history decision phase is invalid")
         if decision.get("authority_digest") != authority_digest:
             raise ManifestError("dashboard history decision changed eval authority")
         if decision.get("baseline") != baseline:
@@ -3366,7 +4485,7 @@ def _validate_evolution_state(
                 projection.update(
                     {
                         "status": "awaiting-audit",
-                        "next_action": "run_audit",
+                        "next_action": "authorize_audit",
                         "terminal": False,
                         "selected_subject_digest": decision_plan.get("subject", {}).get(
                             "digest"
@@ -3379,6 +4498,30 @@ def _validate_evolution_state(
                 )
             else:
                 projection["current_round"] += 1
+                projection["next_action"] = "propose_candidate"
+            if decision.get("accepted") is not True:
+                reconstructed_rejected.append(
+                    {
+                        "round": decision.get("iteration"),
+                        "run_id": run_id,
+                        "candidate_digest": decision_plan.get("subject", {}).get(
+                            "digest"
+                        ),
+                        "status": decision.get("status"),
+                        "reason": decision.get("reason"),
+                        "decision_digest": sha256_file(decision_path),
+                        "objective_deltas": [
+                            {
+                                "case_id": objective.get("case_id"),
+                                "id": objective.get("id"),
+                                "delta": objective.get("delta"),
+                            }
+                            for objective in decision.get("objectives", [])
+                            if isinstance(objective, dict)
+                        ],
+                        "continuity_epoch": authorization.get("continuity_epoch"),
+                    }
+                )
         elif phase == "audit":
             if (
                 projection["status"] != "awaiting-audit"
@@ -3389,10 +4532,14 @@ def _validate_evolution_state(
                 raise ManifestError("dashboard history contains an invalid audit transition")
             projection.update(
                 {
-                    "status": "released"
+                    "status": "audit-passed"
                     if decision.get("accepted") is True
                     else "audit-failed",
-                    "next_action": "stop",
+                    "next_action": (
+                        "request_user_release"
+                        if decision.get("accepted") is True
+                        else "stop"
+                    ),
                     "terminal": True,
                     "audit_consumed": True,
                 }
@@ -3403,6 +4550,7 @@ def _validate_evolution_state(
         validated.append((decision_path, decision))
         if index + 1 == state_history_length:
             state_projection = dict(projection)
+            rejected_projection = list(reconstructed_rejected)
 
     if history and history_run_ids[0] != initialized_plan.get("run_id"):
         raise ManifestError("dashboard state history does not start from its initialization run")
@@ -3410,6 +4558,86 @@ def _validate_evolution_state(
         raise ManifestError("dashboard state seen_run_ids do not match decision history")
     if state_projection is None:
         raise ManifestError("evolution state projection could not be reconstructed")
+    active_authorization = state.get("authorized_query")
+    if active_authorization is not None and not isinstance(active_authorization, dict):
+        raise ManifestError("authorized query must be an object or null")
+    consumed_prefix = set(history_run_ids[:state_history_length])
+    if isinstance(active_authorization, dict):
+        active_run_id = _require_string(
+            active_authorization.get("run_id"), "authorized_query.run_id"
+        )
+        if active_run_id in consumed_prefix:
+            raise ManifestError("authorized query has already been consumed")
+        active_phase = active_authorization.get("phase")
+        if active_phase == "selection" and state_projection["status"] == "optimizing":
+            lineage_entry = lineage_by_run_id.get(active_run_id)
+            if (
+                lineage_entry is None
+                or active_authorization != lineage_entry["authorization"]
+                or active_authorization.get("round")
+                != state_projection["current_round"]
+                or not _authorization_binds_exact_plan(
+                    active_authorization, plan_path
+                )
+            ):
+                raise ManifestError(
+                    "active selection query is not bound to candidate lineage"
+                )
+            state_projection["next_action"] = "run_authorized_selection"
+            if active_run_id not in set(history_run_ids):
+                projection["next_action"] = "run_authorized_selection"
+        elif (
+            active_phase == "audit"
+            and state_projection["status"] == "awaiting-audit"
+        ):
+            _validate_audit_authorization(
+                active_authorization,
+                authority_digest=authority_digest,
+                baseline=baseline,
+                execution_profile_digest=execution_profile_digest,
+                round_number=int(state_projection["current_round"]),
+                selected_subject_digest=_require_string(
+                    state_projection.get("selected_subject_digest"),
+                    "selected subject digest",
+                ),
+                label="authorized_query",
+            )
+            if not _authorization_binds_exact_plan(active_authorization, plan_path):
+                raise ManifestError(
+                    "active audit query is not bound to the exact authorized plan"
+                )
+            state_projection["next_action"] = "run_authorized_audit"
+            if active_run_id not in set(history_run_ids):
+                projection["next_action"] = "run_authorized_audit"
+        else:
+            raise ManifestError("authorized query is incompatible with evolution state")
+    expected_lineage_run_ids = list(selection_history_run_ids)
+    if (
+        isinstance(active_authorization, dict)
+        and active_authorization.get("phase") == "selection"
+        and active_authorization.get("run_id") not in expected_lineage_run_ids
+    ):
+        expected_lineage_run_ids.append(str(active_authorization["run_id"]))
+    if lineage_run_ids != expected_lineage_run_ids:
+        raise ManifestError("candidate lineage contains an unauthorized branch")
+    expected_audit_query_count = int(
+        audit_history_count > 0
+        or (
+            isinstance(active_authorization, dict)
+            and active_authorization.get("phase") == "audit"
+        )
+    )
+    if state.get("audit_query_count") != expected_audit_query_count:
+        raise ManifestError("audit query accounting is invalid")
+    if rejected_projection is None or rejected_candidates != rejected_projection:
+        raise ManifestError("rejected candidate history does not match decisions")
+    expected_optimizer_buffer = [
+        item
+        for item in rejected_projection
+        if item.get("continuity_epoch") == state.get("continuity_epoch")
+    ]
+    if optimizer_rejected_buffer != expected_optimizer_buffer:
+        raise ManifestError("optimizer rejected buffer does not match its continuity epoch")
     for key, expected in state_projection.items():
         if state.get(key) != expected:
             raise ManifestError(f"dashboard state field is inconsistent: {key}")
@@ -3423,6 +4651,17 @@ def _validate_evolution_state(
     state["history"] = history
     state["seen_run_ids"] = history_run_ids
     state["journal_head_digest"] = journal_digests[-1] if journal_digests else None
+    state["rejected_candidates"] = reconstructed_rejected
+    current_epoch = int(state.get("continuity_epoch", 1))
+    state["optimizer_rejected_buffer"] = [
+        item
+        for item in reconstructed_rejected
+        if item.get("continuity_epoch") == current_epoch
+    ]
+    if isinstance(state.get("authorized_query"), dict) and state[
+        "authorized_query"
+    ].get("run_id") in set(history_run_ids):
+        state["authorized_query"] = None
     state.update(projection)
     return validated
 
@@ -3462,8 +4701,8 @@ def project_dashboard(
         )
     plan_path = workspace / "execution-plan.json"
     plan = load_json(plan_path)
-    if plan.get("schema_version") != PLAN_SCHEMA:
-        raise ManifestError(f"execution plan schema must be {PLAN_SCHEMA}")
+    if plan.get("contract") != PLAN_CONTRACT:
+        raise ManifestError(f"execution plan contract must be {PLAN_CONTRACT}")
     projected_integrity = verify_locked_inputs(
         plan_path=plan_path, workspace=workspace, plan=plan
     )
@@ -3505,12 +4744,32 @@ def project_dashboard(
             )
         )
         seen_run_ids = state.get("seen_run_ids", [])
+        active_query = state.get("authorized_query")
         current_state_run_id = (
-            seen_run_ids[-1] if seen_run_ids else initialized_plan.get("run_id")
+            active_query.get("run_id")
+            if isinstance(active_query, dict)
+            else seen_run_ids[-1]
+            if seen_run_ids
+            else initialized_plan.get("run_id")
         )
         if plan.get("run_id") != current_state_run_id:
             raise ManifestError(
                 "dashboard state does not identify the current run"
+            )
+        state_history = state.get("history", [])
+        current_authorization = (
+            active_query
+            if isinstance(active_query, dict)
+            else state_history[-1].get("authorization")
+            if state_history and isinstance(state_history[-1], dict)
+            else None
+        )
+        if (
+            not isinstance(current_authorization, dict)
+            or not _authorization_binds_exact_plan(current_authorization, plan_path)
+        ):
+            raise ManifestError(
+                "dashboard state is not bound to the exact authorized plan"
             )
     decisions: list[dict[str, Any]] = []
     decision_paths = set(local_decision_paths)
@@ -3756,6 +5015,9 @@ def project_dashboard(
                 "split": planned_case.get("split"),
                 "determinism": planned_case.get("determinism"),
                 "repeats": planned_case.get("repeats"),
+                "holdout_visibility": planned_case.get("holdout", {}).get(
+                    "visibility", "public"
+                ),
                 "status": case_status,
                 "regressed": result.get("regressed") is True,
                 "direction_disagreement": result.get("direction_disagreement") is True,
@@ -3772,8 +5034,67 @@ def project_dashboard(
     hard_gates = (
         latest_decision.get("hard_gates", []) if latest_decision else []
     )
+    raw_execution_profile = plan.get("execution_profile")
+    execution_profile = (
+        {
+            key: raw_execution_profile.get(key)
+            for key in (
+                "target",
+                "harness",
+                "capabilities",
+                "isolation",
+                "sampling",
+                "digest",
+            )
+        }
+        if isinstance(raw_execution_profile, dict)
+        else None
+    )
+    raw_holdout = plan.get("holdout")
+    holdout = (
+        {
+            key: raw_holdout.get(key)
+            for key in ("visibility", "issuer", "digest")
+        }
+        if isinstance(raw_holdout, dict)
+        else None
+    )
+    lineage = [
+        {
+            key: record.get(key)
+            for key in (
+                "round",
+                "run_id",
+                "parent_digest",
+                "candidate_digest",
+                "change",
+                "change_digest",
+                "continuity",
+                "continuity_epoch",
+                "training_trace_ids",
+            )
+        }
+        for record in (state or {}).get("candidate_lineage", [])
+        if isinstance(record, dict)
+    ]
+    raw_active_query = (state or {}).get("authorized_query")
+    active_query = (
+        {
+            key: raw_active_query.get(key)
+            for key in (
+                "phase",
+                "round",
+                "run_id",
+                "candidate_digest",
+                "holdout_visibility",
+            )
+        }
+        if isinstance(raw_active_query, dict)
+        else None
+    )
+    skill_diffs = _dashboard_skill_diffs(plan, workspace=workspace)
     data = {
-        "schema_version": DASHBOARD_SCHEMA,
+        "contract": DASHBOARD_CONTRACT,
         "generated_at": None,
         "refresh_interval_ms": 3000,
         "run": {
@@ -3790,6 +5111,15 @@ def project_dashboard(
             "baseline": plan.get("baseline"),
             "splits": plan.get("splits", []),
             "control_anchor": "local/trusted" if state else None,
+            "execution_profile": execution_profile,
+            "holdout": holdout,
+            "evidence_scope": (evidence or {}).get(
+                "evidence_scope",
+                "opaque-holdout"
+                if (holdout or {}).get("visibility") == "opaque"
+                else "public-calibration",
+            ),
+            "release_eligible": (evidence or {}).get("release_eligible", False),
             "integrity": (evidence or {}).get("integrity", projected_integrity),
         },
         "summary": {
@@ -3808,8 +5138,24 @@ def project_dashboard(
             else None,
             "current_round": state.get("current_round") if state else None,
             "max_rounds": state.get("max_rounds") if state else 3,
+            "selection_queries": state.get("selection_query_count") if state else 0,
+            "audit_queries": state.get("audit_query_count") if state else 0,
+            "rejected_candidates": len(state.get("rejected_candidates", []))
+            if state
+            else 0,
+            "continuity_epoch": state.get("continuity_epoch") if state else None,
+        },
+        "evolution": {
+            "active_query": active_query,
+            "selection_query_limit": state.get("max_rounds", 3) if state else 3,
+            "audit_query_limit": 1,
+            "candidate_lineage": lineage,
+            "rejected_candidates": state.get("rejected_candidates", [])
+            if state
+            else [],
         },
         "cases": case_rows,
+        "diffs": skill_diffs,
         "iterations": decisions,
         "spine": spine,
         "limitations": [
@@ -3833,6 +5179,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     compile_parser = subparsers.add_parser("compile")
     compile_parser.add_argument("--manifest", type=Path, required=True)
     compile_parser.add_argument("--subject", type=Path, required=True)
+    compile_parser.add_argument("--execution-profile", type=Path, required=True)
+    compile_parser.add_argument("--holdout-pack", type=Path)
     compile_parser.add_argument(
         "--baseline-kind", choices=["old_skill", "without_skill"], required=True
     )
@@ -3868,6 +5216,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     evolution_advance_parser = subparsers.add_parser("evolution-advance")
     evolution_advance_parser.add_argument("--state", type=Path, required=True)
     evolution_advance_parser.add_argument("--decision", type=Path, required=True)
+    evolution_authorize_parser = subparsers.add_parser("evolution-authorize")
+    evolution_authorize_parser.add_argument("--state", type=Path, required=True)
+    evolution_authorize_parser.add_argument("--plan", type=Path, required=True)
+    evolution_authorize_parser.add_argument("--parent-digest")
+    evolution_authorize_parser.add_argument(
+        "--training-trace", action="append", dest="training_trace_ids"
+    )
+    evolution_authorize_parser.add_argument(
+        "--continuity", choices=["continue", "reset"], default="continue"
+    )
     dashboard_parser = subparsers.add_parser("project-dashboard")
     dashboard_parser.add_argument("--workspace", type=Path, required=True)
     dashboard_parser.add_argument("--output", type=Path, required=True)
@@ -3883,6 +5241,8 @@ def main(argv: list[str] | None = None) -> int:
                 manifest_path=args.manifest,
                 subject=args.subject,
                 workspace=args.workspace,
+                execution_profile_path=args.execution_profile,
+                holdout_pack_path=args.holdout_pack,
                 baseline_kind=args.baseline_kind,
                 baseline_path=args.baseline_path,
                 splits=args.splits,
@@ -3905,6 +5265,14 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "evolution-advance":
             result = advance_evolution(
                 state_path=args.state, decision_path=args.decision
+            )
+        elif args.command == "evolution-authorize":
+            result = authorize_evolution(
+                state_path=args.state,
+                plan_path=args.plan,
+                parent_digest=args.parent_digest,
+                training_trace_ids=args.training_trace_ids,
+                continuity=args.continuity,
             )
         elif args.command == "project-dashboard":
             result = project_dashboard(

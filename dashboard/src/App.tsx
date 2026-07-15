@@ -17,12 +17,15 @@ import {
   ShieldCheck,
   SlidersHorizontal,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 
 import type { DashboardCase, DashboardData, SpineNode } from "./types";
 
 type SplitFilter = "all" | DashboardCase["split"];
 type ConnectionState = "connecting" | "live" | "stale";
+type CanvasView = "evidence" | "diff";
+
+const DiffViewer = lazy(() => import("./DiffViewer"));
 
 const splitLabels: Array<{ value: SplitFilter; label: string }> = [
   { value: "all", label: "All" },
@@ -43,7 +46,7 @@ const iconByKind = {
 function statusTone(status: string): "good" | "bad" | "warn" | "neutral" {
   const normalized = status.toLowerCase();
   if (
-    ["passed", "accepted", "released", "retained", "regression-verified", "behavior-verified"].some(
+    ["passed", "accepted", "audit-passed", "retained", "regression-verified", "behavior-verified"].some(
       (value) => normalized.includes(value),
     )
   ) {
@@ -94,8 +97,8 @@ function useDashboardData() {
         const response = await fetch(dataUrl, { cache: "no-store" });
         if (!response.ok) throw new Error(`read model returned ${response.status}`);
         const next = (await response.json()) as DashboardData;
-        if (next.schema_version !== "skill-reviewer.dashboard-data.v1") {
-          throw new Error(`unsupported dashboard schema: ${String(next.schema_version)}`);
+        if (next.contract !== "skill-reviewer.dashboard-data") {
+          throw new Error(`unsupported dashboard contract: ${String(next.contract)}`);
         }
         if (!active) return;
         setData(next);
@@ -131,6 +134,7 @@ export function EvidenceDashboard({
 }) {
   const [split, setSplit] = useState<SplitFilter>("all");
   const [selectedId, setSelectedId] = useState(data.spine[0]?.id ?? "");
+  const [canvasView, setCanvasView] = useState<CanvasView>("evidence");
 
   const visibleCases = useMemo(
     () => data.cases.filter((item) => split === "all" || item.split === split),
@@ -188,17 +192,20 @@ export function EvidenceDashboard({
         </div>
       </header>
 
-      <section className={`release-strip release-${runTone}`} aria-label="Release state">
+      <section className={`release-strip release-${runTone}`} aria-label="Behavioral gate state">
         <div>
-          <span className="release-kicker">Release signal</span>
+          <span className="release-kicker">Behavioral signal</span>
           <strong>{data.run.status}</strong>
         </div>
         <p>
-          {data.summary.hard_gates_passed}/{data.summary.hard_gates_total || 0} hard gates · round {data.summary.current_round ?? "—"}/{data.summary.max_rounds}
+          {data.summary.hard_gates_passed}/{data.summary.hard_gates_total || 0} hard gates · {data.run.evidence_scope} · round {data.summary.current_round ?? "—"}/{data.summary.max_rounds}
         </p>
         <div className="integrity-mark">
           {data.run.integrity?.verified ? <ShieldCheck size={16} /> : <CircleAlert size={16} />}
-          <span>{data.run.integrity?.verified ? "Inputs locked" : "Integrity pending"}</span>
+          <span>
+            {data.run.integrity?.verified ? "Inputs locked" : "Integrity pending"}
+            {` · ${data.run.release_eligible ? "behaviorally release-eligible" : "behavioral evidence blocked"}`}
+          </span>
         </div>
       </section>
 
@@ -230,6 +237,30 @@ export function EvidenceDashboard({
             </article>
           </div>
 
+          <div className="evolution-card">
+            <div className="section-label"><GitCompareArrows size={13} /> Evolution control</div>
+            <div className="query-row">
+              <span>Selection queries</span>
+              <strong>{data.summary.selection_queries} / {data.evolution.selection_query_limit}</strong>
+            </div>
+            <div className="query-row">
+              <span>Audit queries</span>
+              <strong>{data.summary.audit_queries} / {data.evolution.audit_query_limit}</strong>
+            </div>
+            <p>
+              continuity epoch {data.summary.continuity_epoch ?? "—"} · {data.summary.rejected_candidates} rejected
+            </p>
+            <div className="lineage-list" aria-label="Candidate lineage">
+              {data.evolution.candidate_lineage.slice(-3).map((candidate) => (
+                <div key={`${candidate.run_id}-${candidate.round}`}>
+                  <span>R{candidate.round ?? "—"}</span>
+                  <code>{shortDigest(candidate.candidate_digest)}</code>
+                  <em>{candidate.continuity ?? "continue"}</em>
+                </div>
+              ))}
+            </div>
+          </div>
+
           <div className="filter-block">
             <div className="section-label"><SlidersHorizontal size={13} /> Evidence split</div>
             <div className="segmented-control">
@@ -258,7 +289,7 @@ export function EvidenceDashboard({
                 <span className={`case-status status-${statusTone(item.status)}`} aria-hidden="true" />
                 <span className="case-copy">
                   <strong>{item.id}</strong>
-                  <small>{item.split} · {item.determinism === "stochastic" ? `${item.repeats}× paired` : "1× paired"}</small>
+                  <small>{item.split} · {item.holdout_visibility} · {item.determinism === "stochastic" ? `${item.repeats}× paired` : "1× paired"}</small>
                 </span>
                 <ChevronRight size={14} aria-hidden="true" />
               </button>
@@ -270,39 +301,63 @@ export function EvidenceDashboard({
         <section className="evidence-canvas panel" aria-label="Evidence spine">
           <div className="panel-heading canvas-heading">
             <div>
-              <p className="eyebrow">Evidence spine</p>
-              <h2>Run → gate → case → artifact</h2>
+              <p className="eyebrow">{canvasView === "evidence" ? "Evidence spine" : "Candidate diff"}</p>
+              <h2>{canvasView === "evidence" ? "Run → gate → case → artifact" : `${data.diffs.length} runtime files changed`}</h2>
             </div>
-            <div className="legend" aria-label="Status legend">
-              <span><i className="legend-dot good" />pass</span>
-              <span><i className="legend-dot warn" />pending</span>
-              <span><i className="legend-dot bad" />fail</span>
+            <div className="canvas-switch" aria-label="Canvas view">
+              <button
+                type="button"
+                className={canvasView === "evidence" ? "is-active" : ""}
+                aria-pressed={canvasView === "evidence"}
+                onClick={() => setCanvasView("evidence")}
+              >
+                Evidence
+              </button>
+              <button
+                type="button"
+                className={canvasView === "diff" ? "is-active" : ""}
+                aria-pressed={canvasView === "diff"}
+                onClick={() => setCanvasView("diff")}
+              >
+                Diff ({data.diffs.length})
+              </button>
             </div>
           </div>
 
-          <div className="spine-stage">
-            <div className="spine-line" aria-hidden="true" />
-            {visibleNodes.map((node, index) => {
-              const Icon = iconByKind[node.kind];
-              return (
-                <button
-                  type="button"
-                  className={`spine-node node-${node.kind} tone-${statusTone(node.status)} ${selectedId === node.id ? "is-selected" : ""}`}
-                  key={node.id}
-                  aria-label={`Open evidence ${node.label}`}
-                  onClick={() => setSelectedId(node.id)}
-                  style={{ "--node-index": index } as React.CSSProperties}
-                >
-                  <span className="node-icon"><Icon size={15} strokeWidth={1.8} /></span>
-                  <span className="node-copy">
-                    <small>{node.kind}{node.arm ? ` · ${node.arm}` : ""}</small>
-                    <strong>{node.label}</strong>
-                    <em>{node.status}</em>
-                  </span>
-                </button>
-              );
-            })}
-          </div>
+          {canvasView === "evidence" ? (
+            <div className="spine-stage">
+              <div className="spine-line" aria-hidden="true" />
+              {visibleNodes.map((node, index) => {
+                const Icon = iconByKind[node.kind];
+                return (
+                  <button
+                    type="button"
+                    className={`spine-node node-${node.kind} tone-${statusTone(node.status)} ${selectedId === node.id ? "is-selected" : ""}`}
+                    key={node.id}
+                    aria-label={`Open evidence ${node.label}`}
+                    onClick={() => setSelectedId(node.id)}
+                    style={{ "--node-index": index } as React.CSSProperties}
+                  >
+                    <span className="node-icon"><Icon size={15} strokeWidth={1.8} /></span>
+                    <span className="node-copy">
+                      <small>{node.kind}{node.arm ? ` · ${node.arm}` : ""}</small>
+                      <strong>{node.label}</strong>
+                      <em>{node.status}</em>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : data.diffs.length ? (
+            <Suspense fallback={<div className="diff-empty"><p>Loading diff renderer…</p></div>}>
+              <DiffViewer diffs={data.diffs} />
+            </Suspense>
+          ) : (
+            <div className="diff-empty">
+              <GitCompareArrows size={28} />
+              <p>No runtime-surface changes in this plan.</p>
+            </div>
+          )}
         </section>
 
         <aside className="inspector panel" aria-label="Evidence inspector">
@@ -381,6 +436,11 @@ export function EvidenceDashboard({
                   <div><dt>Subject</dt><dd>{shortDigest(data.run.subject?.digest)}</dd></div>
                   <div><dt>Baseline</dt><dd>{data.run.baseline?.kind ?? "none"}</dd></div>
                   <div><dt>Plan</dt><dd>{shortDigest(data.run.integrity?.plan_digest)}</dd></div>
+                  <div><dt>Profile</dt><dd>{shortDigest(data.run.execution_profile?.digest)}</dd></div>
+                  <div><dt>Target</dt><dd>{data.run.execution_profile?.target ?? "unknown"}</dd></div>
+                  <div><dt>Harness</dt><dd>{data.run.execution_profile?.harness ?? "unknown"}</dd></div>
+                  <div><dt>Holdout</dt><dd>{data.run.holdout?.visibility ?? "public"}</dd></div>
+                  <div><dt>Evidence</dt><dd>{data.run.evidence_scope}</dd></div>
                   <div><dt>Control anchor</dt><dd>{data.run.control_anchor ?? "not used"}</dd></div>
                 </dl>
               </div>
@@ -403,7 +463,7 @@ export function EvidenceDashboard({
       <footer>
         <span><Clock3 size={13} /> refresh {Math.round(data.refresh_interval_ms / 1000)}s</span>
         <span><RefreshCw size={13} /> projected from retained JSON artifacts</span>
-        <span><FileText size={13} /> {data.schema_version}</span>
+        <span><FileText size={13} /> {data.contract}</span>
       </footer>
     </main>
   );

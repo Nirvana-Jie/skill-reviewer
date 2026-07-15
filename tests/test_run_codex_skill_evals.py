@@ -305,7 +305,7 @@ class SnapshotValidatorTests(unittest.TestCase):
             contract_path.write_text(
                 json.dumps(
                     {
-                        "schema_version": "skill-reviewer.local-snapshot.v2",
+                        "contract": "skill-reviewer.local-snapshot",
                         "skill_name": "skill-reviewer",
                         "common_required_sections": [],
                         "common_forbidden_actions": [],
@@ -352,7 +352,7 @@ class SnapshotValidatorTests(unittest.TestCase):
             contract_path.write_text(
                 json.dumps(
                     {
-                        "schema_version": "skill-reviewer.local-snapshot.v2",
+                        "contract": "skill-reviewer.local-snapshot",
                         "skill_name": "skill-reviewer",
                         "common_required_sections": [],
                         "common_forbidden_actions": [],

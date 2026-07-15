@@ -17,10 +17,10 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import unquote
 
-from skill_eval_runtime import MANIFEST_SCHEMA, ManifestError, validate_manifest
+from skill_eval_runtime import MANIFEST_CONTRACT, ManifestError, validate_manifest
 
 
-SCHEMA_VERSION = "skill-reviewer.static-analysis.v1"
+STATIC_ANALYSIS_CONTRACT = "skill-reviewer.static-analysis"
 RESOURCE_DIRS = ("references", "scripts", "assets", "evals")
 IGNORED_PARTS = {
     ".git",
@@ -317,13 +317,13 @@ def check_eval_manifest(
             "manifest must be a JSON object",
         )
         return
-    if manifest.get("schema_version") != MANIFEST_SCHEMA:
+    if manifest.get("contract") != MANIFEST_CONTRACT:
         add_finding(
             findings,
             "eval.invalid-manifest",
             "error",
             "evals/evals.json",
-            f"schema_version must be {MANIFEST_SCHEMA}; legacy manifests are not executable",
+            f"contract must be {MANIFEST_CONTRACT}; invalid manifests are not executable",
         )
         return
     manifest_skill_name = manifest.get("skill_name")
@@ -381,7 +381,7 @@ def analyze_skill(target: Path) -> dict[str, Any]:
         root, skill_path = resolve_target(target)
     except ValueError as exc:
         return {
-            "schema_version": SCHEMA_VERSION,
+            "contract": STATIC_ANALYSIS_CONTRACT,
             "subject": {"path": str(target), "digest": None},
             "passed": False,
             "summary": {"errors": 1, "warnings": 0, "info": 0},
@@ -530,7 +530,7 @@ def analyze_skill(target: Path) -> dict[str, Any]:
     }
     digest = package_digest(root, files) if root.exists() else None
     return {
-        "schema_version": SCHEMA_VERSION,
+        "contract": STATIC_ANALYSIS_CONTRACT,
         "subject": {
             "path": str(root),
             "skill_name": frontmatter.get("name") or None,

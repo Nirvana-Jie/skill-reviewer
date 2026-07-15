@@ -1,5 +1,5 @@
 {
-  "schema_version": "skill-reviewer.dashboard-data.v1",
+  "contract": "skill-reviewer.dashboard-data",
   "generated_at": null,
   "refresh_interval_ms": 3000,
   "run": {
@@ -9,6 +9,10 @@
     "subject": null,
     "baseline": null,
     "splits": [],
+    "execution_profile": null,
+    "holdout": null,
+    "evidence_scope": "public-calibration",
+    "release_eligible": false,
     "integrity": null
   },
   "summary": {
@@ -19,9 +23,21 @@
     "hard_gates_total": 0,
     "decision_status": null,
     "current_round": null,
-    "max_rounds": 3
+    "max_rounds": 3,
+    "selection_queries": 0,
+    "audit_queries": 0,
+    "rejected_candidates": 0,
+    "continuity_epoch": null
+  },
+  "evolution": {
+    "active_query": null,
+    "selection_query_limit": 3,
+    "audit_query_limit": 1,
+    "candidate_lineage": [],
+    "rejected_candidates": []
   },
   "cases": [],
+  "diffs": [],
   "iterations": [],
   "spine": [
     {

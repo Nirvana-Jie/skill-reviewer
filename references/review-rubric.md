@@ -201,8 +201,9 @@ When the user explicitly asks whether a skill revision works better, subagents
 are useful for independent execution, not as a substitute for evidence.
 
 **Good looks like:**
-- A present behavior manifest uses `skill-reviewer.evals.v2`, compiles before
-  worker launch, and locks the plan, subject, baseline, and fixture digests.
+- A present behavior manifest uses `skill-reviewer.evals`, compiles before
+  worker launch, and locks the plan, subject, baseline, execution profile,
+  holdout identity, and fixture digests.
 - The reviewed subject and baseline are frozen and identified by digest.
 - `with_skill` and `old_skill` / `without_skill` start in the same turn.
 - Workers are read-only, bounded to one case or configuration, and cannot edit
@@ -217,11 +218,11 @@ are useful for independent execution, not as a substitute for evidence.
   opposite paired directions remain `inconclusive`.
 
 **Red flags:**
-- A present invalid or legacy eval manifest is silently skipped while the skill
+- A present invalid or differently shaped eval manifest is silently skipped while the skill
   still claims a release check.
 - "Subagents were launched" is presented as proof of quality.
 - Only the new skill is run, but the report claims a regression improvement.
-- Workers evaluate different subject versions or mutate shared fixtures.
+- Workers evaluate different subject digests or mutate shared fixtures.
 - The lead agent delegates the final release decision to a worker or majority
   vote.
 - An optimizer can edit evals, fixtures, snapshots, graders, or audit cases to
@@ -235,15 +236,20 @@ beyond tolerance, and at least one primary objective must improve materially.
 Development, selection, and audit data stay separated. Stop after three
 selection rounds; audit runs once and its failure is terminal.
 
-Eval assets are immutable during a run. A proposed eval change requires user
-confirmation and a new locked run. The optimizer may otherwise restructure the
-skill package without an artificial diff-size limit. New dependencies, network
-access, or permission expansion require user approval.
+Authoritative selection/audit eval assets are immutable during a run; a
+development surrogate may evolve under a separate digest. A proposed
+authoritative eval change requires user confirmation and a new locked run. Each
+later selection query and the one audit require explicit authorization and
+lineage. Public audit fixtures are calibration-only; release requires an opaque
+holdout. The optimizer may otherwise restructure the skill package without an
+artificial diff-size limit; architecture rewrites reset continuity from the
+accepted baseline. New dependencies, network access, or permission expansion
+require user approval.
 
 ## 8. Maintainability
 
 **Good looks like:**
-- Clear versioning, changelog, or at least a stable structure.
+- A stable structure or explicit changelog when changes affect callers.
 - Small SKILL.md (~<500 lines) with progressive disclosure into references.
 - Each file has a single, describable purpose.
 - Reasonable dependency footprint.

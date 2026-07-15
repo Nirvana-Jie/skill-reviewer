@@ -38,11 +38,29 @@ diff-size limit; a skill may need an architectural rewrite.
 
 The following stay frozen for the whole evolution run:
 
-- selected `evals/evals.json` contents;
-- eval fixtures and local snapshots;
+- selection/audit cases, their fixtures, and shared manifest defaults;
 - deterministic and semantic grader contracts;
 - accepted baseline digest;
+- external execution-profile digest;
 - selection and audit outputs from earlier rounds.
+
+Development cases and fixtures form a separately digested surrogate surface.
+They may evolve between rounds to improve diagnosis, but cannot modify or
+replace authoritative selection/audit cases. Every new development digest is
+retained in its compiled plan. This separation combines CoEvoSkills-style
+surrogate evolution with a frozen release oracle.
+
+An architecture-scale rewrite is allowed, but it deliberately leaves
+SkillOpt's bounded-edit continuity regime. Every candidate is evaluated as a
+branch from the accepted baseline; a rejected candidate can inform the typed
+optimizer buffer but can never become a parent. For later rounds, any added or
+removed runtime path is mechanically classified as a topology change and must
+use `continuity: reset`. Content-only architectural changes cannot be inferred
+reliably from a tree diff, so the lead must also mark those as reset. The
+control state increments its continuity epoch and clears the active optimizer
+rejected buffer whose meaning depended on adjacent candidates; historical
+rejection records remain available for audit. Do not use diff size as a release
+gate.
 
 If an eval is wrong, the optimizer writes an eval-change proposal with reason,
 expected effect, and affected cases. Do not apply it in the current run. Ask the
@@ -77,18 +95,44 @@ an external append-only anchor controlled outside that owner. Without one,
 report `control anchor: local/trusted` and interpret “one-shot” as workflow
 enforcement by the trusted lead, not a cryptographic guarantee.
 
-The state pins the eval/grader authority and accepted baseline, not one
-candidate `run_id`. Each candidate round and the audit use a fresh, empty run
-workspace and may have a different run ID. `evolution-advance` verifies their
-authority digest before accepting a transition.
+The state pins authoritative eval/grader identity, accepted baseline, and the
+execution-profile digest, not one candidate `run_id`. Each candidate round and
+the audit use a fresh, empty run workspace and may have a different run ID.
+`evolution-advance` verifies their authority/profile, query authorization, and
+lineage before accepting a transition.
+
+Initialization authorizes the round-1 selection plan. Every later selection
+query and the only audit query must be authorized explicitly before dispatch.
+The exact authorized plan/run/round can be consumed only once. Selection query
+count is limited to three; audit query count is limited to one.
 
 For each selection round:
 
-1. Optimizer creates an isolated candidate package.
+1. Optimizer creates an isolated candidate package from the accepted baseline,
+   using typed development feedback and the current-epoch rejected buffer as
+   evidence rather than treating a rejected candidate as a parent.
 2. Lead compiles and runs a targeted development screen plus safety gates.
-3. If the screen is viable, lead compiles and runs the full selection split.
-4. Deterministic assertions run first; semantic comparisons supplement them.
-5. Lead creates a `selection` acceptance decision and advances the state:
+3. If the screen is viable, lead compiles the full selection split in a fresh
+   workspace using the same external execution profile.
+4. For round 1, `evolution-init` already authorized that plan. For later rounds,
+   authorize the exact plan, accepted-baseline parent digest, supporting training traces, and
+   continuity before launching selection workers:
+
+```bash
+python3 scripts/skill_eval_runtime.py evolution-authorize \
+  --state <evolution-control-workspace>/evolution-state.json \
+  --plan <round-N-selection-workspace>/execution-plan.json \
+  --parent-digest <accepted-baseline-sha256> \
+  --training-trace <development-trace-id> \
+  --continuity continue
+```
+
+For a topology or architecture rewrite, keep the accepted baseline digest and
+use `--continuity reset` instead. Added or removed runtime paths are rejected
+without it; there is no diff-size threshold.
+
+5. Deterministic assertions run first; semantic comparisons supplement them.
+6. Lead creates a `selection` acceptance decision and advances the state:
 
 ```bash
 python3 scripts/skill_eval_runtime.py evolution-advance \
@@ -108,27 +152,45 @@ The acceptance rule is conjunctive:
 Averages cannot mask a failed hard gate or a regressed objective. A stochastic
 direction disagreement is `inconclusive` even if its arithmetic mean improves.
 
-After a rejected, no-change, or inconclusive selection decision, feed only
-development and selection evidence to the optimizer. Advance to the next round
-until round three. At round three, stop as `exhausted`; do not ask for an
-unbounded fourth attempt.
+After a rejected, no-change, or inconclusive selection decision, the lineage
+records parent/candidate digest, tree-change digest, trace IDs, continuity epoch,
+plan, and decision. The rejected candidate does not become an active parent.
+Feed only typed development feedback and the allowed aggregate selection result
+into the optimizer; never leak hidden assertions or opaque source paths. Advance
+to the next round until round three. At round three, stop as `exhausted`; do not
+ask for an unbounded fourth attempt.
 
 ## One-shot audit
 
 When selection accepts a candidate, state becomes `awaiting-audit`. Compile the
-audit split and run candidate / accepted baseline / without-skill where
-applicable. The audit decision needs hard gates and Pareto non-regression but
-does not demand another material delta; selection already established it.
+audit split with an opaque holdout pack outside protected roots, then authorize
+the exact plan before dispatch:
 
-- Audit acceptance moves state to `released`.
+```bash
+python3 scripts/skill_eval_runtime.py evolution-authorize \
+  --state <evolution-control-workspace>/evolution-state.json \
+  --plan <audit-workspace>/execution-plan.json
+```
+
+Run candidate / accepted baseline / without-skill where applicable. The audit
+decision needs hard gates and Pareto non-regression but does not demand another
+material delta; selection already established it.
+
+- Audit acceptance moves the behavioral state to `audit-passed` with
+  `next_action: request_user_release`.
 - Audit rejection or inconclusive evidence moves state to `audit-failed`.
 - Either result is terminal.
 - Never reveal audit cases or failures to the optimizer for another patch.
 
 This preserves the audit as a one-shot generalization check instead of another
 training prompt. An audit fixture committed in the skill package is public,
-not a true hidden holdout. A hidden release claim requires a trusted external
-runner that keeps the audit assets outside optimizer-visible storage.
+not a true hidden holdout. Public audit evidence is explicitly
+`public-calibration` and release-ineligible. An opaque manifest contains only
+the public case identity and `asset_id`; prompt, logical files, assertions, and
+objectives are resolved from a trusted external pack. `audit-passed` means the
+behavioral gates are release-eligible, not that the package has been published
+or approved. The lead still combines static/package/permission gates and asks
+the user for the final release decision.
 
 ## Stop conditions
 

@@ -35,11 +35,16 @@ blocker and stops before worker launch.
 2. Place the workspace outside candidate and baseline directories.
 3. Choose `old_skill` for selection/audit revision comparison; development may
    use `without_skill`. Freeze the accepted baseline before candidate edits.
-4. Compile exactly one required split into a fresh, empty workspace. Treat
-   `execution-plan.json` and `run-lock.json` as immutable.
-5. Check permissions. Default to no network and no writes outside each repeat
+4. Create or select a canonical execution profile outside subject, baseline,
+   and run roots. It declares target, harness, capabilities, isolation, and
+   sampling. Do not ask a worker to self-attest a version.
+5. Compile exactly one required split into a fresh, empty workspace. For an
+   opaque audit, also pass the trusted holdout pack; never expose it to the
+   optimizer or executor. Treat `execution-plan.json` and `run-lock.json` as
+   immutable.
+6. Check permissions. Default to no network and no writes outside each repeat
    root. Ask before any external dependency or permission expansion.
-6. Count runs from case × arm × repeat. Respect the environment concurrency
+7. Count runs from case × arm × repeat. Respect the environment concurrency
    limit; batch by configuration when needed.
 
 ## Dispatch contract
@@ -52,6 +57,7 @@ workers concurrently unless the environment explicitly permits more.
 Each executor prompt includes:
 
 - exact sanitized assignment path, run ID, case ID, arm, and repeat numbers;
+- locked execution-profile digest from the assignment;
 - answer-key-free candidate/baseline snapshot path, or the `without_skill`
   marker;
 - source/snapshot digest and declared input paths from the assignment;
@@ -66,14 +72,15 @@ Each executor prompt includes:
   the complete review/evolution loop.
 
 For `with_skill`, tell the executor to follow the frozen candidate skill. For
-`old_skill`, use only the frozen accepted version. For `without_skill`, do not
+`old_skill`, use only the frozen accepted baseline snapshot. For `without_skill`, do not
 load either package; solve from the user prompt and provided fixture only.
 
 The lead records failed, timed-out, or interrupted runs in `execution.json` and
 retains partial outputs. Never reconstruct a missing output from memory.
 Every execution record must bind the run/case/arm/repeat, SHA-256 of its
-assignment, forbidden actions, side effects, and digests of every produced
-declared artifact. A stale or mismatched record is incomplete evidence.
+assignment, execution-profile digest, forbidden actions, side effects, and
+digests of every produced declared artifact. A stale or mismatched record is
+incomplete evidence.
 
 Do not hand the executor the full plan when it contains assertion expectations.
 Pass a sanitized assignment derived from the locked plan: identity, prompt,
@@ -110,7 +117,10 @@ with the lead and graders.
 
 For explicit evolution, keep `evolution-state.json` in a separate control
 workspace. Each candidate round and audit has its own immutable run workspace;
-the state joins them by authority and baseline digests rather than one run ID.
+the state joins them by authority, baseline, execution-profile, and lineage
+digests rather than one run ID. Initialization authorizes the first selection;
+the lead must call `evolution-authorize` before every later selection and before
+the only audit. Executors receive neither state nor authorization paths.
 The control workspace must start empty and must not overlap the candidate or
 accepted baseline package. It also contains a digest-chained `transitions/`
 journal; executors receive neither the state nor journal path. This local
@@ -154,6 +164,10 @@ After all workers finish:
 5. Project `dashboard-data.json` for inspection, but cite retained JSON/output
    paths as the evidence of record.
 
-Optional `agent_provenance` may identify the executor surface. A model or
-subagent version is useful context but is not required evidence; artifact and
-input identity are load-bearing.
+Optional `agent_provenance` may identify the executor surface. Do not request or
+gate on a model/subagent version; the lead-supplied execution profile plus
+artifact, assignment, and input identity are load-bearing.
+
+A public audit is calibration-only even if every case passes. Report its
+`release_eligible: false` limitation and do not advance to release without a
+trusted opaque holdout pack.

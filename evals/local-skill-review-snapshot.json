@@ -1,5 +1,5 @@
 {
-  "schema_version": "skill-reviewer.local-snapshot.v2",
+  "contract": "skill-reviewer.local-snapshot",
   "skill_name": "skill-reviewer",
   "purpose": "Structured local snapshot evals for the skill-reviewer calibration fixtures.",
   "snapshot_policy": {

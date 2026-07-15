@@ -16,6 +16,7 @@
     "dashboard:serve": "python3 scripts/serve_skill_dashboard.py"
   },
   "dependencies": {
+    "@pierre/diffs": "1.2.12",
     "lucide-react": "1.24.0",
     "react": "19.2.7",
     "react-dom": "19.2.7"

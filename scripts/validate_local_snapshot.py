@@ -60,8 +60,8 @@ def find_artifact(config_dir: Path, artifact: str) -> Path | None:
 
 def validate_contract_shape(contract: dict[str, Any]) -> list[str]:
     failures: list[str] = []
-    if contract.get("schema_version") != "skill-reviewer.local-snapshot.v2":
-        failures.append("schema_version must be skill-reviewer.local-snapshot.v2")
+    if contract.get("contract") != "skill-reviewer.local-snapshot":
+        failures.append("contract must be skill-reviewer.local-snapshot")
     if not contract.get("skill_name"):
         failures.append("skill_name is required")
     if not isinstance(contract.get("evals"), list) or not contract["evals"]:

@@ -31,7 +31,7 @@ part of the immutable evaluation authority recorded in `execution-plan.json`.
 
 - A blind semantic-grader worker may retain raw anonymous judgments, but it must
   not write the official mapped judgment artifact.
-- The lead agent owns the official `skill-reviewer.semantic-judgment.v1`
+- The lead agent owns the official `skill-reviewer.semantic-judgment`
   artifact. It adds the two hidden A/B mappings and the exact `binding` computed
   from the execution plan.
 - The binding covers run id, case id, assertion id, evaluation-authority digest,

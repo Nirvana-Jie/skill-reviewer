@@ -18,7 +18,7 @@ claims from evidence, and return fixes the author can apply without
 reinterpreting the review.
 
 A skill package has `SKILL.md` and may include `references/`, `scripts/`,
-`assets/`, and `evals/`. Declared v2 evals are executable release contracts;
+`assets/`, and `evals/`. Declared evals are executable release contracts;
 they are not passive prompt examples.
 
 ## Review contract
@@ -74,7 +74,7 @@ python3 scripts/lint_skill_package.py <skill-dir-or-SKILL.md> \
 ```
 
 The linter checks front matter, package shape, local links, resource reachability,
-the strict `skill-reviewer.evals.v2` manifest contract, and potentially
+the strict `skill-reviewer.evals` manifest contract, and potentially
 dangerous command text. It does not execute the reviewed skill and does not
 decide semantic quality. Treat `error` as a structural defect, `warning` as a
 review lead, and `info` as context that still requires judgment.
@@ -134,7 +134,10 @@ from the rubric.
   into a fresh workspace, plan, run lock, answer-key-free case/arm/repeat skill
   snapshots, and arm/repeat-specific input copies. The lead agent launches
   native paired workers in the same turn; the runtime itself stays
-  agent-agnostic.
+  agent-agnostic. Compilation requires a canonical execution profile outside
+  the subject/baseline/workspace; bind its target, harness, capability,
+  isolation, and sampling digest to every assignment and executor response.
+  Do not require worker or subagent version evidence.
 
 For a full/readiness branch, auto-discover and execute a valid manifest. For a
 focused branch, execute only when evals or effect claims are in scope. An
@@ -151,6 +154,12 @@ the case is `inconclusive`; do not take a majority vote.
 Deterministic cases run once. Stochastic cases run three paired repeats. In an
 audit against `old_skill`, prefer three arms: candidate, accepted old skill, and
 without-skill; an inapplicable third arm needs a retained reason.
+
+Public audit fixtures are calibration-only and cannot authorize release. A
+release-eligible audit requires an opaque `asset_id` resolved by a trusted
+holdout pack outside the candidate, baseline, and run workspaces. The public
+manifest shell must not expose prompt, logical files, assertions, or
+objectives. Never expose that pack or its source paths to the optimizer.
 
 Use exactly one verification level:
 
@@ -175,7 +184,17 @@ python3 scripts/skill_eval_runtime.py project-dashboard \
 ```
 
 The Dashboard is a presentation of the retained evidence chain, not a new
-source of truth and not an execution/approval surface.
+source of truth and not an execution/approval surface. For evolution runs, add
+`--state <evolution-control-workspace>/evolution-state.json` so query budgets,
+lineage, rejected candidates, and continuity are projected as well. Projection
+also creates digest-bound `dashboard-diffs/*.json` sidecars for bounded text
+previews; the server validates each sidecar SHA-256 over the response bytes,
+and applies its 512 KiB per-side cap to parsed UTF-8 text rather than escaped
+JSON size. Binary or oversized files stay metadata-only. This presentation
+budget must never become a candidate acceptance or diff-size gate.
+Live reprojection is generation-atomic: a new read model becomes visible only
+after every referenced sidecar validates, while content-addressed prior routes
+remain available for in-flight views.
 
 **Completion criterion:** plan, eval/grader authority, assignments, skill
 snapshots, and input digests are locked; every configured arm/repeat has a
@@ -186,10 +205,11 @@ mismatched, drifted, unsafe, or conflicting evidence is
 
 ### 5. Evolve only on explicit request
 
-Read `references/evolution-workflow.md` completely. Keep evals, fixtures,
-snapshots, graders, and the accepted baseline immutable. The optimizer may
-restructure the rest of the skill package without an artificial diff-size
-limit.
+Read `references/evolution-workflow.md` completely. Keep authoritative
+selection/audit evals, fixtures, snapshots, graders, and the accepted baseline
+immutable. A development surrogate may evolve only under a separate digest and
+lineage. The optimizer may restructure the rest of the skill package without an
+artificial diff-size limit.
 
 Use development cases for targeted screening, selection cases for candidate
 acceptance, and the audit split once after selection. A selection candidate is
@@ -197,14 +217,25 @@ accepted only when every hard gate passes, no declared objective regresses
 beyond tolerance, and at least one primary objective improves materially.
 Averages never mask a failed gate or regression.
 
+Before every selection after initialization and before the only audit, run
+`evolution-authorize`. Bind the exact plan, accepted-baseline parent digest,
+supporting training trace IDs, and continuity mode. Rejected candidates never
+become parents. A large structural rewrite must restart from the accepted
+baseline with `continuity: reset`; added or removed runtime paths enforce that
+reset mechanically. This increments the continuity epoch and clears the active
+optimizer rejected buffer while preserving audit history. Reject unauthorized,
+duplicate, or wrong-round decisions.
+
 Stop after three rounds. Audit failure is terminal and never returns to the
 optimizer. If an eval appears wrong, propose an eval change and ask the user to
 confirm it before starting a new locked run. Also ask before adding external
 dependencies or widening permissions.
 
-**Completion criterion:** `evolution-state.json` is terminal as `released`,
+**Completion criterion:** `evolution-state.json` is terminal as `audit-passed`,
 `audit-failed`, or `exhausted`, or the user has a concrete approval request;
-every state transition cites its decision artifact.
+every state transition cites its decision artifact. `audit-passed` is
+behavioral evidence only; final release remains a user decision after all
+static, package, and permission gates are aggregated.
 
 ### 6. Aggregate without masking failures
 
@@ -260,7 +291,7 @@ consistent, and no claim exceeds the retained evidence.
   read only when calibration is useful.
 - `references/local-eval-snapshot.md` — structured snapshot design; read for
   eval/snapshot questions.
-- `references/executable-evals.md` — normative v2 manifest, plan, assertion,
+- `references/executable-evals.md` — normative manifest, plan, assertion,
   executor-artifact, and grader contract; read before behavior execution.
 - `references/subagent-eval-workflow.md` — runtime effect verification; read
   for full/readiness auto-verification and explicit effect verification.

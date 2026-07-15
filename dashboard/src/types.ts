@@ -19,6 +19,7 @@ export interface DashboardCase {
   split: "development" | "selection" | "audit";
   determinism: "deterministic" | "stochastic";
   repeats: number;
+  holdout_visibility: "public" | "opaque";
   status: EvidenceStatus;
   regressed: boolean;
   direction_disagreement: boolean;
@@ -60,8 +61,33 @@ export interface AcceptanceDecision {
   objectives?: Array<Record<string, unknown>>;
 }
 
+export interface DashboardDiff {
+  id: string;
+  path: string;
+  status: "added" | "removed" | "modified";
+  old_digest: string | null;
+  new_digest: string | null;
+  old_size: number;
+  new_size: number;
+  binary: boolean;
+  render_mode: "lazy" | "summary" | "binary";
+  content_url: string | null;
+  payload_digest: string | null;
+  summary?: string | null;
+}
+
+export interface DashboardDiffPayload {
+  contract: "skill-reviewer.dashboard-diff";
+  id: string;
+  path: string;
+  old_digest: string | null;
+  new_digest: string | null;
+  old_content: string;
+  new_content: string;
+}
+
 export interface DashboardData {
-  schema_version: "skill-reviewer.dashboard-data.v1";
+  contract: "skill-reviewer.dashboard-data";
   generated_at: string | null;
   refresh_interval_ms: number;
   run: {
@@ -72,6 +98,21 @@ export interface DashboardData {
     baseline?: { kind?: string; path?: string | null; digest?: string | null } | null;
     splits: DashboardCase["split"][];
     control_anchor?: "local/trusted" | null;
+    execution_profile?: {
+      target?: string;
+      harness?: string;
+      capabilities?: string[];
+      isolation?: string;
+      sampling?: Record<string, unknown>;
+      digest?: string;
+    } | null;
+    holdout?: {
+      visibility?: "public" | "opaque";
+      issuer?: string | null;
+      digest?: string | null;
+    } | null;
+    evidence_scope: "public-calibration" | "opaque-holdout";
+    release_eligible: boolean;
     integrity?: {
       locked?: boolean;
       verified?: boolean;
@@ -88,8 +129,36 @@ export interface DashboardData {
     decision_status: string | null;
     current_round: number | null;
     max_rounds: number;
+    selection_queries: number;
+    audit_queries: number;
+    rejected_candidates: number;
+    continuity_epoch: number | null;
+  };
+  evolution: {
+    active_query?: {
+      phase?: "selection" | "audit";
+      round?: number;
+      run_id?: string;
+      candidate_digest?: string;
+      holdout_visibility?: "public" | "opaque";
+    } | null;
+    selection_query_limit: number;
+    audit_query_limit: number;
+    candidate_lineage: Array<{
+      round?: number;
+      run_id?: string;
+      parent_digest?: string;
+      candidate_digest?: string;
+      change?: { added?: string[]; removed?: string[]; modified?: string[] };
+      change_digest?: string;
+      continuity?: "continue" | "reset";
+      continuity_epoch?: number;
+      training_trace_ids?: string[];
+    }>;
+    rejected_candidates: Array<Record<string, unknown>>;
   };
   cases: DashboardCase[];
+  diffs: DashboardDiff[];
   iterations: AcceptanceDecision[];
   spine: SpineNode[];
   limitations: string[];

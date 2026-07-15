@@ -115,7 +115,7 @@ Needs revision
 
 ## Resource Review
 - SKILL.md: stub, needs rewrite.
-- references/: absent; one small reference on transcript formats would help but is not required for v1.
+- references/: absent; one small reference on transcript formats would help but is not required for the initial usable scope.
 - scripts/: absent; correctly so.
 - assets/: absent; correctly so.
 - evals/: absent; not a scored defect, but recommended because the trigger boundary is fuzzy.

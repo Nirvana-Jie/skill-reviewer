@@ -1,5 +1,5 @@
 {
-  "schema_version": "skill-reviewer.evals.v2",
+  "contract": "skill-reviewer.evals",
   "skill_name": "skill-reviewer",
   "defaults": {
     "permissions": {

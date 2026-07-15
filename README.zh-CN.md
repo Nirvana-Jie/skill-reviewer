@@ -25,7 +25,7 @@ npx skills add Nirvana-Jie/skill-reviewer --skill skill-reviewer
 ```
 
 你会拿到：判定、8 维评分卡、可直接粘贴的改写和非可协商红线结论。
-当范围内存在有效 v2 manifest 时，主 Agent 还会执行成对、保留 artifact 的
+当范围内存在有效的可执行 eval manifest 时，主 Agent 还会执行成对、保留 artifact 的
 真实验证；只有用户明确要求进化时，才会进入最多三轮优化与一次性 audit。
 
 ---
@@ -61,8 +61,8 @@ npx skills add Nirvana-Jie/skill-reviewer --skill skill-reviewer
 | eval 建议                  | 仅在能显著降风险时给 5–10 条定向 prompt                         |
 | 本地 eval snapshot         | 结构化 fixture 契约 + 确定性 runner / validator 脚本             |
 | subagent 效果验证          | 成对运行 `with_skill` / baseline，记录 digest、artifact 和验证等级 |
-| 可执行 eval 契约           | 严格 `skill-reviewer.evals.v2`；无效 manifest 阻塞发布，不静默跳过 |
-| 有界连续进化               | development / selection / 一次性 audit，最多 3 轮，硬门禁 + Pareto 改进 |
+| 可执行 eval 契约           | 严格 `skill-reviewer.evals` contract；无效 manifest 阻塞发布，不静默跳过 |
+| 有界连续进化               | development / selection / 一次性 opaque audit，最多 3 轮，硬门禁 + Pareto 改进、查询授权与候选谱系 |
 | 证据 Dashboard             | React + TypeScript + Vite Evidence Lab，只消费 read model，不执行或审批 |
 | full vs focused review     | 同样的 11 段结构；无关段落坍塌为 `N/A — focused review of <artifact>` |
 | 可直接粘贴的重写           | `Suggested Rewrites` 直接输出 YAML / Markdown                    |
@@ -115,7 +115,7 @@ focused review 保持同样的节序，没用到的段折叠成一行 `N/A`。
 `skill-reviewer` 使用四层互补的 eval：
 
 - `evals/skill-reviewer.csv` 检查触发与路由行为。
-- `evals/evals.json` 是严格的 v2 可执行 manifest，按 development、selection、audit
+- `evals/evals.json` 是严格的可执行 manifest，按 development、selection、audit
   分层；确定性断言先执行，匿名顺序交换的语义判断只作补充。
 - `evals/fixtures/*/expected.md` 提供人工可读的校准锚点。
 - `evals/local-skill-review-snapshot.json` 提供机器可读的 snapshot 契约，覆盖判定、评分范围、必需 section、必须指出的问题、禁止行为、输出产物，以及可选的输出质量断言。
@@ -141,8 +141,9 @@ validator 有两种模式。只传 contract 路径时，只检查 JSON 形状，
 python3 scripts/skill_eval_runtime.py compile \
   --manifest <skill>/evals/evals.json \
   --subject <candidate> \
+  --execution-profile /absolute/path/to/execution-profile.json \
   --baseline-kind old_skill \
-  --baseline-path <accepted-version> \
+  --baseline-path <accepted-skill> \
   --split selection \
   --workspace /tmp/skill-reviewer-run
 
@@ -152,8 +153,10 @@ python3 scripts/skill_eval_runtime.py grade \
 ```
 
 候选只有在所有硬门禁通过、所有目标不退化、且至少一个 primary 目标达到
-实质提升时才会被 selection 接受。一次运行中 eval 与 grader 不可变；如需调整，
-必须先让用户确认并重新锁定。完整协议见
+实质提升时才会被 selection 接受。后续每次 selection 与整个 run 唯一一次 audit
+都必须先执行 `evolution-authorize`，把 accepted baseline 绑定为 parent，并保留候选谱系、continuity epoch、trace
+与查询预算。权威 selection/audit eval 与 grader 在一次运行中不可变；development
+surrogate 可在独立 digest 下演进。权威 eval 如需调整，必须先让用户确认并重新锁定。完整协议见
 [`references/evolution-workflow.md`](./references/evolution-workflow.md)。
 
 证据可投影为只读产品界面：
@@ -161,10 +164,23 @@ python3 scripts/skill_eval_runtime.py grade \
 ```bash
 python3 scripts/skill_eval_runtime.py project-dashboard \
   --workspace /tmp/skill-reviewer-run \
+  --state /tmp/skill-reviewer-control/evolution-state.json \
   --output /tmp/skill-reviewer-run/dashboard-data.json
 pnpm dashboard:build
 pnpm dashboard:serve -- --workspace /tmp/skill-reviewer-run
 ```
+
+Dashboard 使用 React 与 `@pierre/diffs` 从锁定 snapshot 渲染 candidate/baseline
+runtime-surface diff。主 read model 只保留文件元数据；文本预览通过绑定 digest 的逐文件
+sidecar 按需加载，二进制文件或任一侧超过 512 KiB 时只显示 digest/大小摘要。
+sidecar SHA-256 会写入 read model，并由本地服务器对每次响应的实际字节重新校验；512 KiB
+规则作用于解析后的每侧 UTF-8 正文，而不是 JSON 转义后的文件大小。实际挂载的
+worker-pool provider 与虚拟化用于控制主线程和 DOM 开销；这个展示上限不是发布层的 diff
+大小门禁。它仍是只读证据面；`audit-passed` 之后必须由用户单独确认最终发布。
+
+实时重投影只会在替换 read model 及其全部 sidecar 作为同一代完成验证后切换。sidecar
+采用内容寻址并保留在本次 run workspace 内，因此已经发出的 URL 可继续服务在途视图；
+同一 URL 若被改绑到不同 payload digest 会被阻塞。
 
 ## Human-in-the-loop 评审流程
 
@@ -191,7 +207,7 @@ pnpm dashboard:serve -- --workspace /tmp/skill-reviewer-run
      --workspace /tmp/skill-reviewer-evals/iteration-1 \
      --from-existing-reviews
    ```
-6. 用户要求效果验证且环境支持 subagent 时，冻结 subject 和旧版本，并在同一轮启动成对的 `with_skill` 与 `old_skill` / `without_skill`。具体按 [`references/subagent-eval-workflow.md`](./references/subagent-eval-workflow.md) 执行。
+6. 用户要求效果验证且环境支持 subagent 时，冻结 subject 和 accepted baseline，并在同一轮启动成对的 `with_skill` 与 `old_skill` / `without_skill`。具体按 [`references/subagent-eval-workflow.md`](./references/subagent-eval-workflow.md) 执行。
 7. 对保留的输出进行断言评分，并给出唯一验证等级：`not-run`、`inconclusive`、`behavior-verified` 或 `regression-verified`。
 8. 针对该 workspace 校验结构化 snapshot 契约：
    ```bash
@@ -309,7 +325,7 @@ npx skills add Nirvana-Jie/skill-reviewer --list
 │   ├── output-template-zh.md      # 中文输出契约
 │   ├── example-review-output.md   # 输出风格锚点
 │   ├── local-eval-snapshot.md     # 本地 snapshot 风格 eval 协议
-│   ├── executable-evals.md        # 严格 v2 manifest 与断言契约
+│   ├── executable-evals.md        # 严格 manifest 与断言契约
 │   ├── subagent-eval-workflow.md  # 成对 subagent 效果验证协议
 │   ├── evolution-workflow.md      # 有界 optimize/select/audit 协议
 │   └── eval-prompts-template.csv  # eval 输出字段模板（只含 header）

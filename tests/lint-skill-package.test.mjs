@@ -40,7 +40,7 @@ function fixture(callback) {
 
 function executableManifest(skillName, evals) {
   return {
-    schema_version: "skill-reviewer.evals.v2",
+    contract: "skill-reviewer.evals",
     skill_name: skillName,
     defaults: {
       permissions: { network: "deny", writable_roots: ["outputs"] },

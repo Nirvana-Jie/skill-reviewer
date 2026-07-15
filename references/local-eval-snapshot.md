@@ -13,17 +13,17 @@ Do not treat LLM output as a byte-for-byte snapshot by default. Skill outputs of
 
 The best snapshot is usually a small machine-readable contract plus retained artifacts for human review, not a frozen transcript.
 
-## Recommended schema
+## Recommended contract
 
 Store local review snapshots as JSON in `evals/`, for example `evals/local-skill-review-snapshot.json`.
 
-Schema `v2` adds the required `Verification Evidence` section and per-eval
-`verification_level`. Contracts using `v1` must be migrated explicitly rather
-than silently interpreted under the new output contract.
+The current contract requires a `Verification Evidence` section and per-eval
+`verification_level`. A differently shaped contract is rejected rather than
+silently interpreted.
 
 ```json
 {
-  "schema_version": "skill-reviewer.local-snapshot.v2",
+  "contract": "skill-reviewer.local-snapshot",
   "skill_name": "skill-reviewer",
   "snapshot_policy": {
     "compare_mode": "structured",
@@ -96,7 +96,7 @@ Use the `skill-creator` iteration layout when running local skill evals:
 
 ```text
 <skill-name>-workspace/
-├── skill-snapshot/                  # old version or baseline
+├── skill-snapshot/                  # accepted baseline snapshot
 ├── iteration-1/
 │   ├── eval-ready-csv-column-renamer/
 │   │   ├── eval_metadata.json
@@ -134,7 +134,7 @@ For subagent effect verification, also retain `verification-evidence.json` and
 follow `references/subagent-eval-workflow.md`. Snapshot validation and behavior
 verification are complementary: contract shape can pass while a skill behavior
 regresses, and behavior output can look good while referring to the wrong
-subject version.
+subject digest.
 
 Then do a short analyst pass for qualitative regressions: vague fixes, missing paste-ready rewrites, over-punitive verdicts, under-called safety issues, and language-template drift.
 
@@ -163,7 +163,7 @@ Run without the workspace path to validate only the contract shape:
 python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json
 ```
 
-Contract-only validation reports `contract_only: true`, `workspace_artifacts_checked: false`, and `model_output_checked: false`. Treat this as a schema check, not evidence that a model-generated review is good.
+Contract-only validation reports `contract_only: true`, `workspace_artifacts_checked: false`, and `model_output_checked: false`. Treat this as a contract-shape check, not evidence that a model-generated review is good.
 
 The script expects `extracted-review.json` to contain:
 

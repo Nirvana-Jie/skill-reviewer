@@ -40,7 +40,7 @@ scope.
 
 ## Verification Evidence
 - Level: `not-run` | `inconclusive` | `behavior-verified` | `regression-verified`
-- Subject: <path, version, digest, or "not recorded">
+- Subject: <path and digest, or "not recorded">
 - Static checks: <command/result/artifact or "not run">
 - Runs: <cases/configurations or "none">
 - Baseline: <old_skill / without_skill / unavailable / not requested>

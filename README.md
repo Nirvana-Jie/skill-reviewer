@@ -25,7 +25,7 @@ Then, in any agent session:
 ```
 
 You get back a strict, sectioned review with a verdict, an 8-dimension scorecard,
-paste-ready rewrites, and hard-red-line blockers. When a valid v2 eval manifest
+paste-ready rewrites, and hard-red-line blockers. When a valid executable eval manifest
 is in scope, the lead agent also runs paired, artifact-backed verification. On
 an explicit evolution request, it can iterate for at most three rounds and run
 a one-shot audit.
@@ -64,8 +64,8 @@ Change the rubric, re-run the fixtures and local snapshots, ship. No re-reading 
 | Eval suggestions            | Optional 5–10 prompt rows only when they materially reduce risk |
 | Local eval snapshots        | Structured fixture contracts + deterministic runner / validator scripts |
 | Subagent effect verification | Paired `with_skill` / baseline runs with digests, retained evidence, and explicit verification levels |
-| Executable eval contract | Strict `skill-reviewer.evals.v2`; an invalid present manifest blocks release instead of being skipped |
-| Bounded evolution | Development / selection / one-shot audit, max 3 rounds, hard gates + Pareto improvement |
+| Executable eval contract | Strict `skill-reviewer.evals` contract; an invalid present manifest blocks release instead of being skipped |
+| Bounded evolution | Development / selection / one-shot opaque audit, max 3 rounds, hard gates + Pareto improvement, query authorization and candidate lineage |
 | Evidence Dashboard | React + TypeScript + Vite Evidence Lab consuming `dashboard-data.json`; no execute/approve API |
 | Full vs focused review      | Same 11-section shape; unrelated sections collapse to `N/A — focused review of <artifact>` |
 | Paste-ready rewrites        | `Suggested Rewrites` outputs runnable YAML / Markdown |
@@ -118,7 +118,7 @@ Protocol in [`evals/fixtures/README.md`](./evals/fixtures/README.md). Run whenev
 `skill-reviewer` uses four complementary eval layers:
 
 - `evals/skill-reviewer.csv` checks trigger and routing behavior.
-- `evals/evals.json` is a strict executable v2 manifest with development,
+- `evals/evals.json` is a strict executable manifest with development,
   selection, and audit splits; deterministic assertions run before supplemental
   blind semantic comparisons.
 - `evals/fixtures/*/expected.md` gives human-readable calibration anchors.
@@ -129,10 +129,13 @@ Protocol in [`evals/fixtures/README.md`](./evals/fixtures/README.md). Run whenev
 The snapshot layer intentionally avoids byte-for-byte full-text diffs. A review can phrase findings differently and still pass if its structured contract is stable. See [`references/local-eval-snapshot.md`](./references/local-eval-snapshot.md) for the workspace layout and update policy.
 
 The behavior runtime is separate from the calibration snapshot runner. It
-freezes eval and deterministic/semantic grader authority, materializes
+freezes authoritative selection/audit eval and deterministic/semantic grader authority,
+tracks an independently digestible development surrogate, materializes
 case/arm/repeat-specific read-only skill snapshots and inputs, binds every
-execution/output and semantic judgment to its run evidence, and refuses stale
-workspaces or input drift. See
+execution/output and semantic judgment to its run evidence and external
+execution-profile digest, and refuses stale workspaces or input drift. Public
+audit fixtures are calibration-only; release evidence requires a trusted
+opaque holdout pack. See
 [`references/executable-evals.md`](./references/executable-evals.md) and
 [`references/subagent-eval-workflow.md`](./references/subagent-eval-workflow.md).
 
@@ -145,8 +148,9 @@ dispatch. Compile exactly one split into a fresh, empty workspace:
 python3 scripts/skill_eval_runtime.py compile \
   --manifest <skill>/evals/evals.json \
   --subject <candidate> \
+  --execution-profile /absolute/path/to/execution-profile.json \
   --baseline-kind old_skill \
-  --baseline-path <accepted-version> \
+  --baseline-path <accepted-skill> \
   --split selection \
   --workspace /tmp/skill-reviewer-run
 
@@ -157,7 +161,12 @@ python3 scripts/skill_eval_runtime.py grade \
 
 An accepted evolution candidate must pass every hard gate, avoid regression on
 every declared objective, and materially improve at least one primary
-objective. Evals and graders are immutable during the run; changing them needs
+objective. Each later selection query and the one-shot audit must first be
+authorized with `evolution-authorize`; every candidate is bound to the accepted
+baseline as parent, and the state retains candidate
+lineage, continuity epoch, trace IDs, and query budget. Authoritative
+selection/audit evals and graders are immutable during the run; the development
+surrogate may evolve under its own digest. Changing an authoritative eval needs
 user confirmation and a fresh lock. Full protocol:
 [`references/evolution-workflow.md`](./references/evolution-workflow.md).
 
@@ -166,10 +175,28 @@ Project and serve the evidence product locally:
 ```bash
 python3 scripts/skill_eval_runtime.py project-dashboard \
   --workspace /tmp/skill-reviewer-run \
+  --state /tmp/skill-reviewer-control/evolution-state.json \
   --output /tmp/skill-reviewer-run/dashboard-data.json
 pnpm dashboard:build
 pnpm dashboard:serve -- --workspace /tmp/skill-reviewer-run
 ```
+
+The Dashboard renders the candidate/baseline runtime-surface diff from locked
+snapshots with React and `@pierre/diffs`. The read model contains only file
+metadata; text previews are fetched from digest-bound per-file sidecars, while
+binary files and either side above 512 KiB remain digest/size summaries. A
+sidecar SHA-256 is carried by the read model and rechecked against the exact
+bytes on every local-server response; the 512 KiB rule is applied to each
+parsed UTF-8 side, not to JSON-escaped file size. A mounted worker-pool provider
+moves syntax highlighting off the main thread, and
+virtualization avoids an unbounded DOM. This display cap is not a release diff
+size gate. The Dashboard remains a read-only evidence surface, and
+`audit-passed` still requires an explicit user release decision.
+
+Live reprojection switches generations only after the replacement read model
+and all of its sidecars validate together. Sidecars are content-addressed and
+retained within the run workspace, so already-issued URLs remain available to
+in-flight views; reusing one URL for a different payload digest is rejected.
 
 The validator has two modes. With only the contract path, it checks JSON shape and reports `contract_only: true`; this does **not** prove model output quality. With a workspace path, it also checks saved artifacts and `extracted-review.json` fields such as `critical_issues_have_problem_why_fix`, `has_paste_ready_rewrite_block`, and `final_recommendation_is_ordered`.
 
@@ -198,7 +225,7 @@ Use `skill-reviewer` as the strict first-pass reviewer, then keep the human as t
      --workspace /tmp/skill-reviewer-evals/iteration-1 \
      --from-existing-reviews
    ```
-6. When effect verification is requested and subagents are available, freeze the subject and old version, then launch paired `with_skill` and `old_skill` / `without_skill` runs in the same turn. Follow [`references/subagent-eval-workflow.md`](./references/subagent-eval-workflow.md).
+6. When effect verification is requested and subagents are available, freeze the subject and accepted baseline, then launch paired `with_skill` and `old_skill` / `without_skill` runs in the same turn. Follow [`references/subagent-eval-workflow.md`](./references/subagent-eval-workflow.md).
 7. Grade assertions against retained outputs and report one verification level: `not-run`, `inconclusive`, `behavior-verified`, or `regression-verified`.
 8. Validate the structured snapshot contract against that workspace:
    ```bash
@@ -318,7 +345,7 @@ Explicitly does **not** fire for: creating a new skill (use `skill-creator`), ru
 │   ├── output-template-zh.md      # exact Chinese output contract
 │   ├── example-review-output.md   # style anchor
 │   ├── local-eval-snapshot.md     # local snapshot-style eval protocol
-│   ├── executable-evals.md        # strict v2 manifest + assertion contract
+│   ├── executable-evals.md        # strict executable manifest + assertion contract
 │   ├── subagent-eval-workflow.md  # paired effect-verification protocol
 │   ├── evolution-workflow.md      # bounded optimize/select/audit protocol
 │   └── eval-prompts-template.csv  # eval output schema (header only)
@@ -336,7 +363,7 @@ Explicitly does **not** fire for: creating a new skill (use `skill-creator`), ru
         ├── ready-csv-column-renamer/
         ├── needs-revision-meeting-note/
         └── not-ready-repo-cleaner/
-├── tests/                         # legacy Python tests + Vitest linter/runner tests
+├── tests/                         # Python compatibility tests + Vitest linter/runner tests
 ├── dashboard/                     # React + TypeScript + Vite Evidence Lab
 ├── package.json                   # Vitest, typecheck, and Dashboard commands
 └── pnpm-lock.yaml                 # pinned pnpm test dependencies
