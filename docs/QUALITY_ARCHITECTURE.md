@@ -290,6 +290,25 @@ to the retained artifacts. Vitest covers switching and restoration, while real
 browser checks cover desktop and narrow-screen layouts in both locales and
 themes.
 
+Navigation and freshness are also presentation state. Stable IDs and bounded
+enums are serialized into the URL for run guarding, case filters, evidence or
+diff selection, layout, wrapping, and focus; raw prompts, artifact bodies, and
+host paths are never embedded. A mismatched or newly presented run blocks the
+view until the reviewer explicitly opens the current run. The browser records
+projection generation time separately from last successful transport and last
+attempt, preserves the last verified projection across refresh failures, and
+allows automatic refresh to be paused. The command palette is a read-only
+evidence locator: its allowlist is limited to navigation, filtering, copy,
+projection download, reload, locale, and theme actions.
+
+Browser-created downloads are named and described as projection JSON, not as a
+canonical evidence bundle. Portable evidence references bind the current run,
+stable evidence ID, recorded status, available subject digest, and permalink.
+Diff sidecars remain untrusted until their identity and metadata binding pass;
+transport failures are retryable, while binding failures use an integrity
+error state and never fall back to a mutable path. Copyable diagnostics expose
+only already projected metadata and the failure reason.
+
 `@pierre/diffs` remains the document renderer because this surface is a
 read-only review flow and the library provides the required split/unified
 views, virtualized rendering, worker execution, and render caching directly.

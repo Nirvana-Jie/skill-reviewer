@@ -6,7 +6,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { EvidenceDashboard } from "./App";
+import App, { EvidenceDashboard } from "./App";
 import DiffViewer from "./DiffViewer";
 import type { DashboardData } from "./types";
 import {
@@ -82,6 +82,7 @@ function WorkerPoolThemeHarness() {
 }
 
 beforeEach(() => {
+  window.history.replaceState({}, "", "/");
   window.localStorage.clear();
   document.title = "";
   document.documentElement.removeAttribute("data-theme");
@@ -101,6 +102,7 @@ afterEach(() => {
   document.documentElement.removeAttribute("data-theme");
   document.documentElement.removeAttribute("lang");
   document.documentElement.style.removeProperty("color-scheme");
+  window.history.replaceState({}, "", "/");
 });
 
 const data: DashboardData = {
@@ -282,6 +284,34 @@ const data: DashboardData = {
 };
 
 describe("EvidenceDashboard", () => {
+  it("keeps the last verified projection visible when a refresh fails", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => data,
+      })
+      .mockResolvedValueOnce({ ok: false, status: 503 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithPreferences(<App />);
+
+    expect(await screen.findByText("Evidence chain")).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Refresh dashboard now" }),
+    );
+    expect(await screen.findByText("Last refresh failed")).toBeInTheDocument();
+    expect(screen.getByText("Evidence chain")).toBeInTheDocument();
+    expect(screen.getByText("Stale")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1]?.[1]).toEqual(
+      expect.objectContaining({
+        cache: "no-store",
+        signal: expect.any(AbortSignal),
+      }),
+    );
+  });
+
   it("exposes live release evidence without execution controls", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -320,7 +350,7 @@ describe("EvidenceDashboard", () => {
     expect(screen.getByText(/preference candidate/)).toBeInTheDocument();
     expect(screen.getByText("native-agent")).toBeInTheDocument();
     expect(screen.getByText("lead-agent-dispatch")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Diff (1)" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Diff (1)" }));
     expect(await screen.findByText("Rendered diff SKILL.md")).toBeInTheDocument();
     expect(screen.getByRole("searchbox", { name: "Filter changed files" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Split diff" })).toHaveAttribute(
@@ -356,7 +386,7 @@ describe("EvidenceDashboard", () => {
       screen.getByRole("button", { name: "Exit diff focus mode" }),
     ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Evidence" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Evidence" }));
     expect(container.querySelector(".app-shell")).not.toHaveClass("is-focus-mode");
     fireEvent.click(screen.getByRole("button", { name: /Open evidence response.md/i }));
     expect(
@@ -399,7 +429,7 @@ describe("EvidenceDashboard", () => {
     expect(screen.getByText("回归已验证")).toBeInTheDocument();
     expect(window.localStorage.getItem(preferenceStorageKeys.locale)).toBe("zh-CN");
 
-    fireEvent.click(screen.getByRole("button", { name: "差异 (1)" }));
+    fireEvent.click(screen.getByRole("tab", { name: "差异 (1)" }));
     expect(await screen.findByText("Rendered diff SKILL.md")).toBeInTheDocument();
     expect(diffOptionsSpy).toHaveBeenLastCalledWith(
       expect.objectContaining({ theme: "pierre-light" }),
@@ -435,6 +465,258 @@ describe("EvidenceDashboard", () => {
     expect(
       screen.getByRole("button", { name: "切换到浅色主题" }),
     ).toBeInTheDocument();
+  });
+
+  it("restores a guarded diff permalink and keeps review controls in the URL", async () => {
+    const diffId = "1".repeat(24);
+    window.history.replaceState(
+      {},
+      "",
+      `/?run=run-product-test&split=audit&caseStatus=attention&view=diff&diff=${diffId}&layout=unified&wrap=1&focus=1`,
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          contract: "skill-reviewer.dashboard-diff",
+          id: diffId,
+          path: "SKILL.md",
+          old_digest: "1".repeat(64),
+          new_digest: "2".repeat(64),
+          old_content: "old instructions\n",
+          new_content: "new instructions\n",
+        }),
+      }),
+    );
+
+    const { container } = renderWithPreferences(
+      <EvidenceDashboard data={data} connectionState="live" />,
+    );
+
+    expect(screen.getByRole("button", { name: "Audit" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(
+      screen.getByRole("button", { name: "Case status: Attention" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("tab", { name: "Diff (1)" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(await screen.findByText("Rendered diff SKILL.md")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Unified diff" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "Wrap lines" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(container.querySelector(".app-shell")).toHaveClass("is-focus-mode");
+    expect(window.location.search).toContain("run=run-product-test");
+    expect(window.location.search).toContain("focus=1");
+  });
+
+  it("locates evidence from the keyboard palette and supports roving case focus", async () => {
+    const { container } = renderWithPreferences(
+      <EvidenceDashboard data={data} connectionState="live" />,
+    );
+    const caseRows = container.querySelectorAll<HTMLButtonElement>(".case-row");
+    caseRows[0]?.focus();
+    fireEvent.keyDown(caseRows[0]!, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(caseRows[1]);
+
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    const palette = await screen.findByRole("dialog", { name: "Go to evidence" });
+    const search = screen.getByRole("combobox");
+    await waitFor(() => expect(search).toHaveFocus());
+    fireEvent.change(search, { target: { value: "public-safety-audit" } });
+    fireEvent.keyDown(search, { key: "Enter" });
+
+    expect(palette).not.toBeInTheDocument();
+    expect(
+      container.querySelector(".case-row.is-selected .case-copy strong"),
+    ).toHaveTextContent("public-safety-audit");
+    expect(window.location.search).toContain("split=audit");
+  });
+
+  it("filters attention cases, exposes freshness controls, and copies portable references", async () => {
+    const clipboardWrite = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", {
+      platform: "MacIntel",
+      language: "en-US",
+      clipboard: { writeText: clipboardWrite },
+    });
+    const refresh = vi.fn();
+    const togglePaused = vi.fn();
+    const { container } = renderWithPreferences(
+      <EvidenceDashboard
+        data={data}
+        connectionState="stale"
+        refreshControls={{
+          paused: false,
+          isRefreshing: false,
+          lastSuccessfulAt: Date.UTC(2026, 6, 16, 8, 0, 0),
+          lastAttemptAt: Date.UTC(2026, 6, 16, 8, 1, 0),
+          error: "read model returned 503",
+          onRefresh: refresh,
+          onTogglePaused: togglePaused,
+        }}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Case status: Attention" }),
+    );
+    expect(container.querySelectorAll(".case-row")).toHaveLength(1);
+    expect(screen.getAllByText("public-safety-audit").length).toBeGreaterThan(0);
+    expect(screen.getByText("Last refresh failed")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry connection" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Pause automatic refresh" }),
+    );
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(togglePaused).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy view link" }));
+    await waitFor(() => expect(clipboardWrite).toHaveBeenCalled());
+    expect(clipboardWrite.mock.calls[0]?.[0]).toContain("run=run-product-test");
+    expect(clipboardWrite.mock.calls[0]?.[0]).toContain("caseStatus=attention");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Copy evidence reference" }),
+    );
+    await waitFor(() => expect(clipboardWrite).toHaveBeenCalledTimes(2));
+    expect(clipboardWrite.mock.calls[1]?.[0]).toContain(
+      "### Skill Reviewer evidence reference",
+    );
+    expect(clipboardWrite.mock.calls[1]?.[0]).toContain("run-product-test");
+    expect(clipboardWrite.mock.calls[1]?.[0]).toContain("Permalink:");
+  });
+
+  it("blocks a stale run permalink until the reviewer chooses the current run", async () => {
+    window.history.replaceState({}, "", "/?run=run-from-another-server");
+    renderWithPreferences(
+      <EvidenceDashboard data={data} connectionState="live" />,
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "This link targets a different run" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Evidence chain")).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open the current run" }),
+    );
+    expect(await screen.findByText("Evidence chain")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(window.location.search).toContain("run=run-product-test"),
+    );
+  });
+
+  it("replays browser history and guards a newly presented run", async () => {
+    const view = renderWithPreferences(
+      <EvidenceDashboard data={data} connectionState="live" />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Audit" }));
+    await waitFor(() => expect(window.location.search).toContain("split=audit"));
+
+    window.history.pushState(
+      {},
+      "",
+      "/?run=run-product-test&split=selection&node=case%3Aselection-quality",
+    );
+    fireEvent.popState(window);
+    expect(screen.getByRole("button", { name: "Selection" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(
+      view.container.querySelector(".case-row.is-selected .case-copy strong"),
+    ).toHaveTextContent("selection-quality");
+
+    const nextRun = {
+      ...data,
+      run: { ...data.run, id: "run-newly-presented" },
+    };
+    view.rerender(
+      <UiPreferencesProvider>
+        <EvidenceDashboard data={nextRun} connectionState="live" />
+      </UiPreferencesProvider>,
+    );
+    expect(
+      screen.getByRole("heading", { name: "This link targets a different run" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Requested run-product-test/)).toBeInTheDocument();
+  });
+
+  it("retries a failed lazy diff without leaving the evidence surface", async () => {
+    const diffId = "1".repeat(24);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 503 })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          contract: "skill-reviewer.dashboard-diff",
+          id: diffId,
+          path: "SKILL.md",
+          old_digest: "1".repeat(64),
+          new_digest: "2".repeat(64),
+          old_content: "old instructions\n",
+          new_content: "new instructions\n",
+        }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithPreferences(<DiffViewer diffs={data.diffs} enableWorkerPool={false} />);
+
+    expect(await screen.findByText("Diff could not be rendered")).toBeInTheDocument();
+    expect(screen.getByText("diff payload returned 503")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry preview" }));
+
+    expect(await screen.findByText("Rendered diff SKILL.md")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("blocks an unbound diff payload and offers copyable diagnostics", async () => {
+    const clipboardWrite = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", {
+      platform: "MacIntel",
+      language: "en-US",
+      clipboard: { writeText: clipboardWrite },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          contract: "skill-reviewer.dashboard-diff",
+          id: "wrong-sidecar-id",
+          path: "SKILL.md",
+          old_digest: "1".repeat(64),
+          new_digest: "2".repeat(64),
+          old_content: "old instructions\n",
+          new_content: "new instructions\n",
+        }),
+      }),
+    );
+
+    renderWithPreferences(<DiffViewer diffs={data.diffs} enableWorkerPool={false} />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Diff integrity check failed",
+    );
+    expect(screen.queryByText("Rendered diff SKILL.md")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Copy diagnostics" }));
+    await waitFor(() => expect(clipboardWrite).toHaveBeenCalledTimes(1));
+    expect(clipboardWrite.mock.calls[0]?.[0]).toContain(
+      '"error_kind": "integrity"',
+    );
+    expect(await screen.findByText("Diagnostics copied")).toBeInTheDocument();
   });
 
   it("mounts the Pierre worker pool for production diff rendering", async () => {

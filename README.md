@@ -211,6 +211,27 @@ translated while run identifiers, file paths, evidence payloads, and recorded
 limitations remain verbatim so localization cannot rewrite review evidence.
 The document renderer changes its syntax theme with the surrounding workbench.
 
+Review context is shareable without turning the URL into evidence storage. The
+Dashboard records the run guard, split/status filters, bounded query, selected
+evidence or diff ID, diff layout, wrapping, and focus mode as URL presentation
+state. A permalink that names another run is blocked instead of silently
+showing the server's current run, and browser Back/Forward replays review
+navigation. `Mod+K` opens a read-only evidence locator across cases, projected
+evidence metadata, changed-file paths, and safe display/copy/reload actions.
+
+The footer separates projection generation time from the browser's last
+successful load and last failed attempt. Manual reload cancels an older
+request, a failed refresh keeps the last verified projection visible with a
+stale banner, and automatic refresh can be paused or resumed. Reviewers can
+copy a portable Markdown evidence reference, copy the current permalink, or
+download the current read model explicitly labeled as projection JSON; none of
+these presentation actions mutate evals, evidence, or release state. Lazy diff
+transport failures can be retried, while metadata/payload binding failures are
+shown as integrity errors and expose copyable diagnostics without rendering
+unbound content. The productization research and remaining measured/backend
+work are tracked in
+[`docs/RESEARCH_DASHBOARD_PRODUCTIZATION.md`](./docs/RESEARCH_DASHBOARD_PRODUCTIZATION.md).
+
 Live reprojection switches generations only after the replacement read model
 and all of its sidecars validate together. Sidecars are content-addressed and
 retained within the run workspace, so already-issued URLs remain available to

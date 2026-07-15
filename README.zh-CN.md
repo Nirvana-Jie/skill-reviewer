@@ -178,6 +178,20 @@ sidecar SHA-256 会写入 read model，并由本地服务器对每次响应的�
 worker-pool provider 与虚拟化用于控制主线程和 DOM 开销；这个展示上限不是发布层的 diff
 大小门禁。它仍是只读证据面；`audit-passed` 之后必须由用户单独确认最终发布。
 
+审阅上下文现在可以通过 URL 精确复现：run guard、split/状态筛选、受限查询、证据或
+diff 的稳定 ID、布局、换行和专注模式都会进入 presentation state，但原始 prompt、正文和
+主机路径不会进入 URL。链接指向其它 run，或轮询时服务端切换到新 run，界面都会先阻塞
+提示，而不是静默展示错误证据；浏览器前进/后退可以重放审阅导航。`Mod+K` 提供只读的
+全局证据定位，可搜索 case、已投影证据 metadata、变更文件和安全的显示/复制/刷新操作。
+
+状态栏分别展示 projection 生成时间、浏览器最近成功读取和最近失败尝试。手动刷新会取消
+旧请求，失败时保留最后一份已验证 projection 并标记 stale；自动刷新支持暂停与恢复。
+使用者可以复制当前 permalink、带 run/node/status/digest 的 Markdown 证据引用，或下载
+明确标为 projection JSON 的 read model，这些操作都不会修改 eval、证据或发布状态。
+diff sidecar 的传输失败可以重试；metadata/payload 绑定失败会作为完整性错误呈现，在不渲染
+未绑定正文的前提下提供可复制诊断。完整调研与后续 TODO 见
+[`docs/RESEARCH_DASHBOARD_PRODUCTIZATION.md`](./docs/RESEARCH_DASHBOARD_PRODUCTIZATION.md)。
+
 实时重投影只会在替换 read model 及其全部 sidecar 作为同一代完成验证后切换。sidecar
 采用内容寻址并保留在本次 run workspace 内，因此已经发出的 URL 可继续服务在途视图；
 同一 URL 若被改绑到不同 payload digest 会被阻塞。

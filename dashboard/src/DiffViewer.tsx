@@ -1,7 +1,9 @@
 import {
   ChevronLeft,
   ChevronRight,
+  ClipboardCopy,
   Columns2,
+  RefreshCw,
   Rows3,
   Search,
   WrapText,
@@ -16,10 +18,11 @@ import {
 import DiffWorker from "@pierre/diffs/worker/worker.js?worker";
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
+import { copyText } from "./dashboard-actions";
+import type { DashboardDiffLayout } from "./dashboard-view-state";
+import { handleRovingListKeyDown } from "./keyboard-navigation";
 import type { DashboardDiff, DashboardDiffPayload } from "./types";
 import { localizeValue, useUiPreferences } from "./ui-preferences";
-
-type DiffLayout = "split" | "unified";
 
 const workerPoolOptions = {
   workerFactory: () => new DiffWorker(),
@@ -139,28 +142,66 @@ function validatePayload(
     payload.old_digest !== metadata.old_digest ||
     payload.new_digest !== metadata.new_digest
   ) {
-    throw new Error("diff payload is not bound to its read-model metadata");
+    throw new DiffPayloadIntegrityError(
+      "diff payload is not bound to its read-model metadata",
+    );
   }
   return payload;
+}
+
+class DiffPayloadIntegrityError extends Error {}
+
+interface DiffLoadError {
+  kind: "integrity" | "transport";
+  message: string;
 }
 
 function DiffBrowser({
   diffs,
   enableWorkerPool,
+  selectedId: controlledSelectedId,
+  onSelectedIdChange,
+  layout: controlledLayout,
+  onLayoutChange,
+  wrapLines: controlledWrapLines,
+  onWrapLinesChange,
 }: {
   diffs: DashboardDiff[];
   enableWorkerPool: boolean;
+  selectedId?: string | null;
+  onSelectedIdChange?: (id: string) => void;
+  layout?: DashboardDiffLayout;
+  onLayoutChange?: (layout: DashboardDiffLayout) => void;
+  wrapLines?: boolean;
+  onWrapLinesChange?: (wrap: boolean) => void;
 }) {
   const { locale, theme, t } = useUiPreferences();
-  const [selectedId, setSelectedId] = useState(diffs[0]?.id ?? "");
+  const [localSelectedId, setLocalSelectedId] = useState(diffs[0]?.id ?? "");
   const [payloads, setPayloads] = useState<Record<string, DashboardDiffPayload>>(
     {},
   );
   const [loadingId, setLoadingId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<DiffLoadError | null>(null);
+  const [retryToken, setRetryToken] = useState(0);
+  const [diagnosticsStatus, setDiagnosticsStatus] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [layout, setLayout] = useState<DiffLayout>("split");
-  const [wrapLines, setWrapLines] = useState(false);
+  const [localLayout, setLocalLayout] = useState<DashboardDiffLayout>("split");
+  const [localWrapLines, setLocalWrapLines] = useState(false);
+  const selectedId = controlledSelectedId ?? localSelectedId;
+  const layout = controlledLayout ?? localLayout;
+  const wrapLines = controlledWrapLines ?? localWrapLines;
+  const selectId = (id: string) => {
+    setLocalSelectedId(id);
+    onSelectedIdChange?.(id);
+  };
+  const selectLayout = (next: DashboardDiffLayout) => {
+    setLocalLayout(next);
+    onLayoutChange?.(next);
+  };
+  const selectWrapLines = (next: boolean) => {
+    setLocalWrapLines(next);
+    onWrapLinesChange?.(next);
+  };
   const diffTheme = theme === "dark" ? "pierre-dark" : "pierre-light";
   const highlighterLanguageKey = Array.from(
     new Set(diffs.map((diff) => languageForPath(diff.path))),
@@ -192,7 +233,7 @@ function DiffBrowser({
     : -1;
 
   useEffect(() => {
-    if (selected && selected.id !== selectedId) setSelectedId(selected.id);
+    if (selected && selected.id !== selectedId) selectId(selected.id);
   }, [selected, selectedId]);
 
   const selectedPayload = selected ? payloads[selected.id] : undefined;
@@ -210,6 +251,7 @@ function DiffBrowser({
     const controller = new AbortController();
     setLoadingId(selected.id);
     setError(null);
+    setDiagnosticsStatus(null);
     void fetch(selected.content_url, {
       cache: "no-store",
       signal: controller.signal,
@@ -228,7 +270,14 @@ function DiffBrowser({
       })
       .catch((cause) => {
         if (controller.signal.aborted) return;
-        setError(cause instanceof Error ? cause.message : "unable to load diff");
+        setError({
+          kind:
+            cause instanceof DiffPayloadIntegrityError
+              ? "integrity"
+              : "transport",
+          message:
+            cause instanceof Error ? cause.message : "unable to load diff",
+        });
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoadingId(null);
@@ -243,13 +292,32 @@ function DiffBrowser({
     selected?.payload_digest,
     selected?.render_mode,
     selectedPayload,
+    retryToken,
   ]);
+
+  const copyLoadDiagnostics = () => {
+    if (!selected || !error) return;
+    const diagnostics = {
+      surface: "skill-reviewer.dashboard-diff",
+      error_kind: error.kind,
+      error: error.message,
+      diff_id: selected.id,
+      path: selected.path,
+      content_url: selected.content_url,
+      payload_digest: selected.payload_digest,
+      old_digest: selected.old_digest,
+      new_digest: selected.new_digest,
+    };
+    void copyText(`${JSON.stringify(diagnostics, null, 2)}\n`)
+      .then(() => setDiagnosticsStatus(t("diagnosticsCopied")))
+      .catch(() => setDiagnosticsStatus(t("diagnosticsCopyFailed")));
+  };
 
   const selectRelative = (offset: number) => {
     if (!visibleDiffs.length || selectedIndex < 0) return;
     const nextIndex =
       (selectedIndex + offset + visibleDiffs.length) % visibleDiffs.length;
-    setSelectedId(visibleDiffs[nextIndex].id);
+    selectId(visibleDiffs[nextIndex].id);
   };
 
   const payload = selectedPayload;
@@ -278,17 +346,23 @@ function DiffBrowser({
             onChange={(event) => setQuery(event.target.value)}
           />
         </label>
-        <nav className="diff-file-list" aria-label={t("changedRuntimeFiles")}>
-          {visibleDiffs.map((diff) => {
+        <nav
+          className="diff-file-list"
+          aria-label={t("changedRuntimeFiles")}
+          onKeyDown={(event) => handleRovingListKeyDown(event)}
+        >
+          {visibleDiffs.map((diff, index) => {
             const path = splitPath(diff.path, t("rootDirectory"));
             return (
               <button
                 type="button"
+                data-roving-item
+                tabIndex={diff.id === selected?.id || index === 0 && !selected ? 0 : -1}
                 key={diff.id}
                 className={diff.id === selected?.id ? "is-selected" : ""}
                 aria-pressed={diff.id === selected?.id}
                 aria-label={t("openDiff", { path: diff.path })}
-                onClick={() => setSelectedId(diff.id)}
+                onClick={() => selectId(diff.id)}
               >
                 <span className={`change-mark change-${diff.status}`}>
                   {changeMark(diff.status)}
@@ -361,7 +435,7 @@ function DiffBrowser({
                 aria-label={t("splitDiff")}
                 aria-pressed={layout === "split"}
                 title={t("splitDiff")}
-                onClick={() => setLayout("split")}
+                onClick={() => selectLayout("split")}
               >
                 <Columns2 size={14} />
               </button>
@@ -371,7 +445,7 @@ function DiffBrowser({
                 aria-label={t("unifiedDiff")}
                 aria-pressed={layout === "unified"}
                 title={t("unifiedDiff")}
-                onClick={() => setLayout("unified")}
+                onClick={() => selectLayout("unified")}
               >
                 <Rows3 size={14} />
               </button>
@@ -382,7 +456,7 @@ function DiffBrowser({
               aria-label={t("wrapLines")}
               aria-pressed={wrapLines}
               title={t("wrapLongLines")}
-              onClick={() => setWrapLines((current) => !current)}
+              onClick={() => selectWrapLines(!wrapLines)}
             >
               <WrapText size={14} />
             </button>
@@ -409,9 +483,36 @@ function DiffBrowser({
               <p>{t("loadingPreview")}</p>
             </div>
           ) : error ? (
-            <div className="binary-diff-note is-error">
-              <strong>{t("diffRenderFailed")}</strong>
-              <p>{error}</p>
+            <div
+              className="binary-diff-note is-error"
+              role={error.kind === "integrity" ? "alert" : "status"}
+            >
+              <strong>
+                {error.kind === "integrity"
+                  ? t("diffIntegrityFailed")
+                  : t("diffRenderFailed")}
+              </strong>
+              <p>{error.message}</p>
+              <div className="diff-error-actions">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setError(null);
+                    setDiagnosticsStatus(null);
+                    setRetryToken((current) => current + 1);
+                  }}
+                >
+                  <RefreshCw size={12} /> {t("retryDiffPreview")}
+                </button>
+                <button type="button" onClick={copyLoadDiagnostics}>
+                  <ClipboardCopy size={12} /> {t("copyDiagnostics")}
+                </button>
+              </div>
+              {diagnosticsStatus && (
+                <span className="diff-diagnostics-status" role="status">
+                  {diagnosticsStatus}
+                </span>
+              )}
             </div>
           ) : payload ? (
             <Virtualizer
@@ -467,9 +568,32 @@ function DiffBrowser({
 export default function DiffViewer({
   diffs,
   enableWorkerPool = import.meta.env.MODE !== "test",
+  selectedId,
+  onSelectedIdChange,
+  layout,
+  onLayoutChange,
+  wrapLines,
+  onWrapLinesChange,
 }: {
   diffs: DashboardDiff[];
   enableWorkerPool?: boolean;
+  selectedId?: string | null;
+  onSelectedIdChange?: (id: string) => void;
+  layout?: DashboardDiffLayout;
+  onLayoutChange?: (layout: DashboardDiffLayout) => void;
+  wrapLines?: boolean;
+  onWrapLinesChange?: (wrap: boolean) => void;
 }) {
-  return <DiffBrowser diffs={diffs} enableWorkerPool={enableWorkerPool} />;
+  return (
+    <DiffBrowser
+      diffs={diffs}
+      enableWorkerPool={enableWorkerPool}
+      selectedId={selectedId}
+      onSelectedIdChange={onSelectedIdChange}
+      layout={layout}
+      onLayoutChange={onLayoutChange}
+      wrapLines={wrapLines}
+      onWrapLinesChange={onWrapLinesChange}
+    />
+  );
 }
