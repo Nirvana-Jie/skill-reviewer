@@ -10,6 +10,10 @@ node_modules/
 coverage/
 .playwright-cli/
 
+# Python caches
+__pycache__/
+*.py[cod]
+
 # Secrets
 .env
 .env.*
