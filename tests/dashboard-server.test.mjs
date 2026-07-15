@@ -153,6 +153,18 @@ describe("serve_skill_dashboard.py", () => {
       expect(response.headers.get("content-security-policy")).toContain(
         "worker-src 'self'",
       );
+      expect(response.headers.get("content-security-policy")).toContain(
+        "style-src-elem 'self' 'unsafe-inline'",
+      );
+      expect(response.headers.get("content-security-policy")).toContain(
+        "style-src-attr 'unsafe-inline'",
+      );
+      expect(response.headers.get("content-security-policy")).toContain(
+        "script-src 'self'",
+      );
+      expect(response.headers.get("content-security-policy")).not.toContain(
+        "script-src 'self' 'unsafe-inline'",
+      );
       expect(await response.json()).toEqual(
         expect.objectContaining({ id: diffId, old_content: "old\n", new_content: "new\n" }),
       );

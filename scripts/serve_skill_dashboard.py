@@ -29,6 +29,22 @@ DASHBOARD_DIFF_RENDER_LIMIT_BYTES = 512 * 1024
 DASHBOARD_DIFF_PAYLOAD_FILE_LIMIT_BYTES = (
     2 * DASHBOARD_DIFF_RENDER_LIMIT_BYTES * 6 + 128 * 1024
 )
+DASHBOARD_CONTENT_SECURITY_POLICY = "; ".join(
+    (
+        "default-src 'self'",
+        "style-src 'self'",
+        # Pierre Diffs renders isolated theme styles and grid measurements in
+        # shadow DOM. Keep scripts strict while allowing only dynamic CSS.
+        "style-src-elem 'self' 'unsafe-inline'",
+        "style-src-attr 'unsafe-inline'",
+        "script-src 'self'",
+        "connect-src 'self'",
+        "worker-src 'self'",
+        "object-src 'none'",
+        "base-uri 'none'",
+        "frame-ancestors 'none'",
+    )
+)
 
 
 def _sha256_bytes(payload: bytes) -> str:
@@ -311,7 +327,9 @@ def create_handler(workspace: Path, static_root: Path) -> type[BaseHTTPRequestHa
             self.send_header("Content-Length", str(len(body)))
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Referrer-Policy", "no-referrer")
-            self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; worker-src 'self'")
+            self.send_header(
+                "Content-Security-Policy", DASHBOARD_CONTENT_SECURITY_POLICY
+            )
             self.send_header(
                 "Cache-Control",
                 "no-store"

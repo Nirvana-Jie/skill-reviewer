@@ -254,7 +254,7 @@ imply cryptographic one-shot audit.
 
 ## Dashboard product boundary
 
-The Evidence Lab is a React + TypeScript + Vite application with Vitest UI
+The Evidence Workbench is a React + TypeScript + Vite application with Vitest UI
 tests. Its read model uses the `skill-reviewer.dashboard-data` contract without
 a compatibility/version negotiation layer. Candidate/baseline source diffs are
 derived from locked runtime snapshots and rendered with `@pierre/diffs` using
@@ -271,15 +271,45 @@ only after all of its routes validate under one lock. Content-addressed sidecars
 are retained per run and previously validated routes remain readable for
 in-flight clients; a route-to-digest collision is blocking.
 
+The presentation language is deliberately closer to an engineering review
+workbench than a generic metrics dashboard: a low-saturation canvas, flat pane
+chrome, hairline separators, compact system typography, and semantic color
+only for state. Evidence is shown as a navigable record, not a field of
+floating cards. At wide viewports the product uses a persistent case rail,
+central evidence/diff canvas, and fact inspector; diff focus mode gives the
+document surface the full workspace without changing the evidence model.
+
+`@pierre/diffs` remains the document renderer because this surface is a
+read-only review flow and the library provides the required split/unified
+views, virtualized rendering, worker execution, and render caching directly.
+Monaco and CodeMirror merge views were evaluated as editor-oriented
+alternatives; adopting an editing substrate would add a larger interaction
+contract without improving this immutable review boundary. This is an
+architectural fit decision, not a benchmark claim. Runtime tuning follows the
+library's documented large-diff path: only the selected digest-bound sidecar
+is mounted, file-list navigation does not render hidden documents, syntax
+languages are derived from the current change set, two workers perform
+highlighting, digest `cacheKey` values reuse AST results, and the worker LRU is
+bounded. See [Pierre Diffs](https://diffs.com/docs), the
+[Monaco diff editor API](https://microsoft.github.io/monaco-editor/typedoc/interfaces/editor_editor_api.editor.IDiffEditorOptions.html),
+and [CodeMirror merge views](https://codemirror.net/docs/ref/#merge).
+
+Pierre's Shadow DOM renderer creates theme elements and per-line layout
+attributes dynamically. The local server therefore permits inline CSS through
+the narrow `style-src-elem` and `style-src-attr` directives. It does not permit
+inline script, does not pass reviewed content to the library's `unsafeCSS`
+escape hatch, and retains `object-src 'none'`, `base-uri 'none'`, and
+`frame-ancestors 'none'`. Reviewed source remains text content, never markup.
+
 The layout follows the evidence chain:
 
-- Run Rail: release posture, hard gates, split filters, case status;
+- Run summary: release posture and hard-gate state;
+- Case Rail: split filters, paired-run status, query budget, and lineage;
 - Evidence Spine: run → gate → iteration → case → assertion → artifact;
-- Evidence/Diff Canvas: evidence spine plus virtualized multi-file candidate
-  diff;
+- Evidence/Diff Canvas: evidence spine plus a searchable, virtualized,
+  split/unified candidate diff;
 - Inspector: selected evidence, paired arms, provenance, and limitations;
-- Evolution Control: selection/audit query budgets, active authorization,
-  continuity epoch, candidate lineage, and rejected candidates.
+- Focus mode: a document-first diff surface with nonessential panes removed.
 
 The local server accepts GET and HEAD only. `dashboard-data.json` is served with
 `no-store`; static assets may be cached briefly. A screenshot is not evidence:

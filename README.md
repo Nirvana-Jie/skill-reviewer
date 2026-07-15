@@ -66,7 +66,7 @@ Change the rubric, re-run the fixtures and local snapshots, ship. No re-reading 
 | Subagent effect verification | Paired `with_skill` / baseline runs with digests, retained evidence, and explicit verification levels |
 | Executable eval contract | Strict `skill-reviewer.evals` contract; an invalid present manifest blocks release instead of being skipped |
 | Bounded evolution | Development / selection / one-shot opaque audit, max 3 rounds, hard gates + Pareto improvement, query authorization and candidate lineage |
-| Evidence Dashboard | React + TypeScript + Vite Evidence Lab consuming `dashboard-data.json`; no execute/approve API |
+| Evidence Dashboard | React + TypeScript + Vite evidence workbench consuming `dashboard-data.json`; no execute/approve API |
 | Full vs focused review      | Same 11-section shape; unrelated sections collapse to `N/A — focused review of <artifact>` |
 | Paste-ready rewrites        | `Suggested Rewrites` outputs runnable YAML / Markdown |
 | i18n                        | Branch-selected templates + English-normalized snapshot extraction |
@@ -192,6 +192,15 @@ moves syntax highlighting off the main thread, and
 virtualization avoids an unbounded DOM. This display cap is not a release diff
 size gate. The Dashboard remains a read-only evidence surface, and
 `audit-passed` still requires an explicit user release decision.
+
+The UI is a compact three-pane workbench rather than a card dashboard: case
+navigation on the left, the evidence or document diff in the center, and a
+fact inspector on the right. The diff surface supports changed-file search,
+file navigation, split/unified layouts, line wrapping, and a distraction-free
+focus mode. Only the selected sidecar is fetched, only languages present in the
+current change set are initialized, digest cache keys reuse rendered syntax
+trees, and a bounded worker cache prevents an extended review from retaining
+every visited document.
 
 Live reprojection switches generations only after the replacement read model
 and all of its sidecars validate together. Sidecars are content-addressed and

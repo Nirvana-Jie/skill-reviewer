@@ -10,24 +10,34 @@ import { EvidenceDashboard } from "./App";
 import DiffViewer from "./DiffViewer";
 import type { DashboardData } from "./types";
 
-const { workerProviderSpy, diffWorkerFactorySpy } = vi.hoisted(() => ({
+const { workerProviderSpy, diffWorkerFactorySpy, diffOptionsSpy } = vi.hoisted(() => ({
   workerProviderSpy: vi.fn(),
   diffWorkerFactorySpy: vi.fn(),
+  diffOptionsSpy: vi.fn(),
 }));
 
 vi.mock("@pierre/diffs/react", () => ({
-  MultiFileDiff: ({ newFile }: { newFile: { name: string } }) => (
-    <div>Rendered diff {newFile.name}</div>
-  ),
+  MultiFileDiff: ({
+    newFile,
+    options,
+  }: {
+    newFile: { name: string };
+    options: Record<string, unknown>;
+  }) => {
+    diffOptionsSpy(options);
+    return <div>Rendered diff {newFile.name}</div>;
+  },
   Virtualizer: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   WorkerPoolContextProvider: ({
     children,
     poolOptions,
+    highlighterOptions,
   }: {
     children: ReactNode;
     poolOptions: { workerFactory: () => unknown };
+    highlighterOptions: Record<string, unknown>;
   }) => {
-    workerProviderSpy(poolOptions);
+    workerProviderSpy({ poolOptions, highlighterOptions });
     poolOptions.workerFactory();
     return <div data-testid="worker-pool">{children}</div>;
   },
@@ -46,6 +56,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   workerProviderSpy.mockClear();
   diffWorkerFactorySpy.mockClear();
+  diffOptionsSpy.mockClear();
 });
 
 const data: DashboardData = {
@@ -241,13 +252,15 @@ describe("EvidenceDashboard", () => {
       }),
     });
     vi.stubGlobal("fetch", fetchMock);
-    render(<EvidenceDashboard data={data} connectionState="live" />);
+    const { container } = render(
+      <EvidenceDashboard data={data} connectionState="live" />,
+    );
 
     expect(screen.getAllByText("run-product-test").length).toBeGreaterThan(0);
     expect(screen.getByText("regression-verified")).toBeInTheDocument();
     expect(screen.getAllByText("public-calibration").length).toBeGreaterThan(0);
     expect(screen.getByText(/behavioral evidence blocked/)).toBeInTheDocument();
-    expect(screen.getByText("2 / 3")).toBeInTheDocument();
+    expect(screen.getAllByText("2 / 3").length).toBeGreaterThan(0);
     expect(screen.getByText(/continuity epoch 1/)).toBeInTheDocument();
     expect(screen.getAllByText("selection-quality").length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: /execute|approve|run eval/i })).not.toBeInTheDocument();
@@ -265,6 +278,11 @@ describe("EvidenceDashboard", () => {
     expect(screen.getByText("lead-agent-dispatch")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Diff (1)" }));
     expect(await screen.findByText("Rendered diff SKILL.md")).toBeInTheDocument();
+    expect(screen.getByRole("searchbox", { name: "Filter changed files" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Split diff" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
     expect(fetchMock).toHaveBeenCalledWith(
       `/dashboard-diffs/${"1".repeat(24)}.json`,
       expect.objectContaining({
@@ -272,12 +290,36 @@ describe("EvidenceDashboard", () => {
         signal: expect.any(AbortSignal),
       }),
     );
-    expect(screen.getAllByText("modified")).toHaveLength(2);
+    expect(screen.getByText("modified")).toBeInTheDocument();
+    expect(diffOptionsSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        diffStyle: "split",
+        overflow: "scroll",
+        disableFileHeader: true,
+        lineDiffType: "word-alt",
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Unified diff" }));
+    fireEvent.click(screen.getByRole("button", { name: "Wrap lines" }));
+    expect(diffOptionsSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ diffStyle: "unified", overflow: "wrap" }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Enter diff focus mode" }));
+    expect(container.querySelector(".app-shell")).toHaveClass("is-focus-mode");
+    expect(
+      screen.getByRole("button", { name: "Exit diff focus mode" }),
+    ).toBeInTheDocument();
+
     fireEvent.click(screen.getByRole("button", { name: "Evidence" }));
+    expect(container.querySelector(".app-shell")).not.toHaveClass("is-focus-mode");
     fireEvent.click(screen.getByRole("button", { name: /Open evidence response.md/i }));
     expect(
-      screen.getByText("cases/selection-quality/with_skill/repeat-1/outputs/response.md"),
-    ).toBeInTheDocument();
+      screen.getAllByText(
+        "cases/selection-quality/with_skill/repeat-1/outputs/response.md",
+      ).length,
+    ).toBeGreaterThan(0);
   });
 
   it("mounts the Pierre worker pool for production diff rendering", async () => {
@@ -298,7 +340,16 @@ describe("EvidenceDashboard", () => {
     render(<DiffViewer diffs={data.diffs} enableWorkerPool />);
 
     expect(await screen.findByText("Rendered diff SKILL.md")).toBeInTheDocument();
-    expect(workerProviderSpy).toHaveBeenCalled();
+    expect(workerProviderSpy).toHaveBeenCalledWith({
+      poolOptions: expect.objectContaining({
+        poolSize: 2,
+        totalASTLRUCacheSize: 24,
+      }),
+      highlighterOptions: expect.objectContaining({
+        langs: ["markdown"],
+        preferredHighlighter: "shiki-js",
+      }),
+    });
     expect(diffWorkerFactorySpy).toHaveBeenCalled();
     expect(screen.getByTestId("worker-pool")).toBeInTheDocument();
   });
