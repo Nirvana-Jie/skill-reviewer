@@ -98,7 +98,6 @@ function writeExecution({
       side_effects: sideEffects,
       metrics,
       artifact_digests: artifactDigests,
-      agent_provenance: null,
     }),
   );
 }
@@ -480,7 +479,6 @@ describe("skill_eval_runtime compile", () => {
       expect(assignment.execution_profile_digest).toBe(
         plan.execution_profile.digest,
       );
-      expect(plan).not.toHaveProperty("agent_provenance");
     });
   });
 
@@ -1193,6 +1191,36 @@ description: Review demo inputs when asked.
     });
   });
 
+  it("rejects undeclared fields throughout the executable manifest", () => {
+    fixture((root) => {
+      const mutations = [
+        ["manifest", (value) => { value.obsolete_eval_rows = []; }],
+        ["defaults", (value) => { value.defaults.fallback = {}; }],
+        ["case", (value) => { value.evals[0].should_trigger = true; }],
+        ["assertion", (value) => { value.evals[0].assertions[0].hint = "pass"; }],
+        ["objective", (value) => { value.evals[0].objectives[0].weight = 1; }],
+      ];
+
+      for (const [label, mutate] of mutations) {
+        const fixtureRoot = join(root, label);
+        const { manifest, subject } = writeMinimalPackage(fixtureRoot);
+        const parsed = JSON.parse(readFileSync(manifest, "utf8"));
+        mutate(parsed);
+        writeFileSync(manifest, JSON.stringify(parsed), "utf8");
+
+        const result = compile({
+          manifest,
+          subject,
+          workspace: join(fixtureRoot, "run"),
+          splits: ["development"],
+        });
+
+        expect(result.status, `${label}: ${result.stderr}`).toBe(2);
+        expect(JSON.parse(result.stdout).error).toContain("unsupported fields");
+      }
+    });
+  });
+
   it("rejects runtime-surface symlinks instead of copying eval authority into a worker snapshot", () => {
     fixture((root) => {
       const { manifest, subject } = writeMinimalPackage(root);
@@ -1411,7 +1439,6 @@ describe("skill_eval_runtime grade", () => {
           side_effects: [],
           metrics: {},
           artifact_digests: {},
-          agent_provenance: null,
         }),
       );
       const executionPath = join(
@@ -1451,6 +1478,41 @@ describe("skill_eval_runtime grade", () => {
         expect(evidence.level).toBe("inconclusive");
         expect(evidence.cases[0].with_skill.complete).toBe(false);
       }
+    });
+  });
+
+  it("marks executor evidence with undeclared fields inconclusive", () => {
+    fixture((root) => {
+      const { plan, planPath, workspace } = compiledPlanFixture(root, [
+        minimalCase({ id: "strict-execution", split: "selection" }),
+      ]);
+      for (const arm of ["with_skill", "old_skill"]) {
+        write(
+          workspace,
+          `cases/strict-execution/${arm}/repeat-1/outputs/response.md`,
+          "retained response\n",
+        );
+        const executionPath = writeExecution({
+          workspace,
+          plan,
+          caseId: "strict-execution",
+          arm,
+        });
+        if (arm === "with_skill") {
+          const execution = JSON.parse(readFileSync(executionPath, "utf8"));
+          execution.worker_build = "undeclared";
+          writeFileSync(executionPath, JSON.stringify(execution), "utf8");
+        }
+      }
+
+      const result = grade({ plan: planPath, workspace });
+
+      expect(result.status, result.stderr).toBe(0);
+      const evidence = JSON.parse(result.stdout);
+      expect(evidence.level).toBe("inconclusive");
+      expect(
+        evidence.cases[0].with_skill.binding_errors.join("\n"),
+      ).toContain("execution contains unsupported fields: worker_build");
     });
   });
 

@@ -1,3 +1,0 @@
-id,prompt,should_trigger,expected_behavior,failure_modes_to_watch
-1,"<realistic request that should trigger the reviewed skill; use natural phrasing, not the skill's keywords>",true,"<expected high-level behavior of the reviewed skill>","<likely failure mode: wrong output shape, missing step, hallucinated field>"
-2,"<near-miss request that shares keywords or context with the reviewed skill but should not trigger it>",false,"<expected non-trigger behavior or redirect>","<likely false-positive: keyword-triggered even though intent is different>"

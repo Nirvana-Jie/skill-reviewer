@@ -169,9 +169,12 @@ Warranted when the file is consumed as-is in the skill's output (templates, fixt
 Evals are **not a scorecard dimension** and their absence is never a blocker. Do not dock a skill for lacking evals. Only recommend them when they would materially reduce risk for this specific skill (fuzzy triggers, sibling collisions, or post-iteration regression risk).
 
 **When evals are worth proposing, good looks like:**
-- 5–10 prompts covering explicit, implicit, negative, boundary, adjacent-not-trigger, and complex-realistic cases.
-- Each prompt has: `prompt`, `should_trigger`, `expected_behavior`, `failure_modes_to_watch`.
-- Negative cases are genuinely tricky (share keywords with the skill), not trivial.
+- 5–10 `skill-reviewer.evals` cases covering explicit, implicit, negative,
+  boundary, adjacent-not-trigger, and complex-realistic behavior.
+- Every case has a purpose, split, prompt, determinism, at least one
+  deterministic `must_pass` assertion, and at least one objective.
+- Assertions verify retained artifacts; negative cases are genuinely tricky
+  near misses rather than trivially unrelated prompts.
 
 **When to explicitly defer/decline:**
 - Skill is in rapid prototyping — description still churning.

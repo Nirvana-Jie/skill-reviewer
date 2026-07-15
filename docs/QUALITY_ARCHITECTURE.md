@@ -84,10 +84,9 @@ decisions from multiple immutable candidate run workspaces.
 
 ## Executable manifest and integrity boundary
 
-Only the strict `skill-reviewer.evals` contract is executable. There is no
-compatibility adapter or numeric contract version. A present malformed or
-differently shaped manifest is a structural release blocker. Absence remains
-optional for an ordinary skill.
+Only the exact `skill-reviewer.evals` field set is executable. A present
+malformed manifest, differently shaped manifest, or undeclared field is a
+structural release blocker. Absence remains optional for an ordinary skill.
 
 Compilation records:
 
@@ -152,9 +151,9 @@ runtime binds the declared isolation profile but does not itself create an OS
 container; `trusted-orchestrator` means the external dispatcher enforces the
 policy, while `local-unattested` is explicitly weaker evidence.
 
-`agent_provenance` is optional. Artifact identity, input identity, assignment
-identity, and execution-profile digest are required; a worker or subagent
-version is not a hard gate.
+Artifact identity, input identity, assignment identity, and the lead-supplied
+execution-profile digest are the executor identity boundary. Worker-supplied
+identity or build metadata is outside the accepted evidence schema.
 
 ## Assertion and evidence model
 
@@ -255,8 +254,8 @@ imply cryptographic one-shot audit.
 ## Dashboard product boundary
 
 The Evidence Workbench is a React + TypeScript + Vite application with Vitest UI
-tests. Its read model uses the `skill-reviewer.dashboard-data` contract without
-a compatibility/version negotiation layer. Candidate/baseline source diffs are
+tests. Its read model accepts exactly the `skill-reviewer.dashboard-data`
+contract. Candidate/baseline source diffs are
 derived from locked runtime snapshots and rendered with `@pierre/diffs` using
 virtualization and an explicitly mounted worker-pool provider; they do not read
 mutable host paths. `dashboard-data.json` contains only diff metadata. Bounded
@@ -346,7 +345,7 @@ Supporting documents may explain these authorities but must not redefine them.
 
 A change to this project is complete only when:
 
-1. Python compatibility tests and all Vitest suites pass;
+1. Python unit tests and all Vitest suites pass;
 2. the package linter reports no structural error;
 3. executable JSON and local snapshot contracts validate;
 4. the Dashboard typecheck and production build pass;

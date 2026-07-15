@@ -70,12 +70,77 @@ PERMISSION_FIELDS = {
     "external_side_effects",
     "writable_roots",
 }
+MANIFEST_FIELDS = {"contract", "skill_name", "defaults", "evals"}
+DEFAULT_FIELDS = {
+    "permissions",
+    "repeats",
+    "evolution",
+    "case_timeout_seconds",
+}
+REPEAT_FIELDS = {"deterministic", "stochastic"}
+EVOLUTION_FIELDS = {"max_rounds"}
+PUBLIC_EVAL_FIELDS = {
+    "id",
+    "purpose",
+    "split",
+    "prompt",
+    "files",
+    "determinism",
+    "assertions",
+    "objectives",
+    "holdout",
+    "timeout_seconds",
+    "permissions",
+}
+OPAQUE_EVAL_FIELDS = {
+    "id",
+    "purpose",
+    "split",
+    "determinism",
+    "holdout",
+    "timeout_seconds",
+    "permissions",
+}
+ASSERTION_COMMON_FIELDS = {"id", "type", "artifact", "severity"}
+ASSERTION_FIELDS = {
+    "file_exists": ASSERTION_COMMON_FIELDS,
+    "text_contains": ASSERTION_COMMON_FIELDS | {"expected"},
+    "text_not_contains": ASSERTION_COMMON_FIELDS | {"expected"},
+    "text_matches": ASSERTION_COMMON_FIELDS | {"pattern"},
+    "json_path": ASSERTION_COMMON_FIELDS | {"path", "operator", "expected"},
+    "event_absent": ASSERTION_COMMON_FIELDS | {"event"},
+    "digest_equals": ASSERTION_COMMON_FIELDS | {"expected_sha256"},
+    "numeric_range": ASSERTION_COMMON_FIELDS | {"path", "minimum", "maximum"},
+    "semantic_pair": ASSERTION_COMMON_FIELDS | {"rubric", "inputs"},
+}
+OBJECTIVE_FIELDS = {
+    "id",
+    "metric",
+    "direction",
+    "primary",
+    "min_material_delta",
+    "non_regression_tolerance",
+}
 EXECUTION_PROFILE_FIELDS = {
     "target",
     "harness",
     "capabilities",
     "isolation",
     "sampling",
+}
+EXECUTION_FIELDS = {
+    "contract",
+    "run_id",
+    "case_id",
+    "arm",
+    "repeat",
+    "assignment_digest",
+    "execution_profile_digest",
+    "status",
+    "forbidden_actions",
+    "side_effects",
+    "metrics",
+    "artifact_digests",
 }
 CANDIDATE_AUTHORIZATION_FIELDS = {
     "phase",
@@ -604,6 +669,16 @@ def _require_string(value: Any, label: str) -> str:
     return value.strip()
 
 
+def _reject_unsupported_fields(
+    value: dict[str, Any], allowed: set[str], label: str
+) -> None:
+    unsupported = sorted(set(value) - allowed)
+    if unsupported:
+        raise ManifestError(
+            f"{label} contains unsupported fields: {', '.join(unsupported)}"
+        )
+
+
 def _safe_subject_file(subject: Path, relative: str, label: str) -> Path:
     subject = subject.resolve()
     path = Path(os.path.abspath(subject / relative))
@@ -664,6 +739,9 @@ def _validate_assertions(assertions: Any, label: str) -> list[dict[str, Any]]:
             raise ManifestError(
                 f"{assertion_label} uses unsupported assertion type: {assertion_type}"
             )
+        _reject_unsupported_fields(
+            assertion, ASSERTION_FIELDS[assertion_type], assertion_label
+        )
         artifact = _validate_artifact_path(
             assertion.get("artifact"), f"{assertion_label}.artifact"
         )
@@ -776,6 +854,7 @@ def _validate_objectives(objectives: Any, label: str) -> list[dict[str, Any]]:
         objective_label = f"{label}[{index}]"
         if not isinstance(objective, dict):
             raise ManifestError(f"{objective_label} must be an object")
+        _reject_unsupported_fields(objective, OBJECTIVE_FIELDS, objective_label)
         objective_id = _require_string(objective.get("id"), f"{objective_label}.id")
         if objective_id in seen:
             raise ManifestError(f"duplicate objective id in {label}: {objective_id}")
@@ -867,15 +946,18 @@ def _normalize_permissions(
 
 
 def validate_manifest(manifest: dict[str, Any], subject: Path) -> list[dict[str, Any]]:
+    _reject_unsupported_fields(manifest, MANIFEST_FIELDS, "manifest")
     if manifest.get("contract") != MANIFEST_CONTRACT:
         raise ManifestError(f"contract must be {MANIFEST_CONTRACT}")
     _require_string(manifest.get("skill_name"), "skill_name")
     defaults = manifest.get("defaults")
     if not isinstance(defaults, dict):
         raise ManifestError("defaults must be an object")
+    _reject_unsupported_fields(defaults, DEFAULT_FIELDS, "defaults")
     repeats = defaults.get("repeats")
     if not isinstance(repeats, dict):
         raise ManifestError("defaults.repeats must be an object")
+    _reject_unsupported_fields(repeats, REPEAT_FIELDS, "defaults.repeats")
     for key, expected in (("deterministic", 1), ("stochastic", 3)):
         value = repeats.get(key)
         if not isinstance(value, int) or value < 1:
@@ -883,7 +965,10 @@ def validate_manifest(manifest: dict[str, Any], subject: Path) -> list[dict[str,
         if value != expected:
             raise ManifestError(f"defaults.repeats.{key} must be {expected}")
     evolution = defaults.get("evolution")
-    if not isinstance(evolution, dict) or evolution.get("max_rounds") != 3:
+    if not isinstance(evolution, dict):
+        raise ManifestError("defaults.evolution must be an object")
+    _reject_unsupported_fields(evolution, EVOLUTION_FIELDS, "defaults.evolution")
+    if evolution.get("max_rounds") != 3:
         raise ManifestError("defaults.evolution.max_rounds must be 3")
     default_timeout = defaults.get("case_timeout_seconds")
     if (
@@ -954,6 +1039,7 @@ def validate_manifest(manifest: dict[str, Any], subject: Path) -> list[dict[str,
                     f"{label} opaque audit must not expose oracle fields: "
                     + ", ".join(exposed_oracle_fields)
                 )
+            _reject_unsupported_fields(item, OPAQUE_EVAL_FIELDS, label)
             asset_id = _require_string(
                 raw_holdout.get("asset_id"), f"{label}.holdout.asset_id"
             )
@@ -967,6 +1053,7 @@ def validate_manifest(manifest: dict[str, Any], subject: Path) -> list[dict[str,
             assertions: list[dict[str, Any]] = []
             objectives: list[dict[str, Any]] = []
         else:
+            _reject_unsupported_fields(item, PUBLIC_EVAL_FIELDS, label)
             if "asset_id" in raw_holdout:
                 raise ManifestError(
                     f"{label}.holdout.asset_id is allowed only for opaque holdout"
@@ -1932,6 +2019,12 @@ def grade_arm(
                     "metrics": {},
                 }
                 repeat_binding_errors.append(str(error))
+        unsupported_execution_fields = sorted(set(execution) - EXECUTION_FIELDS)
+        if unsupported_execution_fields:
+            repeat_binding_errors.append(
+                "execution contains unsupported fields: "
+                + ", ".join(unsupported_execution_fields)
+            )
         expected_identity = {
             "contract": EXECUTION_CONTRACT,
             "run_id": run_id,
@@ -4043,7 +4136,7 @@ def _validate_authorization_plan(
         or plan.get("execution_profile", {}).get("digest")
         != execution_profile_digest
     ):
-        raise ManifestError(f"{label} plan is incompatible with evolution authority")
+        raise ManifestError(f"{label} plan does not match evolution authority")
     verify_locked_inputs(
         plan_path=plan_path, workspace=plan_path.parent, plan=plan
     )
@@ -4257,7 +4350,7 @@ def _validate_evolution_state(
         or not isinstance(initialized_execution_profile, dict)
         or initialized_execution_profile.get("digest") != execution_profile_digest
     ):
-        raise ManifestError("dashboard state initialization plan is incompatible")
+        raise ManifestError("dashboard state initialization plan does not match")
     protected_roots = [
         Path(_require_string(subject.get("path"), "plan.subject.path")),
         plan_path.resolve().parent,
@@ -4610,7 +4703,7 @@ def _validate_evolution_state(
             if active_run_id not in set(history_run_ids):
                 projection["next_action"] = "run_authorized_audit"
         else:
-            raise ManifestError("authorized query is incompatible with evolution state")
+            raise ManifestError("authorized query does not match evolution state")
     expected_lineage_run_ids = list(selection_history_run_ids)
     if (
         isinstance(active_authorization, dict)

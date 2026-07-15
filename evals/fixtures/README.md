@@ -44,5 +44,5 @@ python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.jso
 
 ## Design notes
 
-- Fixtures are intentionally short. Calibration is about rubric stability, not coverage — broader functional coverage lives in `evals/skill-reviewer.csv`.
+- Fixtures are intentionally short. Calibration is about rubric stability, not coverage — broader trigger, routing, and behavior coverage lives in `../evals.json`.
 - Do not "fix" fixtures when the reviewer disagrees with them. Either the reviewer is wrong (update the rubric or SKILL.md), or the fixture label is wrong (update `expected.md`, with a note in the commit message about why). Silent edits destroy the calibration signal.

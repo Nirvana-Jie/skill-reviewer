@@ -38,7 +38,8 @@ npx skills add Nirvana-Jie/skill-reviewer --skill skill-reviewer
 - **检查清单** → `references/review-checklist.md`（平铺、可打勾、MECE）
 - **包静态检查** → `scripts/lint_skill_package.py`（frontmatter、链接、资源图、eval manifest）
 - **输出契约** → 按语言选择模板，固定节序
-- **自身回归评测** → `evals/skill-reviewer.csv`
+- **可执行评测** → `evals/evals.json`，包含真实 prompt、类型化断言、目标及
+  development / selection / audit 角色
 - **校准 fixture** → `evals/fixtures/{ready,needs-revision,not-ready}-*`
 - **本地 snapshot** → `evals/local-skill-review-snapshot.json`
 - **可执行 eval runtime** → `scripts/skill_eval_runtime.py`（compile、lock、
@@ -58,7 +59,7 @@ npx skills add Nirvana-Jie/skill-reviewer --skill skill-reviewer
 | 资源 / 脚本必要性          | `Resource Review` 段，拒绝堆砌型脚本                            |
 | 安全红线                   | 非可协商红线：`Safety=1` 或 `Trigger=1` 直接判 **Not ready**     |
 | prompt-injection 防护      | Review contract：被审查的内容是**数据**，不是指令                |
-| eval 建议                  | 仅在能显著降风险时给 5–10 条定向 prompt                         |
+| eval 建议                  | 仅在能显著降风险时给 5–10 个可直接写入 manifest 的场景           |
 | 本地 eval snapshot         | 结构化 fixture 契约 + 确定性 runner / validator 脚本             |
 | subagent 效果验证          | 成对运行 `with_skill` / baseline，记录 digest、artifact 和验证等级 |
 | 可执行 eval 契约           | 严格 `skill-reviewer.evals` contract；无效 manifest 阻塞发布，不静默跳过 |
@@ -82,7 +83,7 @@ full review 按固定顺序输出：
 7. 资源审查                   # 按 references/ scripts/ assets/ evals/ 分文件
 8. 验证证据                   # not-run | inconclusive | behavior-verified | regression-verified
 9. 改写建议                   # 可粘贴的 YAML 和/或 Markdown
-10. 建议评测（可选）           # 有价值时给 5–10 行，否则写不建议 / 暂缓
+10. 建议评测（可选）           # 有价值时给 5–10 个可执行场景，否则写不建议 / 暂缓
 11. 最终建议
 ```
 
@@ -112,10 +113,9 @@ focused review 保持同样的节序，没用到的段折叠成一行 `N/A`。
 
 ## 本地 eval snapshot
 
-`skill-reviewer` 使用四层互补的 eval：
+`skill-reviewer` 使用一份可执行 manifest，并配套评审输出校准锚点：
 
-- `evals/skill-reviewer.csv` 检查触发与路由行为。
-- `evals/evals.json` 是严格的可执行 manifest，按 development、selection、audit
+- `evals/evals.json` 是唯一的触发、路由与行为 manifest，按 development、selection、audit
   分层；确定性断言先执行，匿名顺序交换的语义判断只作补充。
 - `evals/fixtures/*/expected.md` 提供人工可读的校准锚点。
 - `evals/local-skill-review-snapshot.json` 提供机器可读的 snapshot 契约，覆盖判定、评分范围、必需 section、必须指出的问题、禁止行为、输出产物，以及可选的输出质量断言。
@@ -327,8 +327,7 @@ npx skills add Nirvana-Jie/skill-reviewer --list
 │   ├── local-eval-snapshot.md     # 本地 snapshot 风格 eval 协议
 │   ├── executable-evals.md        # 严格 manifest 与断言契约
 │   ├── subagent-eval-workflow.md  # 成对 subagent 效果验证协议
-│   ├── evolution-workflow.md      # 有界 optimize/select/audit 协议
-│   └── eval-prompts-template.csv  # eval 输出字段模板（只含 header）
+│   └── evolution-workflow.md      # 有界 optimize/select/audit 协议
 ├── scripts/
 │   ├── lint_skill_package.py      # 确定性只读 package linter
 │   ├── skill_eval_runtime.py      # plan/lock/grade/decide/evolve/project
@@ -336,8 +335,7 @@ npx skills add Nirvana-Jie/skill-reviewer --list
 │   ├── run_codex_skill_evals.py   # 模型驱动的 runner / 后处理器
 │   └── validate_local_snapshot.py # 确定性 snapshot 契约校验脚本
 └── evals/
-    ├── skill-reviewer.csv         # 自身回归评测集
-    ├── evals.json                  # subagent 行为 prompt 与断言
+    ├── evals.json                  # 可执行 prompt、断言与目标
     ├── local-skill-review-snapshot.json # 结构化 snapshot 契约
     └── fixtures/                  # 校准锚点
         ├── ready-csv-column-renamer/

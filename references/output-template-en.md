@@ -51,7 +51,7 @@ scope.
 <Paste-ready YAML description and/or instruction blocks, or `No change recommended.`>
 
 ## Suggested Evals (optional)
-<5–10 rows using prompt / should_trigger / expected_behavior / failure_modes_to_watch, or one justified Not recommended / Deferred line.>
+<5–10 manifest-ready `skill-reviewer.evals` case objects with executable assertions and objectives, or one justified Not recommended / Deferred line.>
 
 ## Final Recommendation
 <Ordered action list.>

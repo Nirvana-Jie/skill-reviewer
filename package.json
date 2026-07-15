@@ -1,6 +1,5 @@
 {
   "name": "skill-reviewer",
-  "version": "0.0.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.11.0",

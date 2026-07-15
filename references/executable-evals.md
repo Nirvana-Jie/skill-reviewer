@@ -11,10 +11,9 @@ semantic graders. The Python runtime never assumes a specific agent provider.
 
 ## Release rule
 
-Only the strict `skill-reviewer.evals` contract is supported. There is no
-compatibility adapter or numeric contract version. Do not translate or silently
-skip a differently shaped manifest. If `evals/evals.json` exists but cannot
-compile:
+Only the exact `skill-reviewer.evals` field set is supported. Do not translate,
+ignore undeclared fields, or silently skip a differently shaped manifest. If
+`evals/evals.json` exists but cannot compile:
 
 - do not start eval workers;
 - report verification level `inconclusive`;
@@ -119,7 +118,8 @@ configuration record supplied by the lead/orchestrator, not a worker self-report
 The profile must be a canonical regular file outside the subject, baseline,
 and run workspace. Its normalized digest enters the run ID, plan, run lock,
 assignments, executor response, evidence, and evolution state. Changing it
-creates a different evidence cell. A worker or subagent version is not required.
+creates a different evidence cell. Worker-supplied identity or build metadata
+is not accepted as evidence.
 
 Compile exactly one split for the current stage into a new or empty workspace
 that does not overlap either the candidate or accepted baseline package:
@@ -325,8 +325,7 @@ cases/<case-id>/<arm>/repeat-<N>/
   "metrics": {},
   "artifact_digests": {
     "outputs/response.md": "<sha256>"
-  },
-  "agent_provenance": null
+  }
 }
 ```
 
@@ -334,10 +333,9 @@ The grader rejects stale or edited execution metadata, assignment mismatches,
 and artifact-digest mismatches. Forbidden actions or external side effects in
 either candidate or baseline make the evidence `inconclusive`.
 
-`agent_provenance` is optional evidence. Model or subagent version is not a
-release requirement. The worker must not infer the overall verdict. A lead
-agent records a timeout or worker failure as a non-completed status and keeps
-partial artifacts.
+The worker must not add self-reported identity/build fields or infer the overall
+verdict. A lead agent records a timeout or worker failure as a non-completed
+status and keeps partial artifacts.
 
 ## Grade and project
 

@@ -116,9 +116,9 @@ drift, follow the rubric and flag the checklist mismatch.
 Evals are not scored and their absence is never a blocker. Only propose them when they would materially reduce risk for this skill.
 
 - [ ] Decided whether evals are worth recommending for this skill (or deferring).
-- [ ] If recommended: 5–10 prompts covering explicit / implicit / negative / boundary / adjacent-not-trigger.
-- [ ] If recommended: each prompt has prompt, should_trigger, expected_behavior, failure_modes_to_watch.
-- [ ] If recommended: negative prompts are genuinely near-miss, not trivially unrelated.
+- [ ] If recommended: 5–10 `skill-reviewer.evals` cases cover explicit / implicit / negative / boundary / adjacent-not-trigger behavior.
+- [ ] If recommended: every case declares purpose, split, prompt, determinism, deterministic `must_pass` assertions, and objectives.
+- [ ] If recommended: assertions target retained artifacts and negative prompts are genuine near misses, not trivially unrelated.
 - [ ] If deferring: reason stated in one line (e.g. rapid iteration, unambiguous trigger surface).
 - [ ] If reviewing local skill evals: trigger/router evals, behavior assertions, calibration fixtures, and artifact snapshots are separated.
 - [ ] If reviewing snapshot-style evals: snapshots compare structured fields, not full prose by default.
@@ -151,7 +151,7 @@ Evals are not scored and their absence is never a blocker. Only propose them whe
 - [ ] Scorecard has 8 dimensions, each with a one-line justification.
 - [ ] Each Critical Issue has: Problem, Why it matters, Fix (copy-pasteable).
 - [ ] Suggested Rewrites block is paste-ready (YAML `description:` value and/or instruction blocks), or explicitly marked "No change recommended".
-- [ ] Suggested Evals: either 5–10 targeted rows with the CSV column schema, or a one-line `Not recommended — <reason>` / `Deferred — <reason>`.
+- [ ] Suggested Evals: either 5–10 manifest-ready case objects using the current `skill-reviewer.evals` shape, or a one-line `Not recommended — <reason>` / `Deferred — <reason>`.
 - [ ] Verification Evidence identifies level, subject, runs, baseline, artifacts/evidence, and limitations without claiming work that did not happen.
 - [ ] Final Recommendation is an ordered action list, not prose.
 - [ ] Any unassessable items are explicitly listed.

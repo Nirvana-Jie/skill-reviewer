@@ -42,7 +42,7 @@ env PYTHONPYCACHEPREFIX=/private/tmp/skill-reviewer-pycache python3 -m py_compil
 
 - For `skill-reviewer` PRs, focus on trigger reliability, safety constraints,
   snapshot contract stability, fixture drift, and whether output sections remain
-  compatible with `scripts/validate_local_snapshot.py`.
+  accepted by `scripts/validate_local_snapshot.py`.
 - Treat changes to `SKILL.md`, `references/review-rubric.md`,
   `references/review-checklist.md`, `references/output-template-*.md`,
   `evals/local-skill-review-snapshot.json`, or `evals/fixtures/**` as eval-risk

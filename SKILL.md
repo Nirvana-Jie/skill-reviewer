@@ -123,7 +123,9 @@ from the rubric.
 
 - **Suggestion only:** evals remain unscored; propose them only when fuzzy
   triggers, sibling collisions, or regression risk justify their maintenance.
-  Use `references/eval-prompts-template.csv` and give 5–10 realistic cases.
+  Use the current `skill-reviewer.evals` shape in
+  `references/executable-evals.md` and give 5–10 manifest-ready cases with
+  executable assertions and objectives.
 - **Snapshot/eval design:** read `references/local-eval-snapshot.md`. Separate
   router cases, behavior assertions, calibration fixtures, and structured
   artifact snapshots; do not freeze full prose by default.
@@ -137,7 +139,8 @@ from the rubric.
   agent-agnostic. Compilation requires a canonical execution profile outside
   the subject/baseline/workspace; bind its target, harness, capability,
   isolation, and sampling digest to every assignment and executor response.
-  Do not require worker or subagent version evidence.
+  Executor identity comes from that lead-supplied profile and the bound
+  artifacts; do not accept worker self-reported build fields.
 
 For a full/readiness branch, auto-discover and execute a valid manifest. For a
 focused branch, execute only when evals or effect claims are in scope. An
@@ -273,7 +276,8 @@ Before returning, confirm all of the following:
 - `Verification Evidence` names level, subject/digest, runs, baseline,
   artifacts, and limitations without claiming work that did not happen;
 - Suggested Rewrites are paste-ready or explicitly say no change;
-- Suggested Evals contain 5–10 rows or one justified defer/not-recommended line;
+- Suggested Evals contain 5–10 manifest-ready cases or one justified
+  defer/not-recommended line;
 - Final Recommendation is an ordered action list.
 
 **Completion criterion:** the selected output template is complete, internally
@@ -300,9 +304,8 @@ consistent, and no claim exceeds the retained evidence.
   semantic grader is dispatched.
 - `references/evolution-workflow.md` — bounded optimizer/selection/audit state
   machine; read only for explicit evolution.
-- `evals/skill-reviewer.csv` — trigger/router regression cases; consult when
-  invocation boundaries change.
-- `evals/evals.json` — behavior cases and assertions; use for self-validation.
+- `evals/evals.json` — executable trigger, routing, behavior, and assertion
+  cases; use for self-validation.
 - `evals/local-skill-review-snapshot.json` and `evals/fixtures/` — calibrated
   review-output contract; use when rubric, verdict, or output shape changes.
 - `scripts/lint_skill_package.py` — deterministic package-facts axis; never

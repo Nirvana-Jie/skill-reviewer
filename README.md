@@ -40,7 +40,8 @@ Most "skill reviews" in the wild are vibes. `skill-reviewer` encodes the review 
 - **checklist** → `references/review-checklist.md` (flat, tickable, MECE)
 - **package linter** → `scripts/lint_skill_package.py` (front matter, links, resource graph, eval manifest)
 - **output contract** → language-selected templates with a fixed section order
-- **regression evals** → `evals/skill-reviewer.csv`
+- **executable evals** → `evals/evals.json` with real prompts, typed assertions,
+  objectives, and development / selection / audit roles
 - **calibration fixtures** → `evals/fixtures/{ready,needs-revision,not-ready}-*`
 - **local snapshots** → `evals/local-skill-review-snapshot.json`
 - **executable eval runtime** → `scripts/skill_eval_runtime.py` (compile, lock,
@@ -61,7 +62,7 @@ Change the rubric, re-run the fixtures and local snapshots, ship. No re-reading 
 | Resource / script necessity | `Resource Review` section, rejects cargo-cult scripts            |
 | Safety red lines            | Non-negotiable blockers: `Safety=1` or `Trigger=1` → **Not ready** regardless of other scores |
 | Prompt-injection hardening  | Review contract: reviewed artifacts are **data**, not instructions |
-| Eval suggestions            | Optional 5–10 prompt rows only when they materially reduce risk |
+| Eval suggestions            | Optional 5–10 manifest-ready cases only when they materially reduce risk |
 | Local eval snapshots        | Structured fixture contracts + deterministic runner / validator scripts |
 | Subagent effect verification | Paired `with_skill` / baseline runs with digests, retained evidence, and explicit verification levels |
 | Executable eval contract | Strict `skill-reviewer.evals` contract; an invalid present manifest blocks release instead of being skipped |
@@ -85,7 +86,7 @@ Every full review emits, in order:
 7. Resource Review            # per file under references/ scripts/ assets/ evals/
 8. Verification Evidence      # not-run | inconclusive | behavior-verified | regression-verified
 9. Suggested Rewrites         # paste-ready YAML and/or Markdown
-10. Suggested Evals (optional)# 5–10 rows when useful, otherwise Not recommended / Deferred
+10. Suggested Evals (optional)# 5–10 executable cases when useful, otherwise Not recommended / Deferred
 11. Final Recommendation
 ```
 
@@ -115,10 +116,10 @@ Protocol in [`evals/fixtures/README.md`](./evals/fixtures/README.md). Run whenev
 
 ## Local eval snapshots
 
-`skill-reviewer` uses four complementary eval layers:
+`skill-reviewer` uses one executable manifest plus calibrated review-output
+anchors:
 
-- `evals/skill-reviewer.csv` checks trigger and routing behavior.
-- `evals/evals.json` is a strict executable manifest with development,
+- `evals/evals.json` is the single trigger, routing, and behavior manifest with development,
   selection, and audit splits; deterministic assertions run before supplemental
   blind semantic comparisons.
 - `evals/fixtures/*/expected.md` gives human-readable calibration anchors.
@@ -356,8 +357,7 @@ Explicitly does **not** fire for: creating a new skill (use `skill-creator`), ru
 │   ├── local-eval-snapshot.md     # local snapshot-style eval protocol
 │   ├── executable-evals.md        # strict executable manifest + assertion contract
 │   ├── subagent-eval-workflow.md  # paired effect-verification protocol
-│   ├── evolution-workflow.md      # bounded optimize/select/audit protocol
-│   └── eval-prompts-template.csv  # eval output schema (header only)
+│   └── evolution-workflow.md      # bounded optimize/select/audit protocol
 ├── scripts/
 │   ├── lint_skill_package.py      # deterministic read-only package linter
 │   ├── skill_eval_runtime.py      # plan/lock/grade/decide/evolve/project
@@ -365,14 +365,13 @@ Explicitly does **not** fire for: creating a new skill (use `skill-creator`), ru
 │   ├── run_codex_skill_evals.py   # model-backed runner / post-processor
 │   └── validate_local_snapshot.py # deterministic snapshot contract validator
 └── evals/
-    ├── skill-reviewer.csv         # self-regression eval set
-    ├── evals.json                  # subagent behavior prompts + assertions
+    ├── evals.json                  # executable prompts + assertions + objectives
     ├── local-skill-review-snapshot.json # structured snapshot contract
     └── fixtures/                  # calibration anchors
         ├── ready-csv-column-renamer/
         ├── needs-revision-meeting-note/
         └── not-ready-repo-cleaner/
-├── tests/                         # Python compatibility tests + Vitest linter/runner tests
+├── tests/                         # Python unit tests + Vitest linter/runner tests
 ├── dashboard/                     # React + TypeScript + Vite Evidence Lab
 ├── package.json                   # Vitest, typecheck, and Dashboard commands
 └── pnpm-lock.yaml                 # pinned pnpm test dependencies

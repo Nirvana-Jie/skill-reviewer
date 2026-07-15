@@ -37,7 +37,7 @@ blocker and stops before worker launch.
    use `without_skill`. Freeze the accepted baseline before candidate edits.
 4. Create or select a canonical execution profile outside subject, baseline,
    and run roots. It declares target, harness, capabilities, isolation, and
-   sampling. Do not ask a worker to self-attest a version.
+   sampling. Do not ask a worker to add self-reported identity or build fields.
 5. Compile exactly one required split into a fresh, empty workspace. For an
    opaque audit, also pass the trusted holdout pack; never expose it to the
    optimizer or executor. Treat `execution-plan.json` and `run-lock.json` as
@@ -164,9 +164,9 @@ After all workers finish:
 5. Project `dashboard-data.json` for inspection, but cite retained JSON/output
    paths as the evidence of record.
 
-Optional `agent_provenance` may identify the executor surface. Do not request or
-gate on a model/subagent version; the lead-supplied execution profile plus
-artifact, assignment, and input identity are load-bearing.
+The lead-supplied execution profile plus artifact, assignment, and input
+identity define the executor surface. Worker-supplied identity/build metadata
+is outside the accepted evidence schema.
 
 A public audit is calibration-only even if every case passes. Report its
 `release_eligible: false` limitation and do not advance to release without a

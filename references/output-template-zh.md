@@ -40,7 +40,7 @@ section 写 `N/A — focused review of <scope>`。文件路径、字段名、标
 
 ## 验证证据
 - 级别：`not-run` | `inconclusive` | `behavior-verified` | `regression-verified`
-- 对象：<路径、版本、digest，或“未记录”>
+- 对象：<路径与 digest，或“未记录”>
 - 静态检查：<命令、结果、artifact，或“未运行”>
 - 运行：<case 与配置，或“无”>
 - 基线：<old_skill / without_skill / 不可用 / 未要求>
@@ -51,7 +51,7 @@ section 写 `N/A — focused review of <scope>`。文件路径、字段名、标
 <可直接粘贴的 YAML description 和/或指令块，或写“无需改动”。>
 
 ## 建议评测（可选）
-<5–10 行 prompt / should_trigger / expected_behavior / failure_modes_to_watch，或一行有理由的“不建议/暂缓”。>
+<5–10 个可直接写入 `skill-reviewer.evals` 的场景对象，包含可执行断言与目标；或一行有理由的“不建议/暂缓”。>
 
 ## 最终建议
 <有序行动列表。>
