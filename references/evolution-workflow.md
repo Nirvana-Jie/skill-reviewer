@@ -25,7 +25,8 @@ lacks enough workers, but artifacts and prompts remain separated:
 4. **Deterministic grader** applies the manifest assertion registry to retained
    artifacts.
 5. **Semantic grader** receives anonymized paired outputs, judges both A/B
-   orders, and writes only the semantic judgment artifact.
+   orders under the frozen contract, and returns only anonymous winners. The
+   lead owns the mapped, digest-bound semantic judgment artifact.
 
 Do not use worker voting as a release decision.
 
@@ -58,6 +59,23 @@ python3 scripts/skill_eval_runtime.py evolution-init \
   --plan <round-1-selection-workspace>/execution-plan.json \
   --workspace <evolution-control-workspace>
 ```
+
+The control workspace must be fresh, empty, and outside both candidate and
+accepted baseline packages. It is never the same directory as a run workspace.
+
+`evolution-state.json` is a derived projection. Each accepted transition is
+first appended as a digest-chained, read-only record under `transitions/`; if a
+process stops between the append and state replacement, the next advance
+reconstructs state from that journal. The canonical state path and journal are
+never exposed as executor-readable or writable paths.
+
+This is a local orchestrator control, not a remote transparency log. It detects
+partial state rollback while the control workspace remains trusted, but the
+same OS owner can copy or delete the whole state+journal directory. Claims that
+the three-round limit or audit is adversarially non-replayable therefore need
+an external append-only anchor controlled outside that owner. Without one,
+report `control anchor: local/trusted` and interpret “one-shot” as workflow
+enforcement by the trusted lead, not a cryptographic guarantee.
 
 The state pins the eval/grader authority and accepted baseline, not one
 candidate `run_id`. Each candidate round and the audit use a fresh, empty run
@@ -137,3 +155,10 @@ python3 scripts/skill_eval_runtime.py project-dashboard \
   --state <evolution-control-workspace>/evolution-state.json \
   --output <current-run-workspace>/dashboard-data.json
 ```
+
+Projection verifies the state authority and baseline, every retained decision
+digest, the bound plan/evidence behind each decision, and the complete state
+transition sequence. Gates shown for the current run come only from a decision
+with the latest journal run ID; older rounds remain timeline history, not
+current evidence. Projection performs fresh grading in memory and writes only
+the canonical `dashboard-data.json` read model.

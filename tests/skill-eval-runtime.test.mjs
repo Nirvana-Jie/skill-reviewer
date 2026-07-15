@@ -1,11 +1,17 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
+  lstatSync,
+  linkSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   rmSync,
+  statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,6 +33,22 @@ function write(root, relative, content) {
 
 function sha256(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function sha256Value(value) {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function makeWritable(path) {
+  if (!existsSync(path)) return;
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink()) return;
+  if (stat.isDirectory()) {
+    chmodSync(path, 0o700);
+    for (const child of readdirSync(path)) makeWritable(join(path, child));
+  } else {
+    chmodSync(path, 0o600);
+  }
 }
 
 function writeExecution({
@@ -80,11 +102,48 @@ function writeExecution({
   );
 }
 
+function semanticBinding({ plan, workspace, caseId, assertionId }) {
+  const testCase = plan.cases.find((item) => item.id === caseId);
+  const assertion = testCase.assertions.find((item) => item.id === assertionId);
+  const baselineArm = plan.baseline.kind;
+  const artifacts = {};
+  for (const arm of ["with_skill", baselineArm]) {
+    artifacts[arm] = Array.from({ length: testCase.repeats }, (_, index) => {
+      const repeat = index + 1;
+      const digests = {};
+      for (const input of assertion.inputs) {
+        const artifactPath = join(
+          workspace,
+          "cases",
+          caseId,
+          arm,
+          `repeat-${repeat}`,
+          input,
+        );
+        digests[input] = existsSync(artifactPath) ? sha256(artifactPath) : null;
+      }
+      return { repeat, digests };
+    });
+  }
+  return {
+    run_id: plan.run_id,
+    case_id: caseId,
+    assertion_id: assertionId,
+    authority_digest: plan.authority.digest,
+    semantic_grader_contract_digest:
+      plan.authority.semantic_grader_contract_digest,
+    rubric_digest: sha256Value(assertion.rubric),
+    inputs: assertion.inputs,
+    artifacts,
+  };
+}
+
 function fixture(callback) {
   const root = mkdtempSync(join(tmpdir(), "skill-reviewer-eval-runtime-"));
   try {
     return callback(root);
   } finally {
+    makeWritable(root);
     rmSync(root, { recursive: true, force: true });
   }
 }
@@ -192,6 +251,7 @@ function compiledPlanFixture(root, cases, options = {}) {
         permissions: { network: "deny", writable_roots: ["outputs"] },
         repeats: { deterministic: 1, stochastic: 3 },
         evolution: { max_rounds: 3 },
+        case_timeout_seconds: 300,
       },
       evals: cases,
     }),
@@ -269,6 +329,7 @@ function writeMinimalPackage(root, { cases = [minimalCase()], stochastic = 3 } =
         },
         repeats: { deterministic: 1, stochastic },
         evolution: { max_rounds: 3 },
+        case_timeout_seconds: 300,
       },
       evals: cases,
     }),
@@ -297,6 +358,7 @@ function writeEvolutionSubject(root, name, marker) {
         },
         repeats: { deterministic: 1, stochastic: 3 },
         evolution: { max_rounds: 3 },
+        case_timeout_seconds: 300,
       },
       evals: [
         minimalCase({ id: "selection-case", split: "selection" }),
@@ -393,6 +455,34 @@ describe("skill_eval_runtime compile", () => {
     });
   });
 
+  it("rejects a run workspace nested inside the accepted baseline", () => {
+    fixture((root) => {
+      const { manifest, subject } = writeMinimalPackage(root, {
+        cases: [minimalCase({ split: "selection" })],
+      });
+      const baselinePath = join(root, "accepted-baseline");
+      write(
+        baselinePath,
+        "SKILL.md",
+        "---\nname: demo-skill\ndescription: Accepted baseline.\n---\n",
+      );
+
+      const result = compile({
+        manifest,
+        subject,
+        workspace: join(baselinePath, "skill-reviewer-workspace"),
+        baselineKind: "old_skill",
+        baselinePath,
+        splits: ["selection"],
+      });
+
+      expect(result.status).toBe(2);
+      expect(JSON.parse(result.stdout).error).toContain(
+        "must not overlap protected package or run directories",
+      );
+    });
+  });
+
   it("requires exactly three repeats for stochastic cases", () => {
     fixture((root) => {
       const { manifest, subject } = writeMinimalPackage(root, {
@@ -431,6 +521,38 @@ describe("skill_eval_runtime compile", () => {
       expect(result.status).toBe(2);
       expect(JSON.parse(result.stdout).error).toContain(
         "selection requires an old_skill baseline",
+      );
+    });
+  });
+
+  it("rejects a partial selection or audit split", () => {
+    fixture((root) => {
+      const { manifest, subject } = writeMinimalPackage(root, {
+        cases: [
+          minimalCase({ id: "selection-one", split: "selection" }),
+          minimalCase({ id: "selection-two", split: "selection" }),
+        ],
+      });
+      const baselinePath = join(root, "accepted-baseline");
+      write(
+        baselinePath,
+        "SKILL.md",
+        "---\nname: demo-skill\ndescription: Accepted baseline.\n---\n",
+      );
+
+      const result = compile({
+        manifest,
+        subject,
+        workspace: join(root, "run"),
+        baselineKind: "old_skill",
+        baselinePath,
+        splits: ["selection"],
+        caseIds: ["selection-one"],
+      });
+
+      expect(result.status).toBe(2);
+      expect(JSON.parse(result.stdout).error).toContain(
+        "must execute the complete split",
       );
     });
   });
@@ -485,6 +607,89 @@ describe("skill_eval_runtime compile", () => {
     });
   });
 
+  it("rejects non-finite manifest numbers including overflowed JSON exponents", () => {
+    fixture((root) => {
+      const { manifest, subject } = writeMinimalPackage(root);
+      const original = readFileSync(manifest, "utf8");
+      for (const [index, literal] of ["Infinity", "1e999"].entries()) {
+        writeFileSync(
+          manifest,
+          original.replace('"min_material_delta":0.1', `"min_material_delta":${literal}`),
+          "utf8",
+        );
+        const result = compile({
+          manifest,
+          subject,
+          workspace: join(root, `run-${index}`),
+          splits: ["development"],
+        });
+        expect(result.status).toBe(2);
+        expect(JSON.parse(result.stdout).error).toContain("non-finite");
+      }
+    });
+  });
+
+  it("requires a positive default timeout and carries it into assignments", () => {
+    fixture((root) => {
+      const { manifest, subject } = writeMinimalPackage(root);
+      const invalidManifest = JSON.parse(readFileSync(manifest, "utf8"));
+      invalidManifest.defaults.case_timeout_seconds = 0;
+      writeFileSync(manifest, JSON.stringify(invalidManifest), "utf8");
+      const invalid = compile({
+        manifest,
+        subject,
+        workspace: join(root, "invalid-run"),
+        splits: ["development"],
+      });
+      expect(invalid.status).toBe(2);
+      expect(JSON.parse(invalid.stdout).error).toContain(
+        "case_timeout_seconds must be a positive integer",
+      );
+
+      invalidManifest.defaults.case_timeout_seconds = 45;
+      writeFileSync(manifest, JSON.stringify(invalidManifest), "utf8");
+      const valid = compile({
+        manifest,
+        subject,
+        workspace: join(root, "valid-run"),
+        splits: ["development"],
+      });
+      expect(valid.status, valid.stderr).toBe(0);
+      const assignment = JSON.parse(
+        readFileSync(
+          join(root, "valid-run/assignments/safe-case/with_skill/repeat-1.json"),
+          "utf8",
+        ),
+      );
+      expect(assignment.timeout_seconds).toBe(45);
+    });
+  });
+
+  it("requires a frozen rubric and declared output inputs for semantic grading", () => {
+    fixture((root) => {
+      const invalid = minimalCase();
+      invalid.assertions.push({
+        id: "quality",
+        type: "semantic_pair",
+        artifact: "semantic/quality.json",
+        severity: "supplemental",
+      });
+      const { manifest, subject } = writeMinimalPackage(root, {
+        cases: [invalid],
+      });
+
+      const result = compile({
+        manifest,
+        subject,
+        workspace: join(root, "run"),
+        splits: ["development"],
+      });
+
+      expect(result.status).toBe(2);
+      expect(JSON.parse(result.stdout).error).toContain(".rubric must be");
+    });
+  });
+
   it("materializes arm/repeat-specific inputs and answer-key-free skill snapshots", () => {
     fixture((root) => {
       const { manifest, subject } = writeMinimalPackage(root, {
@@ -510,12 +715,23 @@ describe("skill_eval_runtime compile", () => {
           "utf8",
         ),
       );
+      const firstAssignment = JSON.parse(
+        readFileSync(
+          join(workspace, "assignments/isolated-case/with_skill/repeat-1.json"),
+          "utf8",
+        ),
+      );
       expect(assignment.input_files[0].path).toContain(
         "/inputs/isolated-case/with_skill/repeat-2/package/evals/input.txt",
       );
       expect(assignment.configuration.skill_path).toContain(
-        "/run/skill-snapshots/with_skill",
+        "/run/skill-snapshots/isolated-case/with_skill/repeat-2",
       );
+      expect(assignment.configuration.skill_path).not.toBe(
+        firstAssignment.configuration.skill_path,
+      );
+      expect(statSync(assignment.configuration.skill_path).mode & 0o222).toBe(0);
+      expect(statSync(dirname(assignment.input_files[0].path)).mode & 0o222).toBe(0);
       expect(existsSync(join(assignment.configuration.skill_path, "SKILL.md"))).toBe(true);
       expect(
         existsSync(join(assignment.configuration.skill_path, "references/rubric.md")),
@@ -555,6 +771,7 @@ description: Review demo inputs when asked.
             permissions: { network: "deny", writable_roots: ["outputs"] },
             repeats: { deterministic: 1, stochastic: 3 },
             evolution: { max_rounds: 3 },
+            case_timeout_seconds: 300,
           },
           evals: [
             {
@@ -657,6 +874,7 @@ description: Review demo inputs when asked.
             permissions: { network: "deny", writable_roots: ["outputs"] },
             repeats: { deterministic: 1, stochastic: 3 },
             evolution: { max_rounds: 3 },
+            case_timeout_seconds: 300,
           },
           evals: [
             {
@@ -747,6 +965,7 @@ description: Review demo inputs when asked.
             permissions: { network: "deny", writable_roots: ["outputs"] },
             repeats: { deterministic: 1, stochastic: 3 },
             evolution: { max_rounds: 3 },
+            case_timeout_seconds: 300,
           },
           evals: [
             { ...commonCase, id: "selection-case", split: "selection" },
@@ -815,9 +1034,428 @@ description: Review demo inputs when asked.
       expect(plan.cases.map((item) => item.id)).toEqual(["fast-case"]);
     });
   });
+
+  it("rejects permission extensions so executor assignments cannot carry answer keys", () => {
+    fixture((root) => {
+      const { manifest, subject } = writeMinimalPackage(root);
+      const parsed = JSON.parse(readFileSync(manifest, "utf8"));
+      parsed.defaults.permissions.answer_key = "expected verdict";
+      writeFileSync(manifest, JSON.stringify(parsed), "utf8");
+
+      const result = compile({
+        manifest,
+        subject,
+        workspace: join(root, "run"),
+        splits: ["development"],
+      });
+
+      expect(result.status).toBe(2);
+      expect(JSON.parse(result.stdout).error).toContain(
+        "contains unsupported fields: answer_key",
+      );
+    });
+  });
+
+  it("rejects runtime-surface symlinks instead of copying eval authority into a worker snapshot", () => {
+    fixture((root) => {
+      const { manifest, subject } = writeMinimalPackage(root);
+      symlinkSync("evals", join(subject, "references"), "dir");
+
+      const result = compile({
+        manifest,
+        subject,
+        workspace: join(root, "run"),
+        splits: ["development"],
+      });
+
+      expect(result.status).toBe(2);
+      expect(JSON.parse(result.stdout).error).toContain("symbolic link");
+      expect(existsSync(join(root, "run", "assignments"))).toBe(false);
+    });
+  });
+
+  it("locks empty directories, executable bits, and read-only snapshot modes", () => {
+    fixture((root) => {
+      const { manifest, subject } = writeMinimalPackage(root);
+      write(subject, "scripts/tool.sh", "#!/bin/sh\nexit 0\n");
+      mkdirSync(join(subject, "assets/feature-enabled"), { recursive: true });
+      const workspace = join(root, "run");
+      const compiled = compile({
+        manifest,
+        subject,
+        workspace,
+        splits: ["development"],
+      });
+      expect(compiled.status, compiled.stderr).toBe(0);
+      const plan = JSON.parse(compiled.stdout);
+      const snapshot = plan.skill_snapshots["safe-case/with_skill/repeat-1"].path;
+      expect(existsSync(join(snapshot, "assets/feature-enabled"))).toBe(true);
+      const snapshotScript = join(snapshot, "scripts/tool.sh");
+      chmodSync(snapshotScript, 0o755);
+
+      const result = grade({
+        plan: join(workspace, "execution-plan.json"),
+        workspace,
+      });
+
+      expect(result.status).toBe(2);
+      expect(JSON.parse(result.stdout).error).toContain("locked skill snapshot changed");
+    });
+  });
+
+  it("rejects non-canonical or duplicate fixture paths before compilation", () => {
+    fixture((root) => {
+      for (const [index, files] of [
+        ["fixtures/../input.txt"],
+        ["input.txt", "input.txt"],
+      ].entries()) {
+        const packageRoot = join(root, `package-${index}`);
+        const { manifest, subject } = writeMinimalPackage(packageRoot, {
+          cases: [minimalCase({ files })],
+        });
+        write(subject, "input.txt", "input\n");
+        const result = compile({
+          manifest,
+          subject,
+          workspace: join(packageRoot, "run"),
+          splits: ["development"],
+        });
+        expect(result.status).toBe(2);
+      }
+    });
+  });
+
+  it("requires a deterministic must-pass gate before semantic evidence", () => {
+    fixture((root) => {
+      const semanticOnly = minimalCase({
+        assertions: [
+          {
+            id: "semantic-only",
+            type: "semantic_pair",
+            artifact: "semantic/quality.json",
+            rubric: "Prefer the stronger output.",
+            inputs: ["outputs/response.md"],
+            severity: "supplemental",
+          },
+        ],
+      });
+      const { manifest, subject } = writeMinimalPackage(root, {
+        cases: [semanticOnly],
+      });
+
+      const result = compile({
+        manifest,
+        subject,
+        workspace: join(root, "run"),
+        splits: ["development"],
+      });
+
+      expect(result.status).toBe(2);
+      expect(JSON.parse(result.stdout).error).toContain(
+        "deterministic must_pass assertion",
+      );
+    });
+  });
 });
 
 describe("skill_eval_runtime grade", () => {
+  it("rejects executor roots redirected through a symbolic link", () => {
+    fixture((root) => {
+      const { plan, planPath, workspace } = compiledPlanFixture(root, [
+        minimalCase({ id: "symlink-case", split: "selection" }),
+      ]);
+      const repeatRoot = join(
+        workspace,
+        "cases/symlink-case/with_skill/repeat-1",
+      );
+      rmSync(repeatRoot, { recursive: true });
+      const outside = join(root, "outside-executor-root");
+      mkdirSync(outside, { recursive: true });
+      symlinkSync(outside, repeatRoot, "dir");
+      write(
+        outside,
+        "outputs/response.md",
+        "redirected output\n",
+      );
+      writeExecution({ workspace, plan, caseId: "symlink-case", arm: "with_skill" });
+
+      const result = grade({ plan: planPath, workspace });
+
+      expect(result.status).toBe(2);
+      expect(JSON.parse(result.stdout).error).toContain(
+        "assignment does not match pinned inputs",
+      );
+      expect(existsSync(join(outside, "grading.json"))).toBe(false);
+      expect(existsSync(join(workspace, "verification-evidence.json"))).toBe(false);
+    });
+  });
+
+  it("rejects symlinked lock and execution authority files", () => {
+    fixture((root) => {
+      const lockRun = compiledPlanFixture(root, [
+        minimalCase({ id: "lock-link", split: "selection" }),
+      ]);
+      const lockPath = join(lockRun.workspace, "run-lock.json");
+      const externalLock = write(
+        root,
+        "external/run-lock.json",
+        readFileSync(lockPath, "utf8"),
+      );
+      rmSync(lockPath);
+      symlinkSync(externalLock, lockPath);
+      const lockResult = grade({
+        plan: lockRun.planPath,
+        workspace: lockRun.workspace,
+      });
+      expect(lockResult.status).toBe(2);
+      expect(JSON.parse(lockResult.stdout).error).toContain("symbolic link");
+
+      const executionRun = compiledPlanFixture(
+        join(root, "execution-fixture"),
+        [minimalCase({ id: "execution-link", split: "selection" })],
+      );
+      const externalExecution = write(
+        root,
+        "external/execution.json",
+        JSON.stringify({
+          schema_version: "skill-reviewer.executor-execution.v1",
+          run_id: executionRun.plan.run_id,
+          case_id: "execution-link",
+          arm: "with_skill",
+          repeat: 1,
+          assignment_digest: sha256(
+            join(
+              executionRun.workspace,
+              "assignments/execution-link/with_skill/repeat-1.json",
+            ),
+          ),
+          status: "completed",
+          forbidden_actions: [],
+          side_effects: [],
+          metrics: {},
+          artifact_digests: {},
+          agent_provenance: null,
+        }),
+      );
+      const executionPath = join(
+        executionRun.workspace,
+        "cases/execution-link/with_skill/repeat-1/execution.json",
+      );
+      symlinkSync(externalExecution, executionPath);
+      const executionResult = grade({
+        plan: executionRun.planPath,
+        workspace: executionRun.workspace,
+      });
+      expect(executionResult.status).toBe(2);
+      expect(JSON.parse(executionResult.stdout).error).toContain("symbolic link");
+    });
+  });
+
+  it("normalizes binary or non-finite execution JSON into invalid evidence", () => {
+    fixture((root) => {
+      for (const [index, content] of [
+        Buffer.from([0xff, 0xfe, 0xfd]),
+        Buffer.from(
+          '{"schema_version":"skill-reviewer.executor-execution.v1","metrics":{"quality":1e999}}',
+        ),
+      ].entries()) {
+        const run = compiledPlanFixture(
+          join(root, `fixture-${index}`),
+          [minimalCase({ id: `invalid-execution-${index}`, split: "selection" })],
+        );
+        const executionPath = join(
+          run.workspace,
+          `cases/invalid-execution-${index}/with_skill/repeat-1/execution.json`,
+        );
+        writeFileSync(executionPath, content);
+        const result = grade({ plan: run.planPath, workspace: run.workspace });
+        expect(result.status, result.stderr).toBe(0);
+        const evidence = JSON.parse(result.stdout);
+        expect(evidence.level).toBe("inconclusive");
+        expect(evidence.cases[0].with_skill.complete).toBe(false);
+      }
+    });
+  });
+
+  it("rejects non-finite JSONL event records instead of passing event assertions", () => {
+    fixture((root) => {
+      const testCase = minimalCase({
+        id: "strict-events",
+        split: "selection",
+        assertions: [
+          {
+            id: "no-network",
+            type: "event_absent",
+            artifact: "events.jsonl",
+            event: "network.request",
+            severity: "must_pass",
+          },
+        ],
+      });
+      const { plan, planPath, workspace } = compiledPlanFixture(root, [testCase]);
+      write(
+        workspace,
+        "cases/strict-events/with_skill/repeat-1/events.jsonl",
+        '{"event":"allowed","value":NaN}\n',
+      );
+      write(
+        workspace,
+        "cases/strict-events/old_skill/repeat-1/events.jsonl",
+        '{"event":"allowed","value":1}\n',
+      );
+      for (const arm of ["with_skill", "old_skill"]) {
+        writeExecution({ workspace, plan, caseId: "strict-events", arm });
+      }
+
+      const result = grade({ plan: planPath, workspace });
+
+      expect(result.status, result.stderr).toBe(0);
+      const evidence = JSON.parse(result.stdout);
+      expect(evidence.level).toBe("inconclusive");
+      expect(
+        evidence.cases[0].with_skill.repeats[0].assertions[0].evidence.reason,
+      ).toContain("invalid JSONL event log");
+    });
+  });
+
+  it("rejects hard-linked executor output that escapes the isolated run artifact set", () => {
+    fixture((root) => {
+      const { plan, planPath, workspace } = compiledPlanFixture(root, [
+        minimalCase({ id: "hardlink-output", split: "selection" }),
+      ]);
+      const external = write(root, "answer-key.md", "secret answer\n");
+      const output = join(
+        workspace,
+        "cases/hardlink-output/with_skill/repeat-1/outputs/response.md",
+      );
+      mkdirSync(dirname(output), { recursive: true });
+      linkSync(external, output);
+      writeExecution({ workspace, plan, caseId: "hardlink-output", arm: "with_skill" });
+
+      const result = grade({ plan: planPath, workspace });
+
+      expect(result.status).toBe(2);
+      expect(JSON.parse(result.stdout).error).toContain("hard-linked");
+      expect(existsSync(join(workspace, "verification-evidence.json"))).toBe(false);
+    });
+  });
+
+  it("keeps JSON booleans distinct from numbers in deterministic assertions", () => {
+    fixture((root) => {
+      const testCase = minimalCase({
+        id: "typed-json-equality",
+        split: "selection",
+        assertions: [
+          {
+            id: "safe-boolean",
+            type: "json_path",
+            artifact: "outputs/result.json",
+            path: "/safe",
+            operator: "equals",
+            expected: true,
+            severity: "must_pass",
+          },
+        ],
+      });
+      const { plan, planPath, workspace } = compiledPlanFixture(root, [testCase]);
+      write(
+        workspace,
+        "cases/typed-json-equality/with_skill/repeat-1/outputs/result.json",
+        JSON.stringify({ safe: 1 }),
+      );
+      write(
+        workspace,
+        "cases/typed-json-equality/old_skill/repeat-1/outputs/result.json",
+        JSON.stringify({ safe: true }),
+      );
+      for (const arm of ["with_skill", "old_skill"]) {
+        writeExecution({ workspace, plan, caseId: "typed-json-equality", arm });
+      }
+
+      const result = grade({ plan: planPath, workspace });
+
+      expect(result.status, result.stderr).toBe(0);
+      const evidence = JSON.parse(result.stdout);
+      expect(evidence.cases[0].with_skill.required_pass_rate).toBe(0);
+      expect(evidence.cases[0].old_skill.required_pass_rate).toBe(1);
+      expect(evidence.level).toBe("inconclusive");
+    });
+  });
+
+  it("reconstructs the plan from the manifest instead of trusting a rewritten lock", () => {
+    fixture((root) => {
+      const { planPath, workspace } = compiledPlanFixture(root, [
+        minimalCase({ id: "plan-tamper", split: "selection" }),
+      ]);
+      const plan = JSON.parse(readFileSync(planPath, "utf8"));
+      plan.cases[0].assertions = [];
+      writeFileSync(planPath, JSON.stringify(plan), "utf8");
+      const lockPath = join(workspace, "run-lock.json");
+      const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+      lock.plan_digest = sha256(planPath);
+      writeFileSync(lockPath, JSON.stringify(lock), "utf8");
+
+      const result = grade({ plan: planPath, workspace });
+
+      expect(result.status).toBe(2);
+      expect(JSON.parse(result.stdout).error).toContain(
+        "cases do not match the pinned manifest",
+      );
+    });
+  });
+
+  it("re-enforces the accepted old_skill baseline during verification", () => {
+    fixture((root) => {
+      const { planPath, workspace } = compiledPlanFixture(root, [
+        minimalCase({ id: "baseline-tamper", split: "selection" }),
+      ]);
+      const plan = JSON.parse(readFileSync(planPath, "utf8"));
+      plan.baseline = { kind: "without_skill", path: null, digest: null };
+      writeFileSync(planPath, JSON.stringify(plan), "utf8");
+      const lockPath = join(workspace, "run-lock.json");
+      const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+      lock.plan_digest = sha256(planPath);
+      lock.baseline = plan.baseline;
+      writeFileSync(lockPath, JSON.stringify(lock), "utf8");
+
+      const result = grade({ plan: planPath, workspace });
+
+      expect(result.status).toBe(2);
+      expect(JSON.parse(result.stdout).error).toContain(
+        "selection requires an old_skill baseline",
+      );
+    });
+  });
+
+  it("reconstructs assignments instead of trusting a rewritten assignment lock", () => {
+    fixture((root) => {
+      const { planPath, subject, workspace } = compiledPlanFixture(root, [
+        minimalCase({ id: "assignment-tamper", split: "selection" }),
+      ]);
+      const assignmentPath = join(
+        workspace,
+        "assignments/assignment-tamper/with_skill/repeat-1.json",
+      );
+      const assignment = JSON.parse(readFileSync(assignmentPath, "utf8"));
+      assignment.configuration.skill_path = subject;
+      assignment.readable_paths = [subject];
+      writeFileSync(assignmentPath, JSON.stringify(assignment), "utf8");
+      const lockPath = join(workspace, "run-lock.json");
+      const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+      lock.assignment_digests[
+        "assignments/assignment-tamper/with_skill/repeat-1.json"
+      ] = sha256(assignmentPath);
+      writeFileSync(lockPath, JSON.stringify(lock), "utf8");
+
+      const result = grade({ plan: planPath, workspace });
+
+      expect(result.status).toBe(2);
+      expect(JSON.parse(result.stdout).error).toContain(
+        "assignment does not match pinned inputs",
+      );
+    });
+  });
+
   it("treats an execution that is not bound to its locked assignment as inconclusive", () => {
     fixture((root) => {
       const { plan, planPath, workspace } = compiledPlanFixture(root, [
@@ -1025,6 +1663,8 @@ describe("skill_eval_runtime grade", () => {
                   id: "blind-quality",
                   type: "semantic_pair",
                   artifact: "semantic/blind-quality.json",
+                  rubric: "Prefer accurate, complete, and actionable reviews.",
+                  inputs: ["outputs/review.md"],
                   severity: "supplemental",
                 },
           ],
@@ -1063,6 +1703,12 @@ describe("skill_eval_runtime grade", () => {
         JSON.stringify({
           schema_version: "skill-reviewer.semantic-judgment.v1",
           blind: true,
+          binding: semanticBinding({
+            plan,
+            workspace,
+            caseId: "typed-case",
+            assertionId: "blind-quality",
+          }),
           judgments: [
             { mapping: { A: "with_skill", B: "old_skill" }, winner: "A" },
             { mapping: { A: "old_skill", B: "with_skill" }, winner: "A" },
@@ -1085,6 +1731,162 @@ describe("skill_eval_runtime grade", () => {
       ]);
       expect(evidence.limitations).toContain(
         "semantic judge disagreement in case typed-case",
+      );
+    });
+  });
+
+  it("rejects a semantic judgment whose run or output binding is stale", () => {
+    fixture((root) => {
+      const testCase = minimalCase({ id: "semantic-stale", split: "selection" });
+      testCase.assertions.push({
+        id: "blind-quality",
+        type: "semantic_pair",
+        artifact: "semantic/blind-quality.json",
+        rubric: "Prefer the more complete and actionable response.",
+        inputs: ["outputs/response.md"],
+        severity: "supplemental",
+      });
+      const { plan, planPath, workspace } = compiledPlanFixture(root, [testCase]);
+      for (const arm of ["with_skill", "old_skill"]) {
+        write(
+          workspace,
+          `cases/semantic-stale/${arm}/repeat-1/outputs/response.md`,
+          `${arm}\n`,
+        );
+        writeExecution({ workspace, plan, caseId: "semantic-stale", arm });
+      }
+      const binding = semanticBinding({
+        plan,
+        workspace,
+        caseId: "semantic-stale",
+        assertionId: "blind-quality",
+      });
+      binding.run_id = "run-stale-evidence";
+      write(
+        workspace,
+        "cases/semantic-stale/semantic/blind-quality.json",
+        JSON.stringify({
+          schema_version: "skill-reviewer.semantic-judgment.v1",
+          blind: true,
+          binding,
+          judgments: [
+            { mapping: { A: "with_skill", B: "old_skill" }, winner: "A" },
+            { mapping: { A: "old_skill", B: "with_skill" }, winner: "B" },
+          ],
+        }),
+      );
+
+      const result = grade({ plan: planPath, workspace });
+
+      expect(result.status, result.stderr).toBe(0);
+      const evidence = JSON.parse(result.stdout);
+      expect(evidence.level).toBe("inconclusive");
+      expect(evidence.cases[0].semantic_assertions[0]).toEqual(
+        expect.objectContaining({ status: "stale", passed: false }),
+      );
+      expect(evidence.limitations).toContain(
+        "semantic evidence binding is stale in case semantic-stale",
+      );
+    });
+  });
+
+  it("treats a missing declared semantic input as incomplete evidence", () => {
+    fixture((root) => {
+      const testCase = minimalCase({ id: "semantic-missing", split: "selection" });
+      testCase.assertions.push({
+        id: "blind-quality",
+        type: "semantic_pair",
+        artifact: "semantic/blind-quality.json",
+        rubric: "Prefer the more complete and actionable response.",
+        inputs: ["outputs/semantic-review.md"],
+        severity: "supplemental",
+      });
+      const { plan, planPath, workspace } = compiledPlanFixture(root, [testCase]);
+      for (const arm of ["with_skill", "old_skill"]) {
+        write(
+          workspace,
+          `cases/semantic-missing/${arm}/repeat-1/outputs/response.md`,
+          `${arm}\n`,
+        );
+        writeExecution({ workspace, plan, caseId: "semantic-missing", arm });
+      }
+      write(
+        workspace,
+        "cases/semantic-missing/semantic/blind-quality.json",
+        JSON.stringify({
+          schema_version: "skill-reviewer.semantic-judgment.v1",
+          blind: true,
+          binding: semanticBinding({
+            plan,
+            workspace,
+            caseId: "semantic-missing",
+            assertionId: "blind-quality",
+          }),
+          judgments: [
+            { mapping: { A: "with_skill", B: "old_skill" }, winner: "tie" },
+            { mapping: { A: "old_skill", B: "with_skill" }, winner: "tie" },
+          ],
+        }),
+      );
+
+      const result = grade({ plan: planPath, workspace });
+
+      expect(result.status, result.stderr).toBe(0);
+      const evidence = JSON.parse(result.stdout);
+      expect(evidence.level).toBe("inconclusive");
+      expect(evidence.cases[0].semantic_assertions[0]).toEqual(
+        expect.objectContaining({ status: "missing", passed: false }),
+      );
+      expect(evidence.cases[0].with_skill.complete).toBe(true);
+    });
+  });
+
+  it("normalizes a malformed blind mapping into invalid semantic evidence", () => {
+    fixture((root) => {
+      const testCase = minimalCase({ id: "semantic-invalid", split: "selection" });
+      testCase.assertions.push({
+        id: "blind-quality",
+        type: "semantic_pair",
+        artifact: "semantic/blind-quality.json",
+        rubric: "Prefer the more complete response.",
+        inputs: ["outputs/response.md"],
+        severity: "supplemental",
+      });
+      const { plan, planPath, workspace } = compiledPlanFixture(root, [testCase]);
+      for (const arm of ["with_skill", "old_skill"]) {
+        write(
+          workspace,
+          `cases/semantic-invalid/${arm}/repeat-1/outputs/response.md`,
+          `${arm}\n`,
+        );
+        writeExecution({ workspace, plan, caseId: "semantic-invalid", arm });
+      }
+      write(
+        workspace,
+        "cases/semantic-invalid/semantic/blind-quality.json",
+        JSON.stringify({
+          schema_version: "skill-reviewer.semantic-judgment.v1",
+          blind: true,
+          binding: semanticBinding({
+            plan,
+            workspace,
+            caseId: "semantic-invalid",
+            assertionId: "blind-quality",
+          }),
+          judgments: [
+            { mapping: { A: {}, B: "old_skill" }, winner: "A" },
+            { mapping: { A: "old_skill", B: "with_skill" }, winner: "B" },
+          ],
+        }),
+      );
+
+      const result = grade({ plan: planPath, workspace });
+
+      expect(result.status, result.stderr).toBe(0);
+      const evidence = JSON.parse(result.stdout);
+      expect(evidence.level).toBe("inconclusive");
+      expect(evidence.cases[0].semantic_assertions[0]).toEqual(
+        expect.objectContaining({ status: "invalid", passed: false }),
       );
     });
   });
@@ -1152,6 +1954,102 @@ describe("skill_eval_runtime grade", () => {
       expect(evidence.limitations).toContain(
         "paired stochastic directions disagree in case variable-quality",
       );
+    });
+  });
+
+  it("turns non-finite derived metric aggregates into inconclusive evidence", () => {
+    fixture((root) => {
+      const testCase = minimalCase({
+        id: "overflow-metric",
+        split: "selection",
+        determinism: "stochastic",
+        objectives: [
+          {
+            id: "quality-score",
+            metric: "quality_score",
+            direction: "maximize",
+            min_material_delta: 0.1,
+            non_regression_tolerance: 0,
+          },
+        ],
+      });
+      const { plan, planPath, workspace } = compiledPlanFixture(root, [testCase]);
+      for (const arm of ["with_skill", "old_skill"]) {
+        for (let repeat = 1; repeat <= 3; repeat += 1) {
+          write(
+            workspace,
+            `cases/overflow-metric/${arm}/repeat-${repeat}/outputs/response.md`,
+            "done\n",
+          );
+          writeExecution({
+            workspace,
+            plan,
+            caseId: "overflow-metric",
+            arm,
+            repeat,
+            metrics: { quality_score: arm === "with_skill" ? 1e308 : -1e308 },
+          });
+        }
+      }
+
+      const result = grade({ plan: planPath, workspace });
+
+      expect(result.status, result.stderr).toBe(0);
+      const evidence = JSON.parse(result.stdout);
+      expect(evidence.level).toBe("inconclusive");
+      expect(evidence.cases[0].with_skill.complete).toBe(false);
+      expect(evidence.cases[0].with_skill.binding_errors.join("\n")).toContain(
+        "aggregate must be finite",
+      );
+    });
+  });
+
+  it("treats an overflowing paired delta as stochastic direction uncertainty", () => {
+    fixture((root) => {
+      const testCase = minimalCase({
+        id: "overflow-direction",
+        split: "selection",
+        determinism: "stochastic",
+        objectives: [
+          {
+            id: "quality-score",
+            metric: "quality_score",
+            direction: "maximize",
+            min_material_delta: 0.1,
+            non_regression_tolerance: 0,
+          },
+        ],
+      });
+      const { plan, planPath, workspace } = compiledPlanFixture(root, [testCase]);
+      const scores = {
+        with_skill: [1e308, -1e308, 1],
+        old_skill: [-1e308, 1e308, 0],
+      };
+      for (const arm of ["with_skill", "old_skill"]) {
+        scores[arm].forEach((qualityScore, index) => {
+          const repeat = index + 1;
+          write(
+            workspace,
+            `cases/overflow-direction/${arm}/repeat-${repeat}/outputs/response.md`,
+            "done\n",
+          );
+          writeExecution({
+            workspace,
+            plan,
+            caseId: "overflow-direction",
+            arm,
+            repeat,
+            metrics: { quality_score: qualityScore },
+          });
+        });
+      }
+
+      const result = grade({ plan: planPath, workspace });
+
+      expect(result.status, result.stderr).toBe(0);
+      const evidence = JSON.parse(result.stdout);
+      expect(evidence.level).toBe("inconclusive");
+      expect(evidence.cases[0].direction_disagreement).toBe(true);
     });
   });
 });
@@ -1278,9 +2176,262 @@ describe("skill_eval_runtime decide", () => {
       );
     });
   });
+
+  it("rejects executor metrics that try to overwrite grader-owned acceptance fields", () => {
+    fixture((root) => {
+      const { plan, planPath, workspace } = compiledPlanFixture(root, [
+        minimalCase({ id: "reserved-metric", split: "selection" }),
+      ]);
+      for (const arm of ["with_skill", "old_skill"]) {
+        write(
+          workspace,
+          `cases/reserved-metric/${arm}/repeat-1/outputs/response.md`,
+          "done\n",
+        );
+        writeExecution({
+          workspace,
+          plan,
+          caseId: "reserved-metric",
+          arm,
+          metrics: arm === "old_skill" ? { required_pass_rate: 0 } : {},
+        });
+      }
+
+      const result = decide({
+        plan: planPath,
+        evidence: join(workspace, "verification-evidence.json"),
+        workspace,
+      });
+
+      expect(result.status, result.stderr).toBe(0);
+      const decision = JSON.parse(result.stdout);
+      expect(decision.accepted).toBe(false);
+      expect(decision.status).toBe("inconclusive");
+      const evidence = JSON.parse(
+        readFileSync(join(workspace, "verification-evidence.json"), "utf8"),
+      );
+      expect(evidence.cases[0].old_skill.binding_errors.join("\n")).toContain(
+        "reserved grader field: required_pass_rate",
+      );
+    });
+  });
 });
 
 describe("skill_eval_runtime evolution", () => {
+  it("recomputes a decision from bound evidence before advancing evolution", () => {
+    fixture((root) => {
+      const baselinePath = join(root, "accepted-baseline");
+      write(
+        baselinePath,
+        "SKILL.md",
+        "---\nname: demo-skill\ndescription: Accepted baseline.\n---\n",
+      );
+      const candidate = writeEvolutionSubject(root, "candidate", "unchanged");
+      const run = executeBoundRun({
+        root,
+        ...candidate,
+        baselinePath,
+        split: "selection",
+        label: "selection-run",
+        iteration: 1,
+        passes: { with_skill: true, old_skill: true },
+      });
+      expect(run.decision.status).toBe("no-change");
+      const control = join(root, "control");
+      const initialized = runtimeCommand([
+        "evolution-init",
+        "--plan",
+        run.planPath,
+        "--workspace",
+        control,
+      ]);
+      expect(initialized.status, initialized.stderr).toBe(0);
+
+      const tampered = JSON.parse(readFileSync(run.decisionPath, "utf8"));
+      tampered.objectives[0] = {
+        ...tampered.objectives[0],
+        baseline: 0,
+        delta: 1,
+        materially_improved: true,
+      };
+      tampered.material_improvement = true;
+      tampered.accepted = true;
+      tampered.status = "accepted";
+      tampered.reason =
+        "candidate passed every hard gate, did not regress, and materially improved a primary objective";
+      writeFileSync(run.decisionPath, JSON.stringify(tampered), "utf8");
+
+      const advanced = runtimeCommand([
+        "evolution-advance",
+        "--state",
+        join(control, "evolution-state.json"),
+        "--decision",
+        run.decisionPath,
+      ]);
+
+      expect(advanced.status).toBe(2);
+      expect(JSON.parse(advanced.stdout).error).toContain(
+        "does not match its bound plan and evidence",
+      );
+    });
+  });
+
+  it("regrades locked artifacts when evidence and decision are tampered together", () => {
+    fixture((root) => {
+      const baselinePath = join(root, "accepted-baseline");
+      write(
+        baselinePath,
+        "SKILL.md",
+        "---\nname: demo-skill\ndescription: Accepted baseline.\n---\n",
+      );
+      const candidate = writeEvolutionSubject(root, "candidate", "coordinated-tamper");
+      const run = executeBoundRun({
+        root,
+        ...candidate,
+        baselinePath,
+        split: "selection",
+        label: "selection-run",
+        iteration: 1,
+        passes: { with_skill: true, old_skill: true },
+      });
+      const control = join(root, "control");
+      runtimeCommand([
+        "evolution-init",
+        "--plan",
+        run.planPath,
+        "--workspace",
+        control,
+      ]);
+
+      const evidencePath = join(run.workspace, "verification-evidence.json");
+      const evidence = JSON.parse(readFileSync(evidencePath, "utf8"));
+      evidence.cases[0].old_skill.required_pass_rate = 0;
+      writeFileSync(evidencePath, JSON.stringify(evidence), "utf8");
+      const decision = JSON.parse(readFileSync(run.decisionPath, "utf8"));
+      decision.evidence_digest = sha256(evidencePath);
+      decision.objectives[0] = {
+        ...decision.objectives[0],
+        baseline: 0,
+        delta: 1,
+        materially_improved: true,
+      };
+      decision.material_improvement = true;
+      decision.accepted = true;
+      decision.status = "accepted";
+      decision.reason =
+        "candidate passed every hard gate, did not regress, and materially improved a primary objective";
+      writeFileSync(run.decisionPath, JSON.stringify(decision), "utf8");
+
+      const advanced = runtimeCommand([
+        "evolution-advance",
+        "--state",
+        join(control, "evolution-state.json"),
+        "--decision",
+        run.decisionPath,
+      ]);
+
+      expect(advanced.status).toBe(2);
+      expect(JSON.parse(advanced.stdout).error).toContain(
+        "does not match freshly graded locked artifacts",
+      );
+    });
+  });
+
+  it("invalidates a decision when retained output bytes change even if assertions still pass", () => {
+    fixture((root) => {
+      const baselinePath = join(root, "accepted-baseline");
+      write(
+        baselinePath,
+        "SKILL.md",
+        "---\nname: demo-skill\ndescription: Accepted baseline.\n---\n",
+      );
+      const candidate = writeEvolutionSubject(root, "candidate", "artifact-binding");
+      const run = executeBoundRun({
+        root,
+        ...candidate,
+        baselinePath,
+        split: "selection",
+        label: "selection-run",
+        iteration: 1,
+        passes: { with_skill: true, old_skill: true },
+      });
+      const control = join(root, "control");
+      runtimeCommand([
+        "evolution-init",
+        "--plan",
+        run.planPath,
+        "--workspace",
+        control,
+      ]);
+      write(
+        run.workspace,
+        "cases/selection-case/with_skill/repeat-1/outputs/response.md",
+        "changed but still present\n",
+      );
+      writeExecution({
+        workspace: run.workspace,
+        plan: run.plan,
+        caseId: "selection-case",
+        arm: "with_skill",
+      });
+
+      const advanced = runtimeCommand([
+        "evolution-advance",
+        "--state",
+        join(control, "evolution-state.json"),
+        "--decision",
+        run.decisionPath,
+      ]);
+
+      expect(advanced.status).toBe(2);
+      expect(JSON.parse(advanced.stdout).error).toContain(
+        "does not match freshly graded locked artifacts",
+      );
+    });
+  });
+
+  it("requires a fresh control workspace outside candidate and baseline packages", () => {
+    fixture((root) => {
+      const candidate = writeEvolutionSubject(root, "candidate", "control-guard");
+      const baselinePath = join(root, "accepted-baseline");
+      write(
+        baselinePath,
+        "SKILL.md",
+        "---\nname: demo-skill\ndescription: Accepted baseline.\n---\n",
+      );
+      const run = executeBoundRun({
+        root,
+        ...candidate,
+        baselinePath,
+        split: "selection",
+        label: "selection-run",
+        iteration: 1,
+        passes: { with_skill: true, old_skill: true },
+      });
+
+      for (const workspace of [
+        join(candidate.subject, "skill-reviewer-workspace"),
+        join(baselinePath, "skill-reviewer-workspace"),
+        join(
+          run.workspace,
+          "cases/selection-case/with_skill/repeat-1/control",
+        ),
+      ]) {
+        const result = runtimeCommand([
+          "evolution-init",
+          "--plan",
+          run.planPath,
+          "--workspace",
+          workspace,
+        ]);
+        expect(result.status).toBe(2);
+        expect(JSON.parse(result.stdout).error).toContain(
+          "must not overlap protected package or run directories",
+        );
+      }
+    });
+  });
+
   it("carries immutable authority across three distinct candidate run ids", () => {
     fixture((root) => {
       const baselinePath = join(root, "accepted-baseline");
@@ -1557,6 +2708,143 @@ describe("skill_eval_runtime evolution", () => {
       );
     });
   });
+
+  it("fails closed with JSON when evolution state run ids are malformed", () => {
+    fixture((root) => {
+      const baselinePath = join(root, "accepted-baseline");
+      write(
+        baselinePath,
+        "SKILL.md",
+        "---\nname: demo-skill\ndescription: Accepted baseline.\n---\n",
+      );
+      const candidate = writeEvolutionSubject(root, "candidate", "malformed-state");
+      const run = executeBoundRun({
+        root,
+        ...candidate,
+        baselinePath,
+        split: "selection",
+        label: "selection-run",
+        iteration: 1,
+        passes: { with_skill: true, old_skill: true },
+      });
+      const control = join(root, "control");
+      runtimeCommand(["evolution-init", "--plan", run.planPath, "--workspace", control]);
+      const statePath = join(control, "evolution-state.json");
+      const state = JSON.parse(readFileSync(statePath, "utf8"));
+      state.seen_run_ids = [{}];
+      writeFileSync(statePath, JSON.stringify(state), "utf8");
+
+      const result = runtimeCommand([
+        "evolution-advance",
+        "--state",
+        statePath,
+        "--decision",
+        run.decisionPath,
+      ]);
+
+      expect(result.status).toBe(2);
+      expect(result.stderr).not.toContain("Traceback");
+      expect(JSON.parse(result.stdout).error).toContain("duplicate run ids");
+    });
+  });
+
+  it("keeps evolution state at a control path outside candidate and run workspaces", () => {
+    fixture((root) => {
+      const baselinePath = join(root, "accepted-baseline");
+      write(
+        baselinePath,
+        "SKILL.md",
+        "---\nname: demo-skill\ndescription: Accepted baseline.\n---\n",
+      );
+      const candidate = writeEvolutionSubject(root, "candidate", "state-location");
+      const run = executeBoundRun({
+        root,
+        ...candidate,
+        baselinePath,
+        split: "selection",
+        label: "selection-run",
+        iteration: 1,
+        passes: { with_skill: true, old_skill: true },
+      });
+      const control = join(root, "control");
+      runtimeCommand(["evolution-init", "--plan", run.planPath, "--workspace", control]);
+      const canonicalState = join(control, "evolution-state.json");
+      const copiedState = write(
+        candidate.subject,
+        "evolution-state.json",
+        readFileSync(canonicalState, "utf8"),
+      );
+
+      const result = runtimeCommand([
+        "evolution-advance",
+        "--state",
+        copiedState,
+        "--decision",
+        run.decisionPath,
+      ]);
+
+      expect(result.status).toBe(2);
+      expect(JSON.parse(result.stdout).error).toContain(
+        "canonical control workspace path",
+      );
+    });
+  });
+
+  it("recovers a stale state projection from the append-only transition journal", () => {
+    fixture((root) => {
+      const baselinePath = join(root, "accepted-baseline");
+      write(
+        baselinePath,
+        "SKILL.md",
+        "---\nname: demo-skill\ndescription: Accepted baseline.\n---\n",
+      );
+      const candidate = writeEvolutionSubject(root, "candidate", "journal-recovery");
+      const run = executeBoundRun({
+        root,
+        ...candidate,
+        baselinePath,
+        split: "selection",
+        label: "selection-run",
+        iteration: 1,
+        passes: { with_skill: true, old_skill: true },
+      });
+      const control = join(root, "control");
+      runtimeCommand(["evolution-init", "--plan", run.planPath, "--workspace", control]);
+      const statePath = join(control, "evolution-state.json");
+      const initialState = readFileSync(statePath, "utf8");
+      const first = runtimeCommand([
+        "evolution-advance",
+        "--state",
+        statePath,
+        "--decision",
+        run.decisionPath,
+      ]);
+      expect(first.status, first.stderr).toBe(0);
+      const transition = join(control, "transitions/0001.json");
+      const stagedLink = join(
+        control,
+        ".transition-staging/.0001.json.crash.tmp",
+      );
+      linkSync(transition, stagedLink);
+      writeFileSync(statePath, initialState, "utf8");
+
+      const retry = runtimeCommand([
+        "evolution-advance",
+        "--state",
+        statePath,
+        "--decision",
+        run.decisionPath,
+      ]);
+
+      expect(retry.status).toBe(2);
+      const recovered = JSON.parse(readFileSync(statePath, "utf8"));
+      expect(recovered.history).toHaveLength(1);
+      expect(recovered.seen_run_ids).toEqual([run.plan.run_id]);
+      expect(recovered.current_round).toBe(2);
+      expect(existsSync(stagedLink)).toBe(false);
+      expect(statSync(transition).nlink).toBe(1);
+    });
+  });
 });
 
 describe("skill_eval_runtime dashboard projection", () => {
@@ -1624,6 +2912,271 @@ describe("skill_eval_runtime dashboard projection", () => {
     });
   });
 
+  it("rejects an evolution state that does not contain the current run", () => {
+    fixture((root) => {
+      const baselinePath = join(root, "accepted-baseline");
+      write(
+        baselinePath,
+        "SKILL.md",
+        "---\nname: demo-skill\ndescription: Accepted baseline.\n---\n",
+      );
+      const firstCandidate = writeEvolutionSubject(root, "candidate-one", "one");
+      const first = executeBoundRun({
+        root,
+        ...firstCandidate,
+        baselinePath,
+        split: "selection",
+        label: "selection-one",
+        iteration: 1,
+        passes: { with_skill: true, old_skill: true },
+      });
+      const control = join(root, "dashboard-control");
+      runtimeCommand([
+        "evolution-init",
+        "--plan",
+        first.planPath,
+        "--workspace",
+        control,
+      ]);
+      const statePath = join(control, "evolution-state.json");
+      runtimeCommand([
+        "evolution-advance",
+        "--state",
+        statePath,
+        "--decision",
+        first.decisionPath,
+      ]);
+      const secondCandidate = writeEvolutionSubject(root, "candidate-two", "two");
+      const second = executeBoundRun({
+        root,
+        ...secondCandidate,
+        baselinePath,
+        split: "selection",
+        label: "selection-two",
+        iteration: 2,
+        passes: { with_skill: true, old_skill: true },
+      });
+
+      const projected = runtimeCommand([
+        "project-dashboard",
+        "--workspace",
+        second.workspace,
+        "--state",
+        statePath,
+        "--output",
+        join(second.workspace, "dashboard-data.json"),
+      ]);
+
+      expect(projected.status).toBe(2);
+      expect(JSON.parse(projected.stdout).error).toContain(
+        "does not identify the current run",
+      );
+    });
+  });
+
+  it("regrades current artifacts instead of projecting copied foreign evidence", () => {
+    fixture((root) => {
+      const baselinePath = join(root, "accepted-baseline");
+      write(
+        baselinePath,
+        "SKILL.md",
+        "---\nname: demo-skill\ndescription: Accepted baseline.\n---\n",
+      );
+      const firstCandidate = writeEvolutionSubject(root, "candidate-one", "one");
+      const first = executeBoundRun({
+        root,
+        ...firstCandidate,
+        baselinePath,
+        split: "selection",
+        label: "selection-one",
+        iteration: 1,
+        passes: { with_skill: true, old_skill: true },
+      });
+      const secondCandidate = writeEvolutionSubject(root, "candidate-two", "two");
+      const secondWorkspace = join(root, "selection-two");
+      const compiled = compile({
+        manifest: secondCandidate.manifest,
+        subject: secondCandidate.subject,
+        workspace: secondWorkspace,
+        baselineKind: "old_skill",
+        baselinePath,
+        splits: ["selection"],
+      });
+      expect(compiled.status, compiled.stderr).toBe(0);
+      const secondPlan = JSON.parse(compiled.stdout);
+      writeFileSync(
+        join(secondWorkspace, "verification-evidence.json"),
+        readFileSync(join(first.workspace, "verification-evidence.json")),
+      );
+
+      const projected = runtimeCommand([
+        "project-dashboard",
+        "--workspace",
+        secondWorkspace,
+        "--output",
+        join(secondWorkspace, "dashboard-data.json"),
+      ]);
+
+      expect(projected.status, projected.stderr).toBe(0);
+      const data = JSON.parse(
+        readFileSync(join(secondWorkspace, "dashboard-data.json"), "utf8"),
+      );
+      expect(data.run.id).toBe(secondPlan.run_id);
+      expect(data.run.id).not.toBe(first.plan.run_id);
+      expect(data.run.verification_level).toBe("inconclusive");
+    });
+  });
+
+  it("surfaces stale semantic evidence as a failed case and retained node", () => {
+    fixture((root) => {
+      const testCase = minimalCase({ id: "semantic-dashboard", split: "selection" });
+      testCase.assertions.push({
+        id: "blind-quality",
+        type: "semantic_pair",
+        artifact: "semantic/blind-quality.json",
+        rubric: "Prefer the more complete and actionable response.",
+        inputs: ["outputs/response.md"],
+        severity: "supplemental",
+      });
+      const { plan, workspace } = compiledPlanFixture(root, [testCase]);
+      for (const arm of ["with_skill", "old_skill"]) {
+        write(
+          workspace,
+          `cases/semantic-dashboard/${arm}/repeat-1/outputs/response.md`,
+          `${arm}\n`,
+        );
+        writeExecution({ workspace, plan, caseId: "semantic-dashboard", arm });
+      }
+      const binding = semanticBinding({
+        plan,
+        workspace,
+        caseId: "semantic-dashboard",
+        assertionId: "blind-quality",
+      });
+      binding.run_id = "run-stale";
+      write(
+        workspace,
+        "cases/semantic-dashboard/semantic/blind-quality.json",
+        JSON.stringify({
+          schema_version: "skill-reviewer.semantic-judgment.v1",
+          blind: true,
+          binding,
+          judgments: [
+            { mapping: { A: "with_skill", B: "old_skill" }, winner: "A" },
+            { mapping: { A: "old_skill", B: "with_skill" }, winner: "B" },
+          ],
+        }),
+      );
+
+      const projected = runtimeCommand([
+        "project-dashboard",
+        "--workspace",
+        workspace,
+        "--output",
+        join(workspace, "dashboard-data.json"),
+      ]);
+
+      expect(projected.status, projected.stderr).toBe(0);
+      const data = JSON.parse(
+        readFileSync(join(workspace, "dashboard-data.json"), "utf8"),
+      );
+      expect(data.cases[0].status).toBe("failed");
+      expect(data.spine).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "assertion:semantic-dashboard:semantic:blind-quality",
+            assertion_type: "semantic_pair",
+            status: "stale",
+          }),
+          expect.objectContaining({
+            id: "artifact:semantic-dashboard:semantic:blind-quality",
+            status: "retained",
+          }),
+        ]),
+      );
+    });
+  });
+
+  it("refuses to project over source or immutable evidence files", () => {
+    fixture((root) => {
+      const { planPath, subject, workspace } = compiledPlanFixture(root, [
+        minimalCase({ id: "safe-dashboard", split: "selection" }),
+      ]);
+      const originalSkill = readFileSync(join(subject, "SKILL.md"), "utf8");
+
+      for (const output of [join(subject, "SKILL.md"), planPath]) {
+        const projected = runtimeCommand([
+          "project-dashboard",
+          "--workspace",
+          workspace,
+          "--output",
+          output,
+        ]);
+        expect(projected.status).toBe(2);
+        expect(JSON.parse(projected.stdout).error).toContain(
+          "workspace dashboard-data.json",
+        );
+      }
+      expect(readFileSync(join(subject, "SKILL.md"), "utf8")).toBe(originalSkill);
+      expect(JSON.parse(readFileSync(planPath, "utf8")).run_id).toBeTruthy();
+    });
+  });
+
+  it("rejects a dashboard state with an unbound decision history", () => {
+    fixture((root) => {
+      const baselinePath = join(root, "accepted-baseline");
+      write(
+        baselinePath,
+        "SKILL.md",
+        "---\nname: demo-skill\ndescription: Accepted baseline.\n---\n",
+      );
+      const candidate = writeEvolutionSubject(root, "dashboard-candidate", "state");
+      const run = executeBoundRun({
+        root,
+        ...candidate,
+        baselinePath,
+        split: "selection",
+        label: "dashboard-selection",
+        iteration: 1,
+        passes: { with_skill: true, old_skill: true },
+      });
+      const control = join(root, "dashboard-control");
+      runtimeCommand([
+        "evolution-init",
+        "--plan",
+        run.planPath,
+        "--workspace",
+        control,
+      ]);
+      const statePath = join(control, "evolution-state.json");
+      runtimeCommand([
+        "evolution-advance",
+        "--state",
+        statePath,
+        "--decision",
+        run.decisionPath,
+      ]);
+      const state = JSON.parse(readFileSync(statePath, "utf8"));
+      state.history[0].decision_digest = "0".repeat(64);
+      writeFileSync(statePath, JSON.stringify(state), "utf8");
+
+      const projected = runtimeCommand([
+        "project-dashboard",
+        "--workspace",
+        run.workspace,
+        "--state",
+        statePath,
+        "--output",
+        join(run.workspace, "dashboard-data.json"),
+      ]);
+
+      expect(projected.status).toBe(2);
+      expect(JSON.parse(projected.stdout).error).toContain(
+        "history is not a prefix of its transition journal",
+      );
+    });
+  });
+
   it("projects the retained evidence chain into a versioned read model", () => {
     fixture((root) => {
       const { plan, planPath, workspace } = compiledPlanFixture(root, [
@@ -1670,26 +3223,31 @@ describe("skill_eval_runtime dashboard projection", () => {
         workspace,
       });
       expect(decision.status, decision.stderr).toBe(0);
-      runtimeCommand([
+      const control = join(root, "dashboard-control");
+      const initialized = runtimeCommand([
         "evolution-init",
         "--plan",
         planPath,
         "--workspace",
-        workspace,
+        control,
       ]);
-      runtimeCommand([
+      expect(initialized.status, initialized.stderr).toBe(0);
+      const advanced = runtimeCommand([
         "evolution-advance",
         "--state",
-        join(workspace, "evolution-state.json"),
+        join(control, "evolution-state.json"),
         "--decision",
         join(workspace, "iteration-1/acceptance-decision.json"),
       ]);
+      expect(advanced.status, advanced.stderr).toBe(0);
       const output = join(workspace, "dashboard-data.json");
 
       const projected = runtimeCommand([
         "project-dashboard",
         "--workspace",
         workspace,
+        "--state",
+        join(control, "evolution-state.json"),
         "--output",
         output,
       ]);
@@ -1724,6 +3282,135 @@ describe("skill_eval_runtime dashboard projection", () => {
       );
       expect(data.spine.map((node) => node.kind)).toEqual(
         expect.arrayContaining(["run", "gate", "iteration", "case", "assertion", "artifact"]),
+      );
+    });
+  });
+
+  it("projects a read model without rewriting grading or verification evidence", () => {
+    fixture((root) => {
+      const { plan, planPath, workspace } = compiledPlanFixture(root, [
+        minimalCase({ id: "read-only-projection", split: "selection" }),
+      ]);
+      for (const arm of ["with_skill", "old_skill"]) {
+        write(
+          workspace,
+          `cases/read-only-projection/${arm}/repeat-1/outputs/response.md`,
+          "done\n",
+        );
+        writeExecution({ workspace, plan, caseId: "read-only-projection", arm });
+      }
+      const graded = grade({ plan: planPath, workspace });
+      expect(graded.status, graded.stderr).toBe(0);
+      const evidencePath = join(workspace, "verification-evidence.json");
+      const candidateGrading = join(
+        workspace,
+        "cases/read-only-projection/with_skill/grading.json",
+      );
+      const evidenceDigest = sha256(evidencePath);
+      const gradingDigest = sha256(candidateGrading);
+
+      const projected = runtimeCommand([
+        "project-dashboard",
+        "--workspace",
+        workspace,
+        "--output",
+        join(workspace, "dashboard-data.json"),
+      ]);
+
+      expect(projected.status, projected.stderr).toBe(0);
+      expect(sha256(evidencePath)).toBe(evidenceDigest);
+      expect(sha256(candidateGrading)).toBe(gradingDigest);
+    });
+  });
+
+  it("rejects a local iteration directory redirected to a foreign workspace", () => {
+    fixture((root) => {
+      const current = compiledPlanFixture(join(root, "current"), [
+        minimalCase({ id: "decision-link", split: "selection" }),
+      ]);
+      const foreign = compiledPlanFixture(join(root, "foreign"), [
+        minimalCase({ id: "decision-link", split: "selection" }),
+      ]);
+      for (const arm of ["with_skill", "old_skill"]) {
+        write(
+          foreign.workspace,
+          `cases/decision-link/${arm}/repeat-1/outputs/response.md`,
+          "done\n",
+        );
+        writeExecution({
+          workspace: foreign.workspace,
+          plan: foreign.plan,
+          caseId: "decision-link",
+          arm,
+        });
+      }
+      const decided = decide({
+        plan: foreign.planPath,
+        evidence: join(foreign.workspace, "verification-evidence.json"),
+        workspace: foreign.workspace,
+      });
+      expect(decided.status, decided.stderr).toBe(0);
+      symlinkSync(
+        join(foreign.workspace, "iteration-1"),
+        join(current.workspace, "iteration-evil"),
+        "dir",
+      );
+
+      const projected = runtimeCommand([
+        "project-dashboard",
+        "--workspace",
+        current.workspace,
+        "--output",
+        join(current.workspace, "dashboard-data.json"),
+      ]);
+
+      expect(projected.status).toBe(2);
+      expect(JSON.parse(projected.stdout).error).toContain("canonical directory");
+    });
+  });
+
+  it("marks a case failed when a declared objective metric is missing", () => {
+    fixture((root) => {
+      const testCase = minimalCase({
+        id: "missing-objective",
+        split: "selection",
+        objectives: [
+          {
+            id: "quality-score",
+            metric: "quality_score",
+            direction: "maximize",
+            min_material_delta: 0.1,
+            non_regression_tolerance: 0,
+          },
+        ],
+      });
+      const { plan, workspace } = compiledPlanFixture(root, [testCase]);
+      for (const arm of ["with_skill", "old_skill"]) {
+        write(
+          workspace,
+          `cases/missing-objective/${arm}/repeat-1/outputs/response.md`,
+          "done\n",
+        );
+        writeExecution({ workspace, plan, caseId: "missing-objective", arm });
+      }
+      const output = join(workspace, "dashboard-data.json");
+
+      const projected = runtimeCommand([
+        "project-dashboard",
+        "--workspace",
+        workspace,
+        "--output",
+        output,
+      ]);
+
+      expect(projected.status, projected.stderr).toBe(0);
+      const data = JSON.parse(readFileSync(output, "utf8"));
+      expect(data.run.verification_level).toBe("inconclusive");
+      expect(data.cases[0]).toEqual(
+        expect.objectContaining({
+          status: "failed",
+          missing_objective_metrics: ["quality_score"],
+        }),
       );
     });
   });

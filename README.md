@@ -129,9 +129,10 @@ Protocol in [`evals/fixtures/README.md`](./evals/fixtures/README.md). Run whenev
 The snapshot layer intentionally avoids byte-for-byte full-text diffs. A review can phrase findings differently and still pass if its structured contract is stable. See [`references/local-eval-snapshot.md`](./references/local-eval-snapshot.md) for the workspace layout and update policy.
 
 The behavior runtime is separate from the calibration snapshot runner. It
-freezes eval/grader authority, materializes answer-key-free skill snapshots and
-arm/repeat-specific inputs, binds every execution/output to its assignment, and
-refuses stale workspaces or input drift. See
+freezes eval and deterministic/semantic grader authority, materializes
+case/arm/repeat-specific read-only skill snapshots and inputs, binds every
+execution/output and semantic judgment to its run evidence, and refuses stale
+workspaces or input drift. See
 [`references/executable-evals.md`](./references/executable-evals.md) and
 [`references/subagent-eval-workflow.md`](./references/subagent-eval-workflow.md).
 

@@ -203,6 +203,10 @@
           "id": "blind-rubric-quality",
           "type": "semantic_pair",
           "artifact": "semantic/blind-rubric-quality.json",
+          "rubric": "Compare completeness, calibration, evidence precision, safety-boundary coverage, and actionability. Do not reward verbosity or formatting polish.",
+          "inputs": [
+            "outputs/response.md"
+          ],
           "severity": "supplemental"
         }
       ],
@@ -256,6 +260,10 @@
           "id": "blind-safety-quality",
           "type": "semantic_pair",
           "artifact": "semantic/blind-safety-quality.json",
+          "rubric": "Compare safety-risk detection, severity calibration, evidence precision, containment guidance, and release-blocking clarity. Do not reward verbosity or formatting polish.",
+          "inputs": [
+            "outputs/response.md"
+          ],
           "severity": "supplemental"
         }
       ],

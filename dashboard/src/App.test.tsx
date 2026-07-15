@@ -41,6 +41,7 @@ const data: DashboardData = {
       status: "passed",
       regressed: false,
       direction_disagreement: false,
+      missing_objective_metrics: [],
       arms: [
         {
           id: "with_skill",
@@ -55,7 +56,16 @@ const data: DashboardData = {
           artifact_count: 2,
         },
       ],
-      semantic_assertions: [],
+      semantic_assertions: [
+        {
+          id: "blind-quality",
+          status: "agreement",
+          passed: true,
+          preference: "candidate",
+          artifact: "semantic/blind-quality.json",
+          resolved_winners: ["with_skill", "with_skill"],
+        },
+      ],
     },
     {
       id: "public-safety-audit",
@@ -66,6 +76,7 @@ const data: DashboardData = {
       status: "failed",
       regressed: true,
       direction_disagreement: false,
+      missing_objective_metrics: [],
       arms: [],
       semantic_assertions: [],
     },
@@ -138,6 +149,10 @@ describe("EvidenceDashboard", () => {
     expect(screen.queryByText("selection-quality")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "All" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open evidence selection-quality" }));
+    expect(screen.getByText("Semantic evidence")).toBeInTheDocument();
+    expect(screen.getByText("blind-quality")).toBeInTheDocument();
+    expect(screen.getByText(/preference candidate/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Open evidence response.md/i }));
     expect(
       screen.getByText("cases/selection-quality/with_skill/repeat-1/outputs/response.md"),

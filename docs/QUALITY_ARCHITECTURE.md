@@ -91,26 +91,37 @@ ordinary skill.
 Compilation records:
 
 - manifest digest;
-- the complete eval-directory and deterministic-grader authority digest;
-- candidate package tree digest;
-- accepted baseline tree digest when present;
+- the complete eval-directory, deterministic-grader runtime, and semantic-grader
+  contract authority digest;
+- candidate runtime-surface digest (`SKILL.md`, `references/`, `scripts/`, and
+  `assets/`, including empty directories and normalized read/execute modes);
+- accepted baseline runtime-surface digest when present;
 - every selected fixture digest;
 - answer-key-free candidate/baseline skill snapshot digests;
 - execution-plan digest;
 - exactly one selected data split and its paired arms.
 
-Compilation requires a fresh or empty workspace. Declared fixture inputs are
-copied into arm/repeat-specific read-only views containing only allow-listed
-files. Executors receive those inputs and a runtime skill snapshot containing
-only `SKILL.md`, `references/`, `scripts/`, and `assets/`, rather than either
-source tree. A package linter or directory walk therefore cannot read the eval
-manifest, audit cases, or an adjacent `expected.md` answer key.
+Compilation requires a fresh or empty workspace outside both candidate and
+baseline packages. Declared fixture inputs are copied into arm/repeat-specific
+read-only views containing only allow-listed files. Every case/arm/repeat also
+receives its own read-only runtime skill snapshot containing only `SKILL.md`,
+`references/`, `scripts/`, and `assets/`, rather than either source tree. A
+package linter or directory walk therefore cannot read the eval manifest, audit
+cases, or an adjacent `expected.md` answer key, and one worker cannot mutate a
+snapshot shared by another.
 
-Before grading, the runtime recomputes each digest. Any drift stops grading
-before `verification-evidence.json` is emitted. Each `execution.json` is also
-bound to its run/case/arm/repeat, assignment digest, and produced artifact
-digests. The intended response to drift is recompilation into a new empty run
-workspace, never hand-editing the lock or evidence.
+The snapshot and isolated-input contracts cover canonical paths,
+file/directory kind, read/execute mode, bytes, and empty directories. Every
+readable tree must remain read-only; symlink, hard-link, special-file,
+undeclared-entry, and permission drift are release-blocking integrity failures.
+
+Before grading, the runtime reconstructs the complete plan, snapshot, input,
+assignment, run-ID, and lock contract from the pinned manifest and package
+authority; the lock cannot validate a coordinated rewrite of itself. Any drift
+stops grading before `verification-evidence.json` is emitted. Each
+`execution.json` is also bound to its run/case/arm/repeat, assignment digest,
+and produced artifact digests. The intended response to drift is recompilation
+into a new empty run workspace, never hand-editing the lock or evidence.
 
 ## Execution topology
 
@@ -143,9 +154,11 @@ or absence, regex, JSON Pointer comparisons, numeric ranges, forbidden events,
 and digests. The grader computes required assertion pass rate and aggregates
 declared numeric execution metrics without inventing missing values.
 
-Semantic assertions use two blind, A/B-order-swapped judgments. The resolved
-winners must agree. No third-vote majority is allowed because correlated judge
-bias does not become ground truth through repetition.
+Semantic assertions use two blind, A/B-order-swapped judgments under a frozen
+grader contract and task-specific rubric. The official judgment is bound to the
+run, case, rubric, declared inputs, every repeat, and output digests. The
+resolved winners must agree. No third-vote majority is allowed because
+correlated judge bias does not become ground truth through repetition.
 
 Verification levels remain intentionally narrow:
 
@@ -202,6 +215,12 @@ The evolution control state pins eval/grader authority and the accepted
 baseline, not a candidate run ID. Each candidate round and selection→audit
 transition may therefore use a different immutable run workspace, while an
 authority change or an audit of a different candidate digest is rejected.
+Transitions are recorded in a digest-chained local journal and state is a
+recoverable projection of that journal. This enforces the workflow against
+executors and partial rollback under a trusted lead. It is not an external
+monotonic anchor: detecting a same-owner clone or deletion of the whole control
+directory requires a remote append-only log. The Dashboard must disclose the
+local/trusted control boundary rather than imply cryptographic one-shot audit.
 
 ## Dashboard product boundary
 
@@ -217,6 +236,12 @@ The layout follows the evidence chain:
 The local server accepts GET and HEAD only. `dashboard-data.json` is served with
 `no-store`; static assets may be cached briefly. A screenshot is not evidence:
 the plan, lock, grading, decisions, and output files remain the source of truth.
+Cross-run projection validates authority, baseline, decision digests, bound
+plan/evidence, and the state transition sequence before rendering. Historical
+rounds cannot supply hard gates for a different current run.
+Projection re-grades retained current-run artifacts, aggregates semantic and
+paired-arm blockers into each case status, and writes only the canonical
+run-workspace `dashboard-data.json`; it cannot overwrite source or evidence.
 
 ## Authorities
 

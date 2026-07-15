@@ -95,7 +95,8 @@ SkillLens、SkillOpt 均是 2026 年 5 月的近期预印本，结论尚缺少�
 **项目推论。** 首版不必复制四 epoch 或 slow/meta memory，但应保留更小的安全核心：
 
 1. optimizer 只能输出候选 patch，不能直接覆盖正式 skill；
-2. 单轮 patch 有文件范围、操作类型、行数/字符数和资源数量预算；
+2. 不设置人为的行数或 diff 大小上限；候选可重构完整 runtime surface，
+   但仍受三轮上限、冻结 eval、权限边界和完整回归门禁约束；
 3. 每轮保留 parent digest、candidate digest、patch、依据它的训练 case/trace IDs；
 4. 失败候选不可成为下一轮正式 parent，当前 best accepted candidate 始终可回滚；
 5. rejected buffer 只保存失败模式、patch digest 和结果摘要，不把隐藏断言内容泄露回 optimizer。
@@ -405,7 +406,7 @@ run-<id>/
 
 - 审查负责提出可证伪的风险和改进假设；
 - 执行负责在隔离环境中产生行为证据；
-- 优化负责在授权范围内提出小步候选；
+- 优化负责在授权范围内提出候选，必要时可以是架构级重写；
 - 发布负责用冻结证据执行硬门禁和 Pareto 非退化判断，并保留用户最终授权。
 
 研究最一致的信号不是“让更强的模型多反思几轮”，而是：**冻结目标、分离角色、限制更新、保留 paired baseline、用真实执行落地效用、把 holdout 与反馈通道当作安全边界，并允许系统诚实地停在 `inconclusive` 或 `no-change`。**

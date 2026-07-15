@@ -49,11 +49,15 @@ function statusTone(status: string): "good" | "bad" | "warn" | "neutral" {
   ) {
     return "good";
   }
-  if (["failed", "rejected", "regressed", "audit-failed"].some((value) => normalized.includes(value))) {
+  if (
+    ["failed", "rejected", "regressed", "audit-failed", "invalid", "stale", "disagreement"].some(
+      (value) => normalized.includes(value),
+    )
+  ) {
     return "bad";
   }
   if (
-    ["pending", "awaiting", "inconclusive", "incomplete", "no-change", "exhausted"].some((value) =>
+    ["pending", "awaiting", "inconclusive", "incomplete", "missing", "no-change", "exhausted"].some((value) =>
       normalized.includes(value),
     )
   ) {
@@ -330,6 +334,11 @@ export function EvidenceDashboard({
               {selectedCase && (
                 <div className="arm-matrix">
                   <div className="section-label"><GitCompareArrows size={13} /> Paired arms</div>
+                  {selectedCase.missing_objective_metrics.length > 0 && (
+                    <p className="arm-warning">
+                      Missing objective metrics: {selectedCase.missing_objective_metrics.join(", ")}
+                    </p>
+                  )}
                   {selectedCase.arms.map((arm) => (
                     <article key={arm.id}>
                       <div><strong>{arm.id}</strong><StatusChip status={arm.passed ? "passed" : arm.complete ? "failed" : "incomplete"} /></div>
@@ -344,12 +353,35 @@ export function EvidenceDashboard({
                 </div>
               )}
 
+              {selectedCase && selectedCase.semantic_assertions.length > 0 && (
+                <div className="arm-matrix semantic-matrix">
+                  <div className="section-label"><Beaker size={13} /> Semantic evidence</div>
+                  {selectedCase.semantic_assertions.map((assertion) => (
+                    <article key={assertion.id}>
+                      <div>
+                        <strong>{assertion.id}</strong>
+                        <StatusChip status={assertion.passed ? "passed" : assertion.status} />
+                      </div>
+                      <p>
+                        preference {assertion.preference ?? "unresolved"}
+                        {assertion.resolved_winners?.length
+                          ? ` · ${assertion.resolved_winners.join(" / ")}`
+                          : ""}
+                      </p>
+                      {assertion.reason && <p className="arm-warning">{assertion.reason}</p>}
+                      {assertion.artifact && <p>{assertion.artifact}</p>}
+                    </article>
+                  ))}
+                </div>
+              )}
+
               <div className="provenance-card">
                 <div className="section-label"><Fingerprint size={13} /> Provenance</div>
                 <dl>
                   <div><dt>Subject</dt><dd>{shortDigest(data.run.subject?.digest)}</dd></div>
                   <div><dt>Baseline</dt><dd>{data.run.baseline?.kind ?? "none"}</dd></div>
                   <div><dt>Plan</dt><dd>{shortDigest(data.run.integrity?.plan_digest)}</dd></div>
+                  <div><dt>Control anchor</dt><dd>{data.run.control_anchor ?? "not used"}</dd></div>
                 </dl>
               </div>
             </div>

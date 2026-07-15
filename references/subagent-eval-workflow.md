@@ -87,8 +87,7 @@ with the lead and graders.
 ├── execution-plan.json
 ├── run-lock.json
 ├── skill-snapshots/
-│   ├── with_skill/                    # no evals or answer keys
-│   └── old_skill/                     # when applicable
+│   └── <case>/<arm>/repeat-N/          # independent; no evals or answer keys
 ├── inputs/<case>/<arm>/repeat-N/package/...
 ├── assignments/<case>/<arm>/repeat-N.json
 ├── cases/
@@ -112,6 +111,12 @@ with the lead and graders.
 For explicit evolution, keep `evolution-state.json` in a separate control
 workspace. Each candidate round and audit has its own immutable run workspace;
 the state joins them by authority and baseline digests rather than one run ID.
+The control workspace must start empty and must not overlap the candidate or
+accepted baseline package. It also contains a digest-chained `transitions/`
+journal; executors receive neither the state nor journal path. This local
+journal is recoverable after a partial state write, but it assumes the lead's
+control workspace is trusted. Same-owner anti-replay requires an external
+append-only anchor.
 
 Generated state never belongs inside the reviewed skill package.
 
@@ -119,12 +124,16 @@ Generated state never belongs inside the reviewed skill package.
 
 Run deterministic grading first. Only assertions declared `semantic_pair` may
 invoke a semantic grader. Give the grader anonymized output A and B plus the
-rubric; withhold configuration names, candidate age, and the optimizer's
-rationale. Run the same judgment again with A/B order swapped.
+frozen task-specific rubric and `semantic-grader-contract.md`; withhold
+configuration names, candidate age, mappings, and the optimizer's rationale.
+Run the same judgment again with A/B order swapped.
 
-The semantic grader writes only the artifact described in
-`references/executable-evals.md`. If the resolved winners disagree, retain both
-judgments and mark the case `inconclusive`. Do not add a third vote.
+The blind worker writes only raw anonymous winners. The lead resolves the hidden
+mappings and creates the official artifact described in
+`references/executable-evals.md`, including the runtime-projected binding over
+run, case, authority, rubric, declared inputs, repeats, and output digests. If
+the resolved winners disagree or the binding is stale, retain both judgments
+and mark the case `inconclusive`. Do not add a third vote.
 
 ## Lead aggregation
 

@@ -36,7 +36,8 @@ false quality gate.
       "writable_roots": ["outputs", "semantic"]
     },
     "repeats": {"deterministic": 1, "stochastic": 3},
-    "evolution": {"max_rounds": 3}
+    "evolution": {"max_rounds": 3},
+    "case_timeout_seconds": 300
   },
   "evals": [
     {
@@ -70,8 +71,13 @@ false quality gate.
 ```
 
 Case IDs are path-safe lowercase kebab-case slugs; assertion and objective IDs
-are stable strings. Fixture paths must stay inside the skill package and must
-exist when the plan is compiled. Every selected case needs at least one
+are stable strings. Fixture paths are unique canonical relative paths (no
+absolute path or `..`), must stay inside the skill package, and must exist when
+the plan is compiled. `case_timeout_seconds` is a positive integer; a case may
+override it with its own positive `timeout_seconds`. Permission objects accept
+only `network`, `network_allowlist`, `external_side_effects`, and
+`writable_roots`, so extension fields cannot carry answer keys into worker
+assignments. Every selected case needs at least one
 assertion and one objective. A primary objective needs a strictly positive
 `min_material_delta`; equal scores are not material improvement. External side
 effects remain denied for every case.
@@ -91,7 +97,8 @@ trusted runner outside the optimizer-visible package. If that is unavailable,
 record `holdout visibility: public` as a limitation and narrow the
 generalization claim.
 
-Compile exactly one split for the current stage into a new or empty workspace:
+Compile exactly one split for the current stage into a new or empty workspace
+that does not overlap either the candidate or accepted baseline package:
 
 ```bash
 python3 scripts/skill_eval_runtime.py compile \
@@ -100,14 +107,15 @@ python3 scripts/skill_eval_runtime.py compile \
   --baseline-kind old_skill \
   --baseline-path <accepted-skill> \
   --split selection \
-  --case <optional-targeted-case-id> \
   --workspace <outside-skill-workspace>
 ```
 
-Repeat `--case` for a targeted fast screen. The manifest and its digest remain
-unchanged; the selected case IDs are recorded in the plan and run ID.
-Selection and audit require an `old_skill` baseline. Multi-split plans and
-workspace reuse are rejected before any worker is launched.
+Use repeated `--case` only with the `development` split for a targeted fast
+screen. Selection and audit always execute their complete split and require an
+`old_skill` baseline; a partial release split is rejected. The manifest and its
+digest remain unchanged, and selected development case IDs are recorded in the
+plan and run ID. Multi-split plans and workspace reuse are rejected before any
+worker is launched.
 
 For an audit with an `old_skill` baseline, the compiler creates three arms:
 `with_skill`, `old_skill`, and `without_skill`. A case may declare
@@ -125,18 +133,28 @@ Compilation writes:
   grader authority, answer-key-free skill snapshots, and every selected
   fixture and executor assignment;
 - `assignments/<case>/<arm>/repeat-N.json` — sanitized executor identity,
-  prompt, declared inputs, permissions, writable root, and required artifact
-  paths; assertion expectations and objectives are intentionally absent;
-- `skill-snapshots/<arm>/` — read-only runtime views containing only
-  `SKILL.md`, `references/`, `scripts/`, and `assets/`; source `evals/`, answer
-  keys, tests, and repository metadata are absent;
+  prompt, timeout, declared inputs, permissions, writable root, and required
+  artifact paths; assertion expectations and objectives are intentionally
+  absent;
+- `skill-snapshots/<case>/<arm>/repeat-N/` — independent read-only runtime
+  views containing only `SKILL.md`, `references/`, `scripts/`, and `assets/`;
+  source `evals/`, answer keys, tests, and repository metadata are absent, and
+  no worker shares a writable snapshot directory with another worker;
 - `inputs/<case>/<arm>/repeat-N/package/` — arm/repeat-specific read-only copies
   of only the declared executor files, preserving their relative layout
   without adjacent answer keys.
 
-The grader re-checks the lock before reading outputs. A changed or missing
-source fixture, isolated input, or assignment stops grading. Recompile instead
-of mutating the lock.
+The grader does not treat `run-lock.json` as a self-authenticating source. Before
+reading outputs it reconstructs the normalized cases, full release split,
+baseline rule, run ID, snapshots, isolated inputs, sanitized assignments, and
+the complete lock from the pinned manifest, candidate, baseline, and grader
+authority. Coordinated edits to plan + lock + assignment therefore still stop
+grading. Recompile instead of mutating any retained contract.
+
+Snapshot and input authority locks the complete readable tree: canonical path,
+file/directory kind, read/execute permission bits, file bytes, and empty
+directories. Snapshot and isolated-input trees must remain read-only. Symlinks,
+hard links, special files, undeclared entries, and mode drift are rejected.
 
 Repeat policy is fixed:
 
@@ -162,13 +180,35 @@ Deterministic assertions run first and may be `must_pass` or `should_pass`:
 | `digest_equals` | `artifact`, `expected_sha256` | Exact artifact identity |
 
 `semantic_pair` is supplemental. It cannot replace a deterministic hard gate.
-Its artifact is relative to `cases/<case-id>/` and must contain two blind,
-order-swapped judgments:
+Every case must therefore declare at least one deterministic `must_pass`
+assertion; a semantic-only or all-`should_pass` case is structurally invalid.
+It requires a non-empty task-specific `rubric` plus a non-empty unique `inputs`
+array of executor output paths. Those fields are frozen in eval authority. Read
+`semantic-grader-contract.md` before dispatch. Its official artifact is
+relative to `cases/<case-id>/` and must contain two blind, order-swapped
+judgments plus the exact binding projected by the lead:
 
 ```json
 {
   "schema_version": "skill-reviewer.semantic-judgment.v1",
   "blind": true,
+  "binding": {
+    "run_id": "run-…",
+    "case_id": "ready-skill-calibration",
+    "assertion_id": "blind-rubric-quality",
+    "authority_digest": "<sha256>",
+    "semantic_grader_contract_digest": "<sha256>",
+    "rubric_digest": "<sha256>",
+    "inputs": ["outputs/response.md"],
+    "artifacts": {
+      "with_skill": [
+        {"repeat": 1, "digests": {"outputs/response.md": "<sha256>"}}
+      ],
+      "old_skill": [
+        {"repeat": 1, "digests": {"outputs/response.md": "<sha256>"}}
+      ]
+    }
+  },
   "judgments": [
     {"mapping": {"A": "with_skill", "B": "old_skill"}, "winner": "A"},
     {"mapping": {"A": "old_skill", "B": "with_skill"}, "winner": "B"}
@@ -176,8 +216,11 @@ order-swapped judgments:
 }
 ```
 
-`winner` is `A`, `B`, or `tie`. Invalid swapping or disagreement becomes
-`inconclusive`; never take a two-vote majority.
+`winner` is `A`, `B`, or `tie`. The blind worker must not see or write the arm
+mapping; it returns anonymous winners to the lead, which owns the official
+mapped and bound artifact. Invalid swapping, disagreement, or any stale
+run/case/rubric/output digest becomes `inconclusive`; never take a two-vote
+majority.
 
 ## Executor output
 
@@ -241,9 +284,18 @@ python3 scripts/skill_eval_runtime.py project-dashboard \
 ```
 
 `decide` accepts only the canonical evidence path in the run workspace and
-re-grades retained artifacts before applying hard gates and Pareto rules; an
-edited evidence JSON cannot authorize release.
+re-grades retained artifacts before applying hard gates and Pareto rules. Later
+state transitions recompute the full decision core from its digested plan and
+evidence, so editing either evidence or decision JSON cannot authorize release.
 
 The commands compile, grade, decide, and project. They do not spawn agents,
 modify the candidate skill, apply a patch, change evals, or approve a release.
 Those responsibilities stay with the lead agent and user.
+
+Dashboard projection accepts only the canonical
+`<workspace>/dashboard-data.json` output path. If retained execution/evidence
+exists, projection computes a fresh grade in memory without rewriting arm
+grading or `verification-evidence.json`. An explicit cross-run state must
+identify the current run as the latest journal transition (or as the
+initialization run while history is empty); historical and foreign state is
+rejected rather than rendered under a current label.

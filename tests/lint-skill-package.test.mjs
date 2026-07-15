@@ -46,6 +46,7 @@ function executableManifest(skillName, evals) {
       permissions: { network: "deny", writable_roots: ["outputs"] },
       repeats: { deterministic: 1, stochastic: 3 },
       evolution: { max_rounds: 3 },
+      case_timeout_seconds: 300,
     },
     evals,
   };

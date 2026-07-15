@@ -22,8 +22,17 @@ export interface DashboardCase {
   status: EvidenceStatus;
   regressed: boolean;
   direction_disagreement: boolean;
+  missing_objective_metrics: string[];
   arms: DashboardArm[];
-  semantic_assertions: Array<Record<string, unknown>>;
+  semantic_assertions: Array<{
+    id: string;
+    status: string;
+    passed: boolean;
+    preference?: string | null;
+    reason?: string | null;
+    artifact?: string;
+    resolved_winners?: string[];
+  }>;
 }
 
 export interface SpineNode {
@@ -62,6 +71,7 @@ export interface DashboardData {
     subject?: { path?: string; digest?: string } | null;
     baseline?: { kind?: string; path?: string | null; digest?: string | null } | null;
     splits: DashboardCase["split"][];
+    control_anchor?: "local/trusted" | null;
     integrity?: {
       locked?: boolean;
       verified?: boolean;

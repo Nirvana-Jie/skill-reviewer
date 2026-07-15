@@ -129,10 +129,12 @@ from the rubric.
   artifact snapshots; do not freeze full prose by default.
 - **Executable behavior verification:** read
   `references/executable-evals.md`, then read and follow
-  `references/subagent-eval-workflow.md` completely. Compile the requested
-  split into a fresh workspace, plan, run lock, answer-key-free skill snapshots,
-  and arm/repeat-specific input copies. The lead agent launches native paired
-  workers in the same turn; the runtime itself stays agent-agnostic.
+  `references/subagent-eval-workflow.md` completely. For `semantic_pair`, also
+  read `references/semantic-grader-contract.md`. Compile the requested split
+  into a fresh workspace, plan, run lock, answer-key-free case/arm/repeat skill
+  snapshots, and arm/repeat-specific input copies. The lead agent launches
+  native paired workers in the same turn; the runtime itself stays
+  agent-agnostic.
 
 For a full/readiness branch, auto-discover and execute a valid manifest. For a
 focused branch, execute only when evals or effect claims are in scope. An
@@ -140,9 +142,11 @@ explicit “static only”, “do not run evals”, or “do not start subagents
 wins and yields `not-run`.
 
 Deterministic assertions run first. `semantic_pair` may supplement them through
-two anonymized, A/B-order-swapped judgments. If the semantic judgments disagree,
-or stochastic paired directions include both improvement and regression, the
-case is `inconclusive`; do not take a majority vote.
+two anonymized, A/B-order-swapped judgments under a frozen rubric and grader
+contract. The lead binds the mapped judgment to the run, case, rubric, and all
+declared output digests. If the semantic judgments disagree, their binding is
+stale, or stochastic paired directions include both improvement and regression,
+the case is `inconclusive`; do not take a majority vote.
 
 Deterministic cases run once. Stochastic cases run three paired repeats. In an
 audit against `old_skill`, prefer three arms: candidate, accepted old skill, and
@@ -260,6 +264,9 @@ consistent, and no claim exceeds the retained evidence.
   executor-artifact, and grader contract; read before behavior execution.
 - `references/subagent-eval-workflow.md` — runtime effect verification; read
   for full/readiness auto-verification and explicit effect verification.
+- `references/semantic-grader-contract.md` — normative blind comparison,
+  role-separation, order-swap, and evidence-binding contract; read before any
+  semantic grader is dispatched.
 - `references/evolution-workflow.md` — bounded optimizer/selection/audit state
   machine; read only for explicit evolution.
 - `evals/skill-reviewer.csv` — trigger/router regression cases; consult when
