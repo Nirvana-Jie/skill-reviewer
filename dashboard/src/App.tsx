@@ -2,6 +2,7 @@ import {
   Activity,
   Archive,
   Beaker,
+  Check,
   ChevronRight,
   CircleAlert,
   Clock3,
@@ -23,6 +24,7 @@ import {
   Search,
   ShieldCheck,
   SlidersHorizontal,
+  X,
 } from "lucide-react";
 import {
   lazy,
@@ -49,14 +51,15 @@ import {
 } from "./dashboard-view-state";
 import {
   describeAssertion,
-  describeAssertionDecision,
   describeDashboardCase,
+  describeDecisionBasis,
   describeEvidenceNode,
   describeEvidenceReviewGuide,
   describeLimitation,
   describeReviewStatus,
   evidenceActionLabel,
   repeatFromEvidenceNode,
+  type DecisionBasisItem,
 } from "./evidence-semantics";
 import { handleRovingListKeyDown } from "./keyboard-navigation";
 import type { DashboardCase, DashboardData, SpineNode } from "./types";
@@ -175,6 +178,51 @@ function StatusChip({ status }: { status: string }) {
     >
       {localizeStatus(locale, status)}
     </span>
+  );
+}
+
+function DecisionBasisRow({
+  item,
+  onOpen,
+}: {
+  item: DecisionBasisItem;
+  onOpen?: () => void;
+}) {
+  const { t } = useUiPreferences();
+  const content = (
+    <>
+      <span className={`basis-state basis-state-${item.tone}`} aria-hidden="true">
+        {item.tone === "good" ? (
+          <Check size={11} strokeWidth={2.4} />
+        ) : item.tone === "bad" ? (
+          <X size={11} strokeWidth={2.4} />
+        ) : (
+          <span />
+        )}
+      </span>
+      <span className="basis-copy">
+        <span className="basis-item-heading">
+          <strong>{item.title}</strong>
+          <em className={`basis-verdict basis-verdict-${item.tone}`}>
+            {item.verdict}
+          </em>
+        </span>
+        <small>{item.detail}</small>
+      </span>
+      {onOpen && (
+        <span className="basis-open-action">
+          {t("viewBasisEvidence")}
+          <ChevronRight className="basis-open-icon" size={13} aria-hidden="true" />
+        </span>
+      )}
+    </>
+  );
+  return onOpen ? (
+    <button type="button" className="decision-basis-item is-action" onClick={onOpen}>
+      {content}
+    </button>
+  ) : (
+    <div className="decision-basis-item">{content}</div>
   );
 }
 
@@ -887,8 +935,8 @@ export function EvidenceDashboard({
   const selectedGuide = selected
     ? describeEvidenceReviewGuide(locale, selected, selectedCase)
     : null;
-  const selectedAssertionDecision = selected
-    ? describeAssertionDecision(locale, selected)
+  const selectedDecisionBasis = selected
+    ? describeDecisionBasis(locale, selected, selectedCase, data.spine, data.cases)
     : null;
   useEffect(() => {
     if (inspectorBodyRef.current) inspectorBodyRef.current.scrollTop = 0;
@@ -1659,6 +1707,41 @@ export function EvidenceDashboard({
                 </div>
               )}
 
+              {selectedDecisionBasis && (
+                <section className="decision-basis-card">
+                  <div className="section-label decision-basis-heading">
+                    <FileCheck2 size={13} /> {t("decisionBasis")}
+                  </div>
+                  <p className="decision-basis-summary">
+                    {selectedDecisionBasis.summary}
+                  </p>
+                  <div className="decision-basis-list">
+                    {selectedDecisionBasis.items.map((item) => {
+                      const evidenceNode = item.evidenceNodeId
+                        ? nodesById.get(item.evidenceNodeId)
+                        : undefined;
+                      return (
+                        <DecisionBasisRow
+                          key={item.id}
+                          item={item}
+                          onOpen={
+                            evidenceNode
+                              ? () => openEvidence(evidenceNode)
+                              : undefined
+                          }
+                        />
+                      );
+                    })}
+                  </div>
+                  {selectedDecisionBasis.nextStep && (
+                    <div className="decision-next-step">
+                      <span>{t("nextReviewStep")}</span>
+                      <p>{selectedDecisionBasis.nextStep}</p>
+                    </div>
+                  )}
+                </section>
+              )}
+
               {selectedGuide && (
                 <section className="review-guide-card">
                   <div className="review-guide-section">
@@ -1686,28 +1769,6 @@ export function EvidenceDashboard({
                       ))}
                     </ol>
                   </div>
-                </section>
-              )}
-
-              {selectedAssertionDecision && (
-                <section className="assertion-decision-card">
-                  <div className="section-label">
-                    <FileCheck2 size={13} /> {t("automatedDecision")}
-                  </div>
-                  <dl>
-                    <div>
-                      <dt>{t("checkRule")}</dt>
-                      <dd>{selectedAssertionDecision.rule}</dd>
-                    </div>
-                    <div>
-                      <dt>{t("observedResult")}</dt>
-                      <dd>{selectedAssertionDecision.observed}</dd>
-                    </div>
-                    <div>
-                      <dt>{t("importance")}</dt>
-                      <dd>{selectedAssertionDecision.importance}</dd>
-                    </div>
-                  </dl>
                 </section>
               )}
 

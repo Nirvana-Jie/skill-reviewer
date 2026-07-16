@@ -4,6 +4,7 @@ import {
   describeAssertion,
   describeAssertionDecision,
   describeDashboardCase,
+  describeDecisionBasis,
   describeEvidenceNode,
   describeEvidenceReviewGuide,
   describeLimitation,
@@ -135,6 +136,147 @@ describe("evidence semantics", () => {
       observed: "实际回答中发现了禁止内容：“regression-verified”。",
       importance: "发布级必检项：失败会阻塞该场景通过。",
     });
+  });
+
+  it("explains a failed candidate gate with counts and a direct link to the failed check", () => {
+    const caseWithFailure: DashboardCase = {
+      ...selectionCase,
+      id: "missing-baseline-is-inconclusive",
+      status: "failed",
+      arms: [
+        {
+          id: "with_skill",
+          complete: true,
+          passed: false,
+          required_pass_rate: 0.75,
+          forbidden_actions: [],
+          side_effects: [],
+          binding_errors: [],
+          metrics: {},
+          assertions: { passed: 3, total: 4 },
+          artifact_count: 2,
+        },
+      ],
+    };
+    const gate = node({
+      id: "gate:missing-baseline-is-inconclusive:candidate-required-assertions",
+      kind: "gate",
+      label: "missing-baseline-is-inconclusive:candidate-required-assertions",
+      status: "failed",
+    });
+    const assertions = [
+      node({
+        id: "assertion:missing-baseline-is-inconclusive:with_skill:1:response-exists",
+        kind: "assertion",
+        parent_id: "case:missing-baseline-is-inconclusive",
+        label: "response-exists",
+        status: "passed",
+        arm: "with_skill",
+        repeat: 1,
+        assertion_type: "file_exists",
+        assertion_rule: { severity: "must_pass", artifact: "outputs/response.md" },
+        assertion_evidence: { exists: true },
+      }),
+      node({
+        id: "assertion:missing-baseline-is-inconclusive:with_skill:1:no-false-regression-claim",
+        kind: "assertion",
+        parent_id: "case:missing-baseline-is-inconclusive",
+        label: "no-false-regression-claim",
+        status: "failed",
+        arm: "with_skill",
+        repeat: 1,
+        assertion_type: "text_not_contains",
+        assertion_rule: {
+          severity: "must_pass",
+          artifact: "outputs/response.md",
+          expected: "regression-verified",
+        },
+        assertion_evidence: {
+          artifact: "outputs/response.md",
+          unexpected: ["regression-verified"],
+        },
+      }),
+      ...[2, 3].map((repeat) =>
+        node({
+          id: `assertion:missing-baseline-is-inconclusive:with_skill:${repeat}:response-exists`,
+          kind: "assertion",
+          parent_id: "case:missing-baseline-is-inconclusive",
+          label: "response-exists",
+          status: "passed",
+          arm: "with_skill",
+          repeat,
+          assertion_type: "file_exists",
+          assertion_rule: { severity: "must_pass", artifact: "outputs/response.md" },
+          assertion_evidence: { exists: true },
+        }),
+      ),
+    ];
+
+    const basis = describeDecisionBasis(
+      "zh-CN",
+      gate,
+      caseWithFailure,
+      [gate, ...assertions],
+      [caseWithFailure],
+    );
+
+    expect(basis?.summary).toBe(
+      "候选版执行与产物完整，但 4 项发布级检查中有 1 项未通过，因此门禁未通过。",
+    );
+    expect(basis?.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          title: "发布级检查",
+          verdict: "未满足",
+          detail: "通过 3/4 项；1 项未通过。",
+        }),
+        expect.objectContaining({
+          title: "第 1 次执行｜没有在缺少基线时声称退化",
+          detail: "实际回答中发现了禁止内容：“regression-verified”。",
+          evidenceNodeId:
+            "assertion:missing-baseline-is-inconclusive:with_skill:1:no-false-regression-claim",
+        }),
+      ]),
+    );
+  });
+
+  it("makes clear that a passing baseline gate only validates comparison evidence", () => {
+    const pairedCase: DashboardCase = {
+      ...selectionCase,
+      arms: [
+        {
+          id: "old_skill",
+          complete: true,
+          passed: false,
+          required_pass_rate: 0.75,
+          forbidden_actions: [],
+          side_effects: [],
+          binding_errors: [],
+          metrics: {},
+          assertions: { passed: 3, total: 4 },
+          artifact_count: 2,
+        },
+      ],
+    };
+    const gate = node({
+      id: "gate:selection-quality:paired-baseline-complete",
+      kind: "gate",
+      label: "selection-quality:paired-baseline-complete",
+      status: "passed",
+    });
+
+    const basis = describeDecisionBasis(
+      "zh-CN",
+      gate,
+      pairedCase,
+      [gate],
+      [pairedCase],
+    );
+
+    expect(basis?.summary).toContain("因此可作为公平对照");
+    expect(basis?.nextStep).toBe(
+      "该门禁只确认对照证据可用，不代表候选版本身已经通过。",
+    );
   });
 
   it("does not disclose opaque holdout prompts in reviewer guidance", () => {

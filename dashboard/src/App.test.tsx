@@ -516,6 +516,96 @@ describe("EvidenceDashboard", () => {
     );
   });
 
+  it("shows why a gate passed or failed and opens the exact failed check", () => {
+    const explainableData = structuredClone(data);
+    const selection = explainableData.cases.find(
+      (item) => item.id === "selection-quality",
+    );
+    if (!selection) throw new Error("selection fixture is missing");
+    const candidate = selection.arms.find((arm) => arm.id === "with_skill");
+    if (!candidate) throw new Error("candidate fixture is missing");
+    selection.status = "failed";
+    candidate.passed = false;
+    candidate.required_pass_rate = 0.75;
+    candidate.assertions = { passed: 3, total: 4 };
+    explainableData.spine[1] = {
+      id: "gate:selection-quality:candidate-required-assertions",
+      kind: "gate",
+      parent_id: "run:product-test",
+      label: "selection-quality:candidate-required-assertions",
+      status: "failed",
+      detail: "candidate evidence is incomplete or a required assertion failed",
+    };
+    explainableData.spine.push(
+      {
+        id: "assertion:selection-quality:with_skill:1:positive-verdict",
+        kind: "assertion",
+        parent_id: "case:selection-quality",
+        label: "positive-verdict",
+        status: "failed",
+        arm: "with_skill",
+        repeat: 1,
+        assertion_type: "text_contains",
+        assertion_rule: {
+          severity: "must_pass",
+          artifact: "outputs/response.md",
+          expected: "Ready for release",
+        },
+        assertion_evidence: {
+          artifact: "outputs/response.md",
+          missing: ["Ready for release"],
+        },
+      },
+      ...[2, 3, 4].map((repeat) => ({
+        id: `assertion:selection-quality:with_skill:${repeat}:response-exists`,
+        kind: "assertion" as const,
+        parent_id: "case:selection-quality",
+        label: "response-exists",
+        status: "passed",
+        arm: "with_skill",
+        repeat,
+        assertion_type: "file_exists",
+        assertion_rule: {
+          severity: "must_pass",
+          artifact: "outputs/response.md",
+        },
+        assertion_evidence: { exists: true },
+      })),
+    );
+
+    renderWithPreferences(
+      <EvidenceDashboard data={explainableData} connectionState="live" />,
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Switch to Simplified Chinese" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "查看门禁依据：候选质量是否达到发布要求｜候选结果检查",
+      }),
+    );
+
+    expect(screen.getByText("为什么是这个结果")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "候选版执行与产物完整，但 4 项发布级检查中有 1 项未通过，因此门禁未通过。",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("通过 3/4 项；1 项未通过。")).toBeInTheDocument();
+    const failedCheck = screen.getByRole("button", {
+      name: /第 1 次执行｜可发布样例得到通过结论.*查看证据/,
+    });
+    expect(failedCheck).toHaveTextContent(
+      "实际回答仍缺少：“Ready for release”。",
+    );
+
+    fireEvent.click(failedCheck);
+    expect(
+      screen.getByText("实际观察未满足预设规则，因此这项检查未通过。"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("实际观察")).toBeInTheDocument();
+  });
+
   it("switches locale and monochrome theme across the complete workbench", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

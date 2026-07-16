@@ -1502,8 +1502,201 @@ kbd {
 
 .review-guide-card,
 .assertion-decision-card,
+.decision-basis-card,
 .source-evidence-card {
   border-bottom: 1px solid var(--line);
+}
+
+.decision-basis-card {
+  padding: 13px 15px 14px;
+}
+
+.decision-basis-heading {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.decision-basis-summary {
+  margin: 8px 0 11px;
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 560;
+  line-height: 1.65;
+}
+
+.decision-basis-list {
+  position: relative;
+  border-top: 1px solid var(--detail-line);
+}
+
+.decision-basis-list::before {
+  position: absolute;
+  z-index: 0;
+  top: 17px;
+  bottom: 17px;
+  left: 8px;
+  width: 1px;
+  background: var(--line-strong);
+  content: "";
+}
+
+.decision-basis-item {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 17px minmax(0, 1fr) max-content;
+  gap: 8px;
+  align-items: start;
+  width: 100%;
+  min-width: 0;
+  padding: 9px 0;
+  border: 0;
+  border-bottom: 1px solid var(--detail-line);
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.decision-basis-item:not(.is-action) {
+  grid-template-columns: 17px minmax(0, 1fr);
+}
+
+.decision-basis-item.is-action {
+  cursor: pointer;
+}
+
+.decision-basis-item.is-action:hover {
+  background: var(--surface-subtle);
+}
+
+.decision-basis-item.is-action:focus-visible {
+  z-index: 2;
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.basis-state {
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--faint);
+}
+
+.basis-state > span {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.basis-state-good {
+  border-color: var(--status-good-line);
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.basis-state-bad {
+  border-color: var(--status-bad-line);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.basis-state-warn {
+  border-color: var(--status-warn-line);
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.basis-copy {
+  min-width: 0;
+}
+
+.basis-item-heading {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.basis-item-heading strong {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 9px;
+  font-weight: 680;
+  line-height: 1.35;
+}
+
+.basis-verdict {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 650;
+}
+
+.basis-verdict-good {
+  color: var(--success);
+}
+
+.basis-verdict-bad {
+  color: var(--danger);
+}
+
+.basis-verdict-warn {
+  color: var(--warning);
+}
+
+.basis-copy small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 8.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.basis-open-action {
+  align-self: center;
+  display: inline-flex;
+  gap: 2px;
+  align-items: center;
+  color: var(--faint);
+  font-size: 8px;
+  font-weight: 620;
+}
+
+.basis-open-icon {
+  align-self: center;
+}
+
+.decision-basis-item.is-action:hover .basis-open-action {
+  color: var(--accent);
+}
+
+.decision-next-step {
+  margin-top: 10px;
+  padding: 8px 9px;
+  border-left: 2px solid var(--accent);
+  background: var(--accent-soft);
+}
+
+.decision-next-step > span {
+  color: var(--accent-strong);
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.decision-next-step > p {
+  margin: 3px 0 0;
+  color: var(--ink);
+  font-size: 8.5px;
+  line-height: 1.55;
 }
 
 .review-guide-section {

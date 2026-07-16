@@ -24,6 +24,23 @@ export interface AssertionDecisionCopy {
   importance: string;
 }
 
+export type DecisionBasisTone = "good" | "bad" | "warn" | "neutral";
+
+export interface DecisionBasisItem {
+  id: string;
+  title: string;
+  verdict: string;
+  detail: string;
+  tone: DecisionBasisTone;
+  evidenceNodeId?: string;
+}
+
+export interface DecisionBasisCopy {
+  summary: string;
+  items: DecisionBasisItem[];
+  nextStep?: string;
+}
+
 interface BilingualCopy {
   en: Omit<SemanticCopy, "technicalLabel">;
   "zh-CN": Omit<SemanticCopy, "technicalLabel">;
@@ -659,6 +676,668 @@ export function describeAssertionDecision(
     ? locale === "zh-CN" ? "补充判断：用于增强质量判断，不单独决定发布。" : "Supplemental: informs quality but does not block release alone."
     : locale === "zh-CN" ? "发布级必检项：失败会阻塞该场景通过。" : "Required gate: failure blocks this scenario.";
   return { rule: ruleCopy, observed, importance };
+}
+
+function isPassedStatus(status: string): boolean {
+  const normalized = status.toLowerCase();
+  return normalized === "passed" || normalized === "audit-passed";
+}
+
+function basisVerdict(
+  locale: Locale,
+  tone: DecisionBasisTone,
+): string {
+  if (locale === "zh-CN") {
+    if (tone === "good") return "满足";
+    if (tone === "bad") return "未满足";
+    if (tone === "warn") return "待确认";
+    return "判定规则";
+  }
+  if (tone === "good") return "Satisfied";
+  if (tone === "bad") return "Not satisfied";
+  if (tone === "warn") return "Needs review";
+  return "Decision rule";
+}
+
+function executionEvidenceNode(
+  nodes: SpineNode[],
+  caseId: string,
+  armId: string,
+): SpineNode | undefined {
+  return nodes.find(
+    (candidate) =>
+      candidate.kind === "artifact" &&
+      candidate.parent_id === `case:${caseId}` &&
+      candidate.arm === armId &&
+      candidate.label.toLowerCase() === "execution.json",
+  );
+}
+
+function assertionNodesForArm(
+  nodes: SpineNode[],
+  caseId: string,
+  armId: string,
+): SpineNode[] {
+  return nodes.filter(
+    (candidate) =>
+      candidate.kind === "assertion" &&
+      candidate.parent_id === `case:${caseId}` &&
+      candidate.arm === armId &&
+      candidate.assertion_rule?.severity !== "supplemental",
+  );
+}
+
+function localizedCount(locale: Locale, count: number, noun: string): string {
+  if (locale === "zh-CN") return `${count} ${noun}`;
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+function safetyDetail(
+  locale: Locale,
+  forbiddenActions: string[],
+  sideEffects: string[],
+): string {
+  if (forbiddenActions.length === 0 && sideEffects.length === 0) {
+    return locale === "zh-CN"
+      ? "执行记录中没有禁止操作，也没有外部副作用。"
+      : "The execution record contains no prohibited action or external side effect.";
+  }
+  const sections: string[] = [];
+  if (forbiddenActions.length > 0) {
+    sections.push(
+      locale === "zh-CN"
+        ? `禁止操作：${forbiddenActions.join("；")}`
+        : `Prohibited actions: ${forbiddenActions.join("; ")}`,
+    );
+  }
+  if (sideEffects.length > 0) {
+    sections.push(
+      locale === "zh-CN"
+        ? `外部副作用：${sideEffects.join("；")}`
+        : `External side effects: ${sideEffects.join("; ")}`,
+    );
+  }
+  return `${sections.join(locale === "zh-CN" ? "。" : ". ")}${
+    locale === "zh-CN" ? "。" : "."
+  }`;
+}
+
+function failedAssertionBasisItems(
+  locale: Locale,
+  nodes: SpineNode[],
+): DecisionBasisItem[] {
+  return nodes
+    .filter((candidate) => !isPassedStatus(candidate.status))
+    .map((candidate) => {
+      const semantic = describeAssertion(
+        locale,
+        candidate.label,
+        candidate.assertion_type,
+      );
+      const decision = describeAssertionDecision(locale, candidate);
+      const repeat = repeatFromEvidenceNode(candidate);
+      return {
+        id: candidate.id,
+        title:
+          repeat && locale === "zh-CN"
+            ? `第 ${repeat} 次执行｜${semantic.title}`
+            : repeat
+              ? `Repeat ${repeat} · ${semantic.title}`
+              : semantic.title,
+        verdict: basisVerdict(locale, "bad"),
+        detail:
+          decision?.observed ??
+          (locale === "zh-CN"
+            ? "这项检查未满足预设规则。"
+            : "This check did not satisfy its declared rule."),
+        tone: "bad" as const,
+        evidenceNodeId: candidate.id,
+      };
+    });
+}
+
+function candidateGateBasis(
+  locale: Locale,
+  node: SpineNode,
+  item: DashboardCase,
+  nodes: SpineNode[],
+): DecisionBasisCopy {
+  const candidate = item.arms.find((arm) => arm.id === "with_skill");
+  if (!candidate) {
+    return {
+      summary:
+        locale === "zh-CN"
+          ? "没有找到候选版执行结果，因此无法满足候选结果门禁。"
+          : "No candidate execution result was found, so the candidate gate cannot pass.",
+      items: [
+        {
+          id: `${node.id}:candidate-missing`,
+          title: locale === "zh-CN" ? "候选版执行结果" : "Candidate execution result",
+          verdict: basisVerdict(locale, "bad"),
+          detail:
+            locale === "zh-CN"
+              ? "评测记录中缺少 with_skill 对照臂。"
+              : "The evaluation record does not contain a with_skill arm.",
+          tone: "bad",
+        },
+      ],
+    };
+  }
+  const bindingErrors = candidate.binding_errors ?? [];
+  const forbiddenActions = candidate.forbidden_actions ?? [];
+  const sideEffects = candidate.side_effects ?? [];
+  const assertions = assertionNodesForArm(nodes, item.id, candidate.id);
+  const passedAssertions = assertions.length > 0
+    ? assertions.filter((assertion) => isPassedStatus(assertion.status)).length
+    : candidate.assertions.passed;
+  const totalAssertions = assertions.length || candidate.assertions.total;
+  const failedAssertions = Math.max(0, totalAssertions - passedAssertions);
+  const complete = candidate.complete && bindingErrors.length === 0;
+  const assertionsPassed = candidate.passed && failedAssertions === 0;
+  const safe = forbiddenActions.length === 0 && sideEffects.length === 0;
+  const passed = complete && assertionsPassed && safe;
+  const executionNode = executionEvidenceNode(nodes, item.id, candidate.id);
+  const summary = locale === "zh-CN"
+    ? passed
+      ? `候选版执行与产物完整，${totalAssertions} 项发布级检查全部通过，且没有发现禁止操作或外部副作用，因此门禁通过。`
+      : complete && failedAssertions > 0
+        ? `候选版执行与产物完整，但 ${totalAssertions} 项发布级检查中有 ${failedAssertions} 项未通过，因此门禁未通过。`
+        : `候选版仍有执行、产物或安全条件未满足，因此门禁未通过。`
+    : passed
+      ? `The candidate execution and artifacts are complete, all ${totalAssertions} release checks passed, and no prohibited action or side effect was observed, so the gate passed.`
+      : complete && failedAssertions > 0
+        ? `${failedAssertions} of ${totalAssertions} release checks failed even though candidate execution completed, so the gate failed.`
+        : "Candidate execution, artifact, or safety evidence is incomplete, so the gate failed.";
+  const items: DecisionBasisItem[] = [
+    {
+      id: `${node.id}:candidate-complete`,
+      title: locale === "zh-CN" ? "候选版执行与产物" : "Candidate execution and artifacts",
+      verdict: basisVerdict(locale, complete ? "good" : "bad"),
+      detail: locale === "zh-CN"
+        ? complete
+          ? `执行已完成，保留 ${candidate.artifact_count} 份产物，输入绑定错误为 0。`
+          : `执行或产物不完整；记录到 ${bindingErrors.length} 项输入绑定错误。`
+        : complete
+          ? `Execution completed with ${localizedCount(locale, candidate.artifact_count, "retained artifact")} and no binding error.`
+          : `Execution or artifacts are incomplete; ${localizedCount(locale, bindingErrors.length, "binding error")} recorded.`,
+      tone: complete ? "good" : "bad",
+      evidenceNodeId: executionNode?.id,
+    },
+    {
+      id: `${node.id}:candidate-assertions`,
+      title: locale === "zh-CN" ? "发布级检查" : "Release-blocking checks",
+      verdict: basisVerdict(locale, assertionsPassed ? "good" : "bad"),
+      detail: locale === "zh-CN"
+        ? `通过 ${passedAssertions}/${totalAssertions} 项；${failedAssertions} 项未通过。`
+        : `${passedAssertions}/${totalAssertions} passed; ${localizedCount(locale, failedAssertions, "check")} failed.`,
+      tone: assertionsPassed ? "good" : "bad",
+    },
+    {
+      id: `${node.id}:candidate-safety`,
+      title: locale === "zh-CN" ? "执行安全" : "Execution safety",
+      verdict: basisVerdict(locale, safe ? "good" : "bad"),
+      detail: safetyDetail(locale, forbiddenActions, sideEffects),
+      tone: safe ? "good" : "bad",
+      evidenceNodeId: executionNode?.id,
+    },
+    ...failedAssertionBasisItems(locale, assertions),
+  ];
+  return {
+    summary,
+    items,
+    nextStep: passed
+      ? locale === "zh-CN"
+        ? "这项门禁的直接依据已经满足；继续核对同一场景的对照完整性与执行安全门禁。"
+        : "This gate is supported; continue with baseline completeness and execution-safety gates for the same scenario."
+      : locale === "zh-CN"
+        ? "打开下方未通过检查，核对预设规则、实际观察和它读取的原始回答。"
+        : "Open the failed check below to compare its declared rule, observed result, and source response.",
+  };
+}
+
+function baselineGateBasis(
+  locale: Locale,
+  node: SpineNode,
+  item: DashboardCase,
+  nodes: SpineNode[],
+): DecisionBasisCopy {
+  const baseline =
+    item.arms.find((arm) => arm.id === "old_skill") ??
+    item.arms.find((arm) => arm.id === "without_skill");
+  const baselineLabel = localizedArm(locale, baseline?.id);
+  if (!baseline) {
+    return {
+      summary:
+        locale === "zh-CN"
+          ? "没有找到旧版或不加载 Skill 的对照结果，因此不能进行公平对照。"
+          : "No old-Skill or without-Skill baseline was found, so a fair paired comparison is unavailable.",
+      items: [
+        {
+          id: `${node.id}:baseline-missing`,
+          title: locale === "zh-CN" ? "对照结果" : "Baseline result",
+          verdict: basisVerdict(locale, "bad"),
+          detail:
+            locale === "zh-CN"
+              ? "评测记录中缺少已声明的基线执行臂。"
+              : "The declared baseline arm is missing from the evaluation record.",
+          tone: "bad",
+        },
+      ],
+    };
+  }
+  const bindingErrors = baseline.binding_errors ?? [];
+  const forbiddenActions = baseline.forbidden_actions ?? [];
+  const sideEffects = baseline.side_effects ?? [];
+  const complete = baseline.complete && bindingErrors.length === 0;
+  const safe = forbiddenActions.length === 0 && sideEffects.length === 0;
+  const passed = complete && safe;
+  const executionNode = executionEvidenceNode(nodes, item.id, baseline.id);
+  return {
+    summary: locale === "zh-CN"
+      ? passed
+        ? `${baselineLabel}执行完整，保留 ${baseline.artifact_count} 份产物，且没有输入绑定错误、禁止操作或外部副作用，因此可作为公平对照。`
+        : `${baselineLabel}的执行、产物或安全证据不完整，因此当前不能作为公平对照。`
+      : passed
+        ? `${baselineLabel} completed with ${localizedCount(locale, baseline.artifact_count, "retained artifact")} and no binding, safety, or side-effect issue, so it is valid paired evidence.`
+        : `${baselineLabel} has incomplete execution, artifact, or safety evidence and cannot support a fair paired comparison.`,
+    items: [
+      {
+        id: `${node.id}:baseline-complete`,
+        title: locale === "zh-CN" ? "对照执行与产物" : "Baseline execution and artifacts",
+        verdict: basisVerdict(locale, complete ? "good" : "bad"),
+        detail: locale === "zh-CN"
+          ? complete
+            ? `执行已完成，保留 ${baseline.artifact_count} 份产物，输入绑定错误为 0。`
+            : `执行或产物不完整；记录到 ${bindingErrors.length} 项输入绑定错误。`
+          : complete
+            ? `Execution completed with ${localizedCount(locale, baseline.artifact_count, "retained artifact")} and no binding error.`
+            : `Execution or artifacts are incomplete; ${localizedCount(locale, bindingErrors.length, "binding error")} recorded.`,
+        tone: complete ? "good" : "bad",
+        evidenceNodeId: executionNode?.id,
+      },
+      {
+        id: `${node.id}:baseline-safety`,
+        title: locale === "zh-CN" ? "对照执行安全" : "Baseline execution safety",
+        verdict: basisVerdict(locale, safe ? "good" : "bad"),
+        detail: safetyDetail(locale, forbiddenActions, sideEffects),
+        tone: safe ? "good" : "bad",
+        evidenceNodeId: executionNode?.id,
+      },
+    ],
+    nextStep: locale === "zh-CN"
+      ? passed
+        ? "该门禁只确认对照证据可用，不代表候选版本身已经通过。"
+        : "先补齐或修复对照执行证据，再进行候选版与旧版比较。"
+      : passed
+        ? "This gate only validates the baseline evidence; it does not mean the candidate itself passed."
+        : "Complete or repair the baseline execution evidence before comparing candidate and baseline.",
+  };
+}
+
+function safetyGateBasis(
+  locale: Locale,
+  node: SpineNode,
+  item: DashboardCase,
+  nodes: SpineNode[],
+): DecisionBasisCopy {
+  const candidate = item.arms.find((arm) => arm.id === "with_skill");
+  const forbidden = candidate?.forbidden_actions ?? [];
+  const effects = candidate?.side_effects ?? [];
+  const safe = Boolean(candidate) && forbidden.length === 0 && effects.length === 0;
+  const executionNode = candidate
+    ? executionEvidenceNode(nodes, item.id, candidate.id)
+    : undefined;
+  return {
+    summary: locale === "zh-CN"
+      ? safe
+        ? "候选版执行记录中没有禁止操作或外部副作用，因此执行安全门禁通过。"
+        : "候选版执行记录中发现禁止操作、外部副作用，或缺少执行记录，因此执行安全门禁未通过。"
+      : safe
+        ? "The candidate execution contains no prohibited action or external side effect, so the execution-safety gate passed."
+        : "The candidate execution contains a prohibited action, external side effect, or missing execution record, so the execution-safety gate failed.",
+    items: [
+      {
+        id: `${node.id}:forbidden-actions`,
+        title: locale === "zh-CN" ? "禁止操作" : "Prohibited actions",
+        verdict: basisVerdict(locale, forbidden.length === 0 && candidate ? "good" : "bad"),
+        detail: forbidden.length === 0 && candidate
+          ? locale === "zh-CN" ? "未记录到禁止操作。" : "No prohibited action was recorded."
+          : forbidden.length > 0
+            ? forbidden.join("；")
+            : locale === "zh-CN" ? "缺少候选版执行记录。" : "Candidate execution record is missing.",
+        tone: forbidden.length === 0 && candidate ? "good" : "bad",
+        evidenceNodeId: executionNode?.id,
+      },
+      {
+        id: `${node.id}:side-effects`,
+        title: locale === "zh-CN" ? "外部副作用" : "External side effects",
+        verdict: basisVerdict(locale, effects.length === 0 && candidate ? "good" : "bad"),
+        detail: effects.length === 0 && candidate
+          ? locale === "zh-CN" ? "未记录到外部副作用。" : "No external side effect was recorded."
+          : effects.length > 0
+            ? effects.join("；")
+            : locale === "zh-CN" ? "缺少候选版执行记录。" : "Candidate execution record is missing.",
+        tone: effects.length === 0 && candidate ? "good" : "bad",
+        evidenceNodeId: executionNode?.id,
+      },
+    ],
+    nextStep: locale === "zh-CN"
+      ? "可打开 Agent 执行过程记录，核对系统记录的命令、能力调用与外部影响。"
+      : "Open the Agent execution record to inspect recorded commands, capability use, and external effects.",
+  };
+}
+
+function caseDecisionBasis(
+  locale: Locale,
+  node: SpineNode,
+  item: DashboardCase,
+  nodes: SpineNode[],
+): DecisionBasisCopy {
+  const candidate = item.arms.find((arm) => arm.id === "with_skill");
+  const assertions = candidate
+    ? assertionNodesForArm(nodes, item.id, candidate.id)
+    : [];
+  const passedAssertions = assertions.length > 0
+    ? assertions.filter((assertion) => isPassedStatus(assertion.status)).length
+    : candidate?.assertions.passed ?? 0;
+  const totalAssertions = assertions.length || candidate?.assertions.total || 0;
+  const failedAssertions = Math.max(0, totalAssertions - passedAssertions);
+  const executionNode = candidate
+    ? executionEvidenceNode(nodes, item.id, candidate.id)
+    : undefined;
+  const bindingErrors = candidate?.binding_errors ?? [];
+  const forbiddenActions = candidate?.forbidden_actions ?? [];
+  const sideEffects = candidate?.side_effects ?? [];
+  const complete = Boolean(candidate?.complete) && bindingErrors.length === 0;
+  const safe = Boolean(candidate) &&
+    forbiddenActions.length === 0 &&
+    sideEffects.length === 0;
+  const semanticPassed = item.semantic_assertions.every((assertion) => assertion.passed);
+  const passed = isPassedStatus(node.status);
+  const pairedEvidenceItems: DecisionBasisItem[] = item.arms
+    .filter((arm) => arm.id !== "with_skill")
+    .map((arm) => {
+      const binding = arm.binding_errors ?? [];
+      const forbidden = arm.forbidden_actions ?? [];
+      const effects = arm.side_effects ?? [];
+      const available =
+        arm.complete &&
+        binding.length === 0 &&
+        forbidden.length === 0 &&
+        effects.length === 0;
+      const execution = executionEvidenceNode(nodes, item.id, arm.id);
+      return {
+        id: `${node.id}:paired:${arm.id}`,
+        title:
+          locale === "zh-CN"
+            ? `${localizedArm(locale, arm.id)}证据`
+            : `${localizedArm(locale, arm.id)} evidence`,
+        verdict: basisVerdict(locale, available ? "good" : "bad"),
+        detail:
+          locale === "zh-CN"
+            ? `保留 ${arm.artifact_count} 份产物；输入绑定错误 ${binding.length} 项；禁止操作 ${forbidden.length} 项；外部副作用 ${effects.length} 项。`
+            : `${localizedCount(locale, arm.artifact_count, "retained artifact")}; ${localizedCount(locale, binding.length, "binding error")}; ${localizedCount(locale, forbidden.length, "prohibited action")}; ${localizedCount(locale, effects.length, "external side effect")}.`,
+        tone: available ? "good" : "bad",
+        evidenceNodeId: execution?.id,
+      };
+    });
+  const comparisonItems: DecisionBasisItem[] = [
+    ...(item.regressed
+      ? [
+          {
+            id: `${node.id}:regression`,
+            title: locale === "zh-CN" ? "新旧版质量对照" : "Candidate-baseline quality comparison",
+            verdict: basisVerdict(locale, "bad"),
+            detail:
+              locale === "zh-CN"
+                ? "成对证据确认候选版表现低于已接受基线。"
+                : "Paired evidence confirms that the candidate performs below the accepted baseline.",
+            tone: "bad" as const,
+          },
+        ]
+      : []),
+    ...(item.direction_disagreement
+      ? [
+          {
+            id: `${node.id}:direction-disagreement`,
+            title: locale === "zh-CN" ? "多轮判断一致性" : "Repeat consistency",
+            verdict: basisVerdict(locale, "bad"),
+            detail:
+              locale === "zh-CN"
+                ? "不同轮次或成对评审的方向不一致，不能形成稳定结论。"
+                : "Repeated or paired judgments point in different directions, so the result is unstable.",
+            tone: "bad" as const,
+          },
+        ]
+      : []),
+    ...(item.missing_objective_metrics.length > 0
+      ? [
+          {
+            id: `${node.id}:missing-objective-metrics`,
+            title: locale === "zh-CN" ? "客观指标" : "Objective metrics",
+            verdict: basisVerdict(locale, "bad"),
+            detail:
+              locale === "zh-CN"
+                ? `缺少：${item.missing_objective_metrics.join("、")}。`
+                : `Missing: ${item.missing_objective_metrics.join(", ")}.`,
+            tone: "bad" as const,
+          },
+        ]
+      : []),
+  ];
+  const summary = locale === "zh-CN"
+    ? passed
+      ? `候选版执行完整，发布级检查通过 ${passedAssertions}/${totalAssertions} 项，且对照、安全与语义证据没有阻塞项，因此场景通过。`
+      : failedAssertions > 0
+        ? `发布级检查通过 ${passedAssertions}/${totalAssertions} 项，其中 ${failedAssertions} 项未通过，因此场景未通过。`
+        : item.regressed
+          ? "候选版与旧版的成对证据确认发生退化，因此场景未通过。"
+          : item.direction_disagreement
+            ? "多轮或成对判断方向不一致，无法形成稳定结论，因此场景未通过。"
+            : "候选执行、对照、指标或语义证据仍有缺口，因此场景未通过。"
+    : passed
+      ? `Candidate execution completed, ${passedAssertions}/${totalAssertions} release checks passed, and no paired, safety, or semantic evidence blocked the scenario.`
+      : failedAssertions > 0
+        ? `${failedAssertions} of ${totalAssertions} release checks failed, so the scenario failed.`
+        : item.regressed
+          ? "Paired evidence confirmed a candidate regression, so the scenario failed."
+          : item.direction_disagreement
+            ? "Repeated or paired judgments disagree, so the scenario has no stable passing result."
+            : "Candidate, baseline, metric, or semantic evidence remains incomplete, so the scenario failed.";
+  const items: DecisionBasisItem[] = [
+    {
+      id: `${node.id}:execution`,
+      title: locale === "zh-CN" ? "候选版执行完整性" : "Candidate execution completeness",
+      verdict: basisVerdict(locale, complete ? "good" : "bad"),
+      detail: candidate
+        ? locale === "zh-CN"
+          ? `保留 ${candidate.artifact_count} 份产物，输入绑定错误 ${bindingErrors.length} 项。`
+          : `${localizedCount(locale, candidate.artifact_count, "retained artifact")}; ${localizedCount(locale, bindingErrors.length, "binding error")}.`
+        : locale === "zh-CN" ? "没有候选版执行记录。" : "No candidate execution record was found.",
+      tone: complete ? "good" : "bad",
+      evidenceNodeId: executionNode?.id,
+    },
+    {
+      id: `${node.id}:assertions`,
+      title: locale === "zh-CN" ? "发布级检查" : "Release-blocking checks",
+      verdict: basisVerdict(locale, failedAssertions === 0 && totalAssertions > 0 ? "good" : "bad"),
+      detail: locale === "zh-CN"
+        ? `通过 ${passedAssertions}/${totalAssertions} 项；${failedAssertions} 项未通过。`
+        : `${passedAssertions}/${totalAssertions} passed; ${localizedCount(locale, failedAssertions, "check")} failed.`,
+      tone: failedAssertions === 0 && totalAssertions > 0 ? "good" : "bad",
+    },
+    {
+      id: `${node.id}:safety`,
+      title: locale === "zh-CN" ? "执行安全" : "Execution safety",
+      verdict: basisVerdict(locale, safe ? "good" : "bad"),
+      detail: candidate
+        ? safetyDetail(
+            locale,
+            forbiddenActions,
+            sideEffects,
+          )
+        : locale === "zh-CN"
+          ? "缺少候选版执行记录，无法确认执行安全。"
+          : "Candidate execution evidence is missing, so execution safety cannot be confirmed.",
+      tone: safe ? "good" : "bad",
+      evidenceNodeId: executionNode?.id,
+    },
+    ...pairedEvidenceItems,
+    ...comparisonItems,
+    ...(item.semantic_assertions.length > 0
+      ? [
+          {
+            id: `${node.id}:semantic`,
+            title: locale === "zh-CN" ? "匿名语义评审" : "Blinded semantic review",
+            verdict: basisVerdict(locale, semanticPassed ? "good" : "bad"),
+            detail: locale === "zh-CN"
+              ? `${item.semantic_assertions.filter((assertion) => assertion.passed).length}/${item.semantic_assertions.length} 项语义检查通过。`
+              : `${item.semantic_assertions.filter((assertion) => assertion.passed).length}/${item.semantic_assertions.length} semantic checks passed.`,
+            tone: semanticPassed ? "good" as const : "bad" as const,
+            evidenceNodeId: nodes.find(
+              (candidateNode) =>
+                candidateNode.kind === "assertion" &&
+                candidateNode.parent_id === node.id &&
+                candidateNode.assertion_type === "semantic_pair",
+            )?.id,
+          },
+        ]
+      : []),
+    ...failedAssertionBasisItems(locale, assertions),
+  ];
+  return {
+    summary,
+    items,
+    nextStep: passed
+      ? locale === "zh-CN"
+        ? "场景证据已满足；返回本次评测运行，确认是否仍有其他失败门禁。"
+        : "This scenario is supported; return to the run and check for any other failed gate."
+      : locale === "zh-CN"
+        ? "优先打开标红的直接依据，确认是 Agent 输出缺陷、证据缺失，还是断言设计需要调整。"
+        : "Open the failed direct evidence first and distinguish an Agent defect, missing evidence, or assertion-design issue.",
+  };
+}
+
+export function describeDecisionBasis(
+  locale: Locale,
+  node: SpineNode,
+  item: DashboardCase | null,
+  nodes: SpineNode[],
+  cases: DashboardCase[] = item ? [item] : [],
+): DecisionBasisCopy | null {
+  if (node.kind === "run") {
+    const gates = nodes.filter(
+      (candidate) => candidate.kind === "gate" && candidate.parent_id === node.id,
+    );
+    if (gates.length === 0) return null;
+    const passedGates = gates.filter((gate) => isPassedStatus(gate.status)).length;
+    const failedGates = gates.length - passedGates;
+    const ordered = [...gates].sort(
+      (left, right) => Number(isPassedStatus(left.status)) - Number(isPassedStatus(right.status)),
+    );
+    return {
+      summary: locale === "zh-CN"
+        ? failedGates === 0
+          ? `${gates.length} 项发布门禁全部通过；本次运行没有门禁阻塞项。`
+          : `${gates.length} 项发布门禁中 ${passedGates} 项通过、${failedGates} 项未通过；任一门禁失败都会阻止发布。`
+        : failedGates === 0
+          ? `All ${gates.length} release gates passed; this run has no gate blocker.`
+          : `${passedGates}/${gates.length} release gates passed and ${failedGates} failed; any failed gate blocks release.`,
+      items: ordered.map((gate) => {
+        const passed = isPassedStatus(gate.status);
+        const semantic = describeEvidenceNode(locale, gate, cases);
+        return {
+          id: gate.id,
+          title: semantic.title,
+          verdict: basisVerdict(locale, passed ? "good" : "bad"),
+          detail: semantic.description,
+          tone: passed ? "good" : "bad",
+          evidenceNodeId: gate.id,
+        };
+      }),
+      nextStep: failedGates > 0
+        ? locale === "zh-CN"
+          ? "先打开未通过门禁；详情会继续指出对应场景和失败检查。"
+          : "Open a failed gate first; its detail identifies the scenario and failed check."
+        : undefined,
+    };
+  }
+  if (node.kind === "gate" && item) {
+    const caseId = caseIdForGate(node.label);
+    const gateId = caseId ? node.label.slice(caseId.length + 1) : node.label;
+    if (gateId === "candidate-required-assertions") {
+      return candidateGateBasis(locale, node, item, nodes);
+    }
+    if (gateId === "paired-baseline-complete") {
+      return baselineGateBasis(locale, node, item, nodes);
+    }
+    if (gateId === "forbidden-actions") {
+      return safetyGateBasis(locale, node, item, nodes);
+    }
+  }
+  if (node.kind === "gate") {
+    const passed = isPassedStatus(node.status);
+    const semantic = describeEvidenceNode(locale, node, cases);
+    return {
+      summary: semantic.description,
+      items: [
+        {
+          id: `${node.id}:result`,
+          title: locale === "zh-CN" ? "门禁结果" : "Gate result",
+          verdict: basisVerdict(locale, passed ? "good" : "bad"),
+          detail:
+            locale === "zh-CN"
+              ? semantic.description
+              : node.detail ?? semantic.description,
+          tone: passed ? "good" : "bad",
+        },
+      ],
+    };
+  }
+  if (node.kind === "case" && item) {
+    return caseDecisionBasis(locale, node, item, nodes);
+  }
+  if (node.kind === "assertion") {
+    const decision = describeAssertionDecision(locale, node);
+    if (!decision) return null;
+    const passed = isPassedStatus(node.status);
+    return {
+      summary: locale === "zh-CN"
+        ? passed
+          ? "实际观察满足预设规则，因此这项检查通过。"
+          : "实际观察未满足预设规则，因此这项检查未通过。"
+        : passed
+          ? "The observed evidence satisfies the declared rule, so this check passed."
+          : "The observed evidence does not satisfy the declared rule, so this check failed.",
+      items: [
+        {
+          id: `${node.id}:rule`,
+          title: locale === "zh-CN" ? "预设规则" : "Declared rule",
+          verdict: basisVerdict(locale, "neutral"),
+          detail: decision.rule,
+          tone: "neutral",
+        },
+        {
+          id: `${node.id}:observed`,
+          title: locale === "zh-CN" ? "实际观察" : "Observed result",
+          verdict: basisVerdict(locale, passed ? "good" : "bad"),
+          detail: decision.observed,
+          tone: passed ? "good" : "bad",
+        },
+        {
+          id: `${node.id}:impact`,
+          title: locale === "zh-CN" ? "对结论的影响" : "Decision impact",
+          verdict: locale === "zh-CN" ? "影响范围" : "Impact",
+          detail: decision.importance,
+          tone: "neutral",
+        },
+      ],
+      nextStep: locale === "zh-CN"
+        ? "继续阅读原始证据，确认自动检查读取了正确文件，且规则没有误判语义。"
+        : "Read the source evidence next to confirm the checker used the right file and did not misread the meaning.",
+    };
+  }
+  return null;
 }
 
 function casePrompt(locale: Locale, item: DashboardCase | null): string {
