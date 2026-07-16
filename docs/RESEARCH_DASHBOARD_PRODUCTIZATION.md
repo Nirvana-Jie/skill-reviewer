@@ -1,7 +1,7 @@
 # Skill Reviewer Evidence Dashboard 产品化调研与待办
 
 > 调研日期：2026-07-16
-> 范围：开发者与评测证据 Dashboard 的检索、导航、分享、新鲜度、导出、状态、可访问性和性能
+> 范围：开发者与评测证据 Dashboard 的检索、导航、分享、新鲜度、行动交接、状态、可访问性和性能
 > 证据策略：只引用产品官方文档、标准与本仓库一手代码/架构文档
 
 ## 结论摘要
@@ -14,9 +14,9 @@
 4. 复制可复核的证据引用，而不是复制一张无法验证的截图；
 5. 在键盘、屏幕阅读器和窄屏环境中完成同样的审阅流程；
 6. 在大规模 case、evidence node 和 diff 下保持交互响应；
-7. 始终保持只读边界，不在展示层执行 eval、批准发布或修改证据。
+7. 保持证据面只读；需要后续动作时，只向主 Agent 写入独立的可审计任务意图，不在展示层执行 eval、批准发布或修改证据。
 
-因此，下一阶段应先完成 **URL 深链接、统一筛选、新鲜度、复制/导出、完整状态、可访问性和性能门禁**；命令面板、本地 Saved Views 与开发者诊断面板随后建设；跨运行历史、全文索引、可信证据包与远程分享需要新的 projector/server contract。
+当前已落地 URL 深链接、中英文/主题、证据语义、VS Code 式文件树、Pierre diff、刷新降级、命令面板，以及基于状态机的行动中心。后续重点仍是大型列表性能门禁、远程身份与权限、跨运行历史、可信证据包和外部追加式可信锚点。
 
 这一排序与成熟工具的行为一致：GitHub 的筛选会同步到 URL 并可分享，Grafana 的链接保留当前变量上下文，GitHub Actions 日志可以搜索、下载并复制行级永久链接，Sentry 的详情页保留搜索上下文并支持复制事件引用。[GitHub Filters](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/filtering-and-searching-issues-and-pull-requests)；[Grafana dashboard links](https://grafana.com/docs/grafana/latest/visualizations/dashboards/build-dashboards/manage-dashboard-links/)；[GitHub Actions logs](https://docs.github.com/en/actions/how-tos/monitor-workflows/use-workflow-run-logs)；[Sentry Issue Details](https://docs.sentry.io/product/issues/issue-details/)
 
@@ -25,7 +25,7 @@
 本调研将外部产品作为交互先例，而不是直接复制它们的权限模型。仓库自己的事实边界优先：
 
 - React 只消费一个 `skill-reviewer.dashboard-data` read model；正文 diff 通过 digest-bound sidecar 按需读取。[DashboardData 类型](../dashboard/src/types.ts)
-- Dashboard 是 GET/HEAD-only 的展示面，POST 明确返回 `405 dashboard is read-only`。[本地 Dashboard server](../skills/skill-reviewer/scripts/serve_skill_dashboard.py)
+- Dashboard 的 evidence/diff/read-model 路由保持 GET/HEAD-only；唯一 POST 路由只在运行目录之外追加主 Agent 任务，不修改 evidence、Eval、授权或发布状态。[本地 Dashboard server](../skills/skill-reviewer/scripts/serve_skill_dashboard.py)
 - 截图不是证据，plan、lock、grading、decision 与 retained artifacts 才是事实来源。[QUALITY_ARCHITECTURE.md](./QUALITY_ARCHITECTURE.md#dashboard-product-boundary)
 - 显示语言、主题、筛选、布局和选中项属于 presentation state；它们不得写回或改写 evidence state。[QUALITY_ARCHITECTURE.md](./QUALITY_ARCHITECTURE.md#dashboard-product-boundary)
 
@@ -35,12 +35,13 @@
 
 | 维度 | 已有能力 | 关键缺口 | 依据 |
 |---|---|---|---|
-| 数据边界 | 单运行 read model、原子代切换、digest-bound diff sidecar、GET/HEAD-only | 没有跨运行索引或可信 evidence bundle route | [架构说明](./QUALITY_ARCHITECTURE.md#dashboard-product-boundary)、[server](../skills/skill-reviewer/scripts/serve_skill_dashboard.py) |
+| 数据边界 | 单运行 read model、原子代切换、digest-bound sidecar、只读证据面、外部摘要链任务账本 | 没有跨运行索引、可信 evidence bundle route 或远程 anti-replay 锚点 | [架构说明](./QUALITY_ARCHITECTURE.md#dashboard-product-boundary)、[server](../skills/skill-reviewer/scripts/serve_skill_dashboard.py) |
 | 导航 | split filter、case rail、evidence spine、diff 文件导航、focus mode | 选中 node、split、view、diff 文件与布局没有进入 URL，刷新/分享后丢失 | [App.tsx](../dashboard/src/App.tsx)、[DiffViewer.tsx](../dashboard/src/DiffViewer.tsx) |
 | 检索 | changed-file path filter | 没有跨 case/evidence/diff 的统一检索、状态 facets、结果计数和 Clear all | [DiffViewer.tsx](../dashboard/src/DiffViewer.tsx) |
 | 新鲜度 | 按 `refresh_interval_ms` 轮询，区分 connecting/live/stale | UI 不显示 last success/last attempt；无手动刷新；`generated_at` 虽在类型中存在，但 projector 当前写入 `null` | [App.tsx](../dashboard/src/App.tsx)、[types.ts](../dashboard/src/types.ts)、[skill_eval_runtime.py](../skills/skill-reviewer/scripts/skill_eval_runtime.py) |
 | 分享/导出 | 浏览器可直接访问 read model 和 sidecar | 没有 Copy permalink、Copy evidence reference、下载当前 projection 的显式入口 | [server](../skills/skill-reviewer/scripts/serve_skill_dashboard.py) |
 | 状态 | 初次 loading、部分 diff error/empty、连接状态 | 未完整区分 no-data、no-match、stale-with-data、invalid-contract、sidecar-integrity-error | [App.tsx](../dashboard/src/App.tsx)、[DiffViewer.tsx](../dashboard/src/DiffViewer.tsx) |
+| 行动交接 | 投影 `next_action`、三项候选判定、五类归因、五种主 Agent 任务与审计记录 | 任务仍是本地待消费意图；远程身份、领取/完成状态和外部可信锚点尚未产品化 | [ActionCenter.tsx](../dashboard/src/ActionCenter.tsx)、[action-center.md](../skills/skill-reviewer/references/action-center.md) |
 | 可访问性 | 多数按钮有可访问名称，locale 更新 document language | 复合列表没有统一方向键模型；无 skip link、命令帮助和完整 focus restoration；动态刷新反馈有限 | [App.tsx](../dashboard/src/App.tsx) |
 | 性能 | Pierre virtualization、worker pool、render cache、按选中文件加载 sidecar | case/evidence 列表仍是无界 DOM；缺少大型 fixture 与交互延迟门禁 | [DiffViewer.tsx](../dashboard/src/DiffViewer.tsx)、[Pierre Diffs](https://diffs.com/docs) |
 
@@ -62,7 +63,11 @@ URL 应保存稳定 ID 与有限枚举，让接收者恢复同一筛选、选中
 
 复制 URL、ID、digest 和 Markdown 引用是展示层操作；浏览器生成的 filtered summary 必须标为 `Derived view`。完整 evidence bundle 只有在后端按 allowlist 打包、绑定 manifest/digest 并验证权限后，才能称为可信证据包。Grafana 的 inspector 区分 raw data、JSON、request/response 和 error；GitHub Actions 将 retained artifacts 作为有权限约束的下载对象。[Grafana panel inspector](https://grafana.com/docs/grafana/latest/visualizations/panels-visualizations/panel-inspector/)；[GitHub workflow artifacts](https://docs.github.com/en/actions/concepts/workflows-and-actions/workflow-artifacts)
 
-### 5. 可访问性与性能是发布门禁，不是尾部优化
+### 5. 行动请求不是执行权限
+
+状态机 `next_action` 是 projector 输出，不由前端猜测。行动按钮只能把 run、Dashboard digest、前置 `next_action` 和证据 ID 写入外部任务账本；主 Agent 消费前必须重新校验。`authorize_audit` 只是请求人工授权，`request_release_confirmation` 只是请求人工发布确认，`propose_eval_change` 只产生建议。三者都不能因按钮点击自动跨越权限边界。
+
+### 6. 可访问性与性能是发布门禁，不是尾部优化
 
 所有功能必须可由键盘操作，焦点可见且不被遮挡，复合组件使用可预测的方向键模型，异步状态用克制的 live region 通知。长列表与大 diff 必须保持有限 DOM 和可响应的主线程。[WCAG 2.2](https://www.w3.org/TR/WCAG22/)；[WAI-ARIA Keyboard Interface](https://www.w3.org/WAI/ARIA/apg/practices/keyboard-interface/)；[Pierre Diffs](https://diffs.com/docs)；[INP](https://web.dev/articles/inp)
 
@@ -78,7 +83,7 @@ URL 应保存稳定 ID 与有限枚举，让接收者恢复同一筛选、选中
 
 | ID | Todo | 落地层 | 验收标准 | 官方依据 |
 |---|---|---|---|---|
-| M0 | 固化只读 action allowlist | 前端 + server tests | UI 只出现 navigate/filter/copy/download/reload/display actions；无 execute/rerun/approve/edit；非 GET/HEAD 仍失败 | [GitHub read artifact](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/download-workflow-artifacts)、[GitHub write rerun](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs) |
+| M0 | 固化证据/行动双平面协议 | projector + server + 前端 + tests | 证据路由拒绝 POST；唯一任务 POST 校验 run/next_action/action/evidence/idempotency；任务写在运行目录外且不能直接执行、审批或编辑 Eval | [GitHub read artifact](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/download-workflow-artifacts)、[GitHub write rerun](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs) |
 | M1 | URL 深链接与浏览器历史 | 前端 | 分享 URL 可恢复 run guard、split、query、node、view、diff、layout、wrap、focus；Back/Forward 可重放；非法参数安全回退；run mismatch 阻塞提示 | [GitHub Filters](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/filtering-and-searching-issues-and-pull-requests)、[Grafana links](https://grafana.com/docs/grafana/latest/visualizations/dashboards/build-dashboards/manage-dashboard-links/)、[HTML History API](https://html.spec.whatwg.org/multipage/nav-history-apis.html) |
 | M2 | 全局检索与结构化 facets | 前端 | 可按 case/node/diff 的 ID、label、purpose、path、status 检索；提供 split/status/kind/regressed/disagreement/binary 快捷筛选；显示 `x / y`、Clear all 和命名 query 的 no-result | [Primer Search](https://primer.style/product/scenario-patterns/search/)、[Sentry Issue Details](https://docs.sentry.io/product/issues/issue-details/) |
 | M3 | 明确的新鲜度与手动 Reload | 前端；projector 补 `generated_at` | 显示 evidence generated time（若未知明确写 unknown）、last successful load、连接状态与下次轮询；Reload 会取消旧请求；失败后保留最后一份已验证 read model | [Grafana refresh](https://grafana.com/docs/grafana/latest/visualizations/dashboards/use-dashboards/)、[Primer Loading](https://primer.style/product/ui-patterns/loading/) |
@@ -110,7 +115,7 @@ GitHub Command Palette 目前仍标为 public preview，因此它是可参考的
 | L4 | 可信 evidence bundle 下载 | allow-list manifest、每项 digest/size、bundle digest、权限与 retention | 浏览器生成 ZIP 不能证明来源完整性，也不能安全读取未投影 artifact | [GitHub artifact download](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/download-workflow-artifacts)、[GitHub artifacts](https://docs.github.com/en/actions/concepts/workflows-and-actions/workflow-artifacts) |
 | L5 | 跨运行比较与趋势 | 多 run read model、同一 metric/contract 的可比性声明、baseline identity | 单 run summary 无法可靠推导趋势；不能把不同 profile/eval scope 直接拼接 | [Grafana dashboards](https://grafana.com/docs/grafana/latest/visualizations/dashboards/)、[本仓库 evidence boundary](./QUALITY_ARCHITECTURE.md#dashboard-product-boundary) |
 | L6 | 远程分享与权限 | 身份认证、viewer authorization、审计日志、内容寻址 URL | localhost permalink 只复现本机上下文；分享不能绕过 evidence 权限 | [Grafana sharing authorization](https://grafana.com/docs/grafana/latest/dashboards/share-dashboards-panels/)、[GitHub artifact read access](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/download-workflow-artifacts) |
-| L7 | 协作批注 overlay | 独立写服务、author/time/source、immutable evidence pointer | 批注是新的可变数据，不属于 canonical evidence，也不能写入当前 GET-only workspace | [Sentry Issue Details](https://docs.sentry.io/product/issues/issue-details/)、[本地 server](../skills/skill-reviewer/scripts/serve_skill_dashboard.py) |
+| L7 | 协作批注 overlay | 独立写服务、author/time/source、immutable evidence pointer | 批注是新的可变数据，不属于 canonical evidence，也不能写入只读 evidence workspace；当前任务账本也不是通用批注系统 | [Sentry Issue Details](https://docs.sentry.io/product/issues/issue-details/)、[本地 server](../skills/skill-reviewer/scripts/serve_skill_dashboard.py) |
 
 ## 推荐 URL 状态模型
 
@@ -121,7 +126,7 @@ GitHub Command Palette 目前仍标为 public preview，因此它是可参考的
 &split=selection
 &q=status%3Afailed
 &node=<spine-node-id>
-&view=diff
+&view=action
 &diff=<dashboard-diff-id>
 &layout=split
 &wrap=1
@@ -134,7 +139,7 @@ GitHub Command Palette 目前仍标为 public preview，因此它是可参考的
 | `split` | known enum | `all/development/selection/audit`，非法值回退 `all` |
 | `q` | 用户输入 | 只过滤当前已授权 read model；长度设上限；复制链接时明确包含当前 query |
 | `node` | `spine[].id` | 恢复 Inspector 与 Evidence Spine selection |
-| `view` | known enum | `evidence/diff` |
+| `view` | known enum | `evidence/diff/action` |
 | `diff` | `diffs[].id` | 恢复选中文件；不用绝对 path 作为身份 |
 | `layout` | known enum | `split/unified` |
 | `wrap`、`focus` | boolean | 恢复文档展示状态 |
@@ -322,9 +327,10 @@ WCAG 明确要求 keyboard、focus order、focus visible/not obscured 与 status
 3. **Trust feedback**：重构 fetch state，加入 manual Reload、last success、stale/invalid taxonomy；projector 同步填充 `generated_at`；
 4. **Shareability**：Copy permalink、evidence reference、projection JSON 与 diagnostics；
 5. **Accessible interaction**：landmarks、skip link、roving focus、tabs/toolbar semantics、live region；
-6. **Scale gate**：大型 fixture、interaction budget；只有失败时才给 case/spine 上 virtualizer；
-7. **Efficiency layer**：只读 command palette、local Saved Views、diagnostics inspector；
-8. **Contract expansion**：generation identity、run history、全文索引、可信 evidence bundle、远程授权分享。
+6. **Action handoff**：投影 `next_action`、三项判定、失败归因与外部摘要链任务账本；
+7. **Scale gate**：大型 fixture、interaction budget；只有失败时才给 case/spine 上 virtualizer；
+8. **Efficiency layer**：只读 command palette、local Saved Views、diagnostics inspector；
+9. **Contract expansion**：generation identity、run history、任务领取/完成、外部可信锚点、全文索引、可信 evidence bundle、远程授权分享。
 
 这个顺序使每一步都建立在当前 immutable read model 上，不要求先引入新的写权限，也不会让产品化工作模糊 evidence authority。
 
@@ -334,7 +340,7 @@ WCAG 明确要求 keyboard、focus order、focus visible/not obscured 与 status
 
 | ID | 状态 | 已交付 / 剩余工作 |
 |---|---|---|
-| M0 | 已完成 | 顶栏、命令面板和错误恢复只包含 navigate/filter/copy/download/reload/display；没有 execute/rerun/approve/edit。server 的 GET/HEAD-only 门禁保持不变。 |
+| M0 | 已完成 | evidence/diff/read-model 路由保持 GET/HEAD-only；唯一 POST 只接受绑定 run、Dashboard digest、`expected_next_action`、allowlisted action 和 evidence ID 的任务请求，并写入运行目录外。没有 execute/approve/eval-mutation API。 |
 | M1 | 已完成 | `run/split/caseStatus/q/node/view/diff/layout/wrap/focus` 可解析、序列化、复制和通过 History API 重放；非法 enum 与超长输入安全回退；初始链接、Back/Forward 和轮询中出现的新 run 都受 run guard 保护。 |
 | M2 | 部分完成 | case rail 已有文本检索、split/status（passed/attention）筛选、结果计数、Clear filters；`Mod+K` 可跨 case、spine metadata、diff path 与只读操作检索。更细的 kind/regressed/disagreement/binary qualifier parser 仍保留为后续项。 |
 | M3 | 前端已完成 | browser 分开显示 projection generated time、last successful load、last failed attempt 与连接状态；手动刷新取消旧请求，失败保留 last-good projection；支持 pause/resume 和页面重新可见时验证。projector 的 authoritative `generated_at` 仍属于 L1。 |
@@ -348,6 +354,8 @@ WCAG 明确要求 keyboard、focus order、focus visible/not obscured 与 status
 | S4 | 等待 M7 | 是否虚拟化 case/spine 必须由大型 fixture 和实际交互预算决定。 |
 | S5 | 已完成 | pause/resume、visibility refresh、AbortController 与 last-good preservation 已交付。 |
 | S6 | 待完成 | pane resize、density 和 reset layout 尚未建设，优先级低于 M7 与 diagnostics。 |
+| A0 | 已完成 | Action Center 展示硬门禁、Pareto、实质提升，五类失败归因、语义化 `next_action`、五种状态约束任务和外部任务审计记录；中英文、明暗主题和 `view=action` 深链接均已接入。 |
+| A1 | 待后端契约 | 本地账本当前只记录 `requested`；跨设备身份、任务领取/完成/取消、主 Agent 消费回执和外部 append-only 锚点需要独立受权服务，不能由前端伪造。 |
 | L1–L7 | 契约待办 | generation identity、run history、全文索引、可信 evidence bundle、跨 run 比较、远程授权分享和批注 overlay 均未在前端伪造。 |
 
 对应实现集中在 `dashboard/src/dashboard-view-state.ts`、`dashboard/src/CommandPalette.tsx`、`dashboard/src/App.tsx`、`dashboard/src/DiffViewer.tsx` 与 `dashboard/src/dashboard-actions.ts`。Vitest 覆盖 URL round-trip/非法值、history replay、run guard、筛选、键盘命令面板、copy、freshness controls、sidecar retry 与 integrity diagnostics；生产构建和真实浏览器中英文、明暗主题、桌面/390px 窄屏检查也纳入本轮交付验证。

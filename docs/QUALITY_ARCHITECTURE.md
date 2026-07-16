@@ -18,7 +18,8 @@ The architecture therefore uses five independent evidence planes:
 2. **Design judgment** — rubric-backed semantic analysis.
 3. **Behavior evidence** — isolated paired execution and typed assertions.
 4. **Release decision** — hard gates plus Pareto non-regression.
-5. **Presentation** — a read-only Dashboard projected from evidence artifacts.
+5. **Presentation and handoff** — a read-only evidence Dashboard plus an
+   external task-intent ledger; neither may impersonate evidence or authority.
 
 ## Research inputs and project inferences
 
@@ -255,7 +256,10 @@ imply cryptographic one-shot audit.
 
 The Evidence Workbench is a React + TypeScript + Vite application with Vitest UI
 tests. Its read model accepts exactly the `skill-reviewer.dashboard-data`
-contract. Candidate/baseline source diffs are
+contract. Besides evidence, it projects the authoritative evolution
+`next_action`, the three-part selection conjunction, deterministic failure
+attribution, and a bounded action allowlist. These fields explain and route an
+existing decision; the browser does not recompute acceptance. Candidate/baseline source diffs are
 derived from locked runtime snapshots and rendered with `@pierre/diffs` using
 virtualization and an explicitly mounted worker-pool provider; they do not read
 mutable host paths. `dashboard-data.json` contains only diff metadata. Bounded
@@ -275,7 +279,7 @@ workbench than a generic metrics dashboard: a low-saturation canvas, flat pane
 chrome, hairline separators, compact system typography, and semantic color
 only for state. Evidence is shown as a navigable record, not a field of
 floating cards. At wide viewports the product uses a persistent case rail,
-central evidence/diff canvas, and fact inspector; diff focus mode gives the
+central evidence/diff/action canvas, and fact inspector; diff focus mode gives the
 document surface the full workspace without changing the evidence model.
 
 Display preferences are client-side presentation state, never evidence state.
@@ -297,9 +301,10 @@ host paths are never embedded. A mismatched or newly presented run blocks the
 view until the reviewer explicitly opens the current run. The browser records
 projection generation time separately from last successful transport and last
 attempt, preserves the last verified projection across refresh failures, and
-allows automatic refresh to be paused. The command palette is a read-only
-evidence locator: its allowlist is limited to navigation, filtering, copy,
-projection download, reload, locale, and theme actions.
+allows automatic refresh to be paused. The command palette is a navigation and
+presentation locator: its allowlist is limited to view navigation, filtering,
+copy, projection download, reload, locale, and theme actions. It can navigate
+to the Action Center but cannot submit a task implicitly.
 
 Browser-created downloads are named and described as projection JSON, not as a
 canonical evidence bundle. Portable evidence references bind the current run,
@@ -338,11 +343,28 @@ The layout follows the evidence chain:
 - Evidence Spine: run → gate → iteration → case → assertion → artifact;
 - Evidence/Diff Canvas: evidence spine plus a searchable, virtualized,
   split/unified candidate diff;
+- Action Center: hard gates + Pareto + material improvement, five-way blocker
+  attribution, state-machine next action, and lead-Agent task handoff;
 - Inspector: selected evidence, paired arms, provenance, and limitations;
 - Focus mode: a document-first diff surface with nonessential panes removed.
 
-The local server accepts GET and HEAD only. `dashboard-data.json` is served with
-`no-store`; static assets may be cached briefly. A screenshot is not evidence:
+The evidence plane accepts GET and HEAD only. The sole POST route is
+`/dashboard-action-requests`, a separate control-plane gateway. It validates a
+small JSON contract, exact run ID, exact expected `next_action`, current action
+availability, same-origin browser requests, idempotency key, and the exact
+projected evidence-ID list. It then appends an immutable, digest-chained task to a dedicated directory
+outside the run workspace. The record is owned by `lead_agent` and binds the
+current Dashboard digest. It does not execute work, advance evolution,
+authorize audit, confirm release, edit Eval, or edit evidence. The task audit
+log is exposed read-only at `/dashboard-action-requests.json`.
+
+The task chain is a local/trusted audit record, not a remote anti-replay anchor.
+The lead Agent must revalidate the authoritative state before consuming it;
+stale `expected_next_action` values are rejected. Eval-change tasks are proposal
+requests only and remain subject to explicit user confirmation and a new lock.
+
+`dashboard-data.json` and task responses are served with `no-store`; static
+assets may be cached briefly. A screenshot and an action task are not evidence:
 the plan, lock, grading, decisions, and output files remain the source of truth.
 Cross-run projection validates authority, baseline, decision digests, exact
 authorized plan path/digest, bound evidence, and the state transition sequence

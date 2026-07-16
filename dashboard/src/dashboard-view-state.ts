@@ -1,6 +1,6 @@
 export type DashboardSplit = "all" | "development" | "selection" | "audit";
 export type CaseStatusFilter = "all" | "passed" | "attention";
-export type DashboardCanvasView = "evidence" | "diff";
+export type DashboardCanvasView = "evidence" | "diff" | "action";
 export type DashboardDiffLayout = "split" | "unified";
 
 export interface DashboardViewState {
@@ -36,7 +36,7 @@ const splitValues: DashboardSplit[] = [
   "audit",
 ];
 const caseStatusValues: CaseStatusFilter[] = ["all", "passed", "attention"];
-const canvasValues: DashboardCanvasView[] = ["evidence", "diff"];
+const canvasValues: DashboardCanvasView[] = ["evidence", "diff", "action"];
 const diffLayoutValues: DashboardDiffLayout[] = ["split", "unified"];
 
 function enumValue<T extends string>(

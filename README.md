@@ -46,8 +46,8 @@ Most "skill reviews" in the wild are vibes. `skill-reviewer` encodes the review 
 - **local snapshots** → `evals/local-skill-review-snapshot.json`
 - **executable eval runtime** → `scripts/skill_eval_runtime.py` (compile, lock,
   grade, decide, evolve, project)
-- **evidence product** → React/Vite/Vitest `dashboard/` with a read-only local
-  server
+- **evidence product** → React/Vite/Vitest `dashboard/` with a read-only
+  evidence plane and an external audited lead-Agent task gateway
 
 Change the rubric, re-run the fixtures and local snapshots, ship. No re-reading 300 lines of prose to check whether your "make it stricter" tweak quietly broke the positive cases.
 
@@ -67,7 +67,7 @@ Change the rubric, re-run the fixtures and local snapshots, ship. No re-reading 
 | Subagent effect verification | Paired `with_skill` / baseline runs with digests, retained evidence, and explicit verification levels |
 | Executable eval contract | Strict `skill-reviewer.evals` contract; an invalid present manifest blocks release instead of being skipped |
 | Bounded evolution | Development / selection / one-shot opaque audit, max 3 rounds, hard gates + Pareto improvement, query authorization and candidate lineage |
-| Evidence Dashboard | React + TypeScript + Vite evidence workbench consuming `dashboard-data.json`; no execute/approve API |
+| Evidence Dashboard | React + TypeScript + Vite evidence workbench; projects `next_action` and creates external lead-Agent tasks without execute/approve/eval-mutation authority |
 | Full vs focused review      | Same 11-section shape; unrelated sections collapse to `N/A — focused review of <artifact>` |
 | Paste-ready rewrites        | `Suggested Rewrites` outputs runnable YAML / Markdown |
 | i18n                        | Branch-selected templates + English-normalized snapshot extraction |
@@ -179,7 +179,9 @@ python3 skills/skill-reviewer/scripts/skill_eval_runtime.py project-dashboard \
   --state /tmp/skill-reviewer-control/evolution-state.json \
   --output /tmp/skill-reviewer-run/dashboard-data.json
 pnpm dashboard:build
-pnpm dashboard:serve -- --workspace /tmp/skill-reviewer-run
+pnpm dashboard:serve -- \
+  --workspace /tmp/skill-reviewer-run \
+  --task-root /tmp/skill-reviewer-action-tasks
 ```
 
 The Dashboard renders the candidate/baseline runtime-surface diff from locked
@@ -191,11 +193,22 @@ bytes on every local-server response; the 512 KiB rule is applied to each
 parsed UTF-8 side, not to JSON-escaped file size. A mounted worker-pool provider
 moves syntax highlighting off the main thread, and
 virtualization avoids an unbounded DOM. This display cap is not a release diff
-size gate. The Dashboard remains a read-only evidence surface, and
+size gate. The Dashboard evidence plane remains read-only, and
 `audit-passed` still requires an explicit user release decision.
 
+For evolution runs, the Action Center projects the exact state-machine
+`next_action` alongside the three conjunctive selection conditions: all hard
+gates, Pareto non-regression, and material primary-objective improvement. It
+routes retained failure signals to Skill, Eval, execution environment, missing
+evidence, or a human decision, then exposes only actions valid in the current
+state. A click appends a digest-chained task for the lead Agent under
+`--task-root`; it does not execute work, advance state, authorize audit,
+confirm release, or change `evals.json`. Eval actions are proposals and still
+require explicit user confirmation plus a new lock. See
+[`references/action-center.md`](./skills/skill-reviewer/references/action-center.md).
+
 The UI is a compact three-pane workbench rather than a card dashboard: case
-navigation on the left, the evidence or document diff in the center, and a
+navigation on the left, the evidence, document diff, or Action Center in the center, and a
 fact inspector on the right. The diff surface supports changed-file search,
 file navigation, split/unified layouts, line wrapping, and a distraction-free
 focus mode. Only the selected sidecar is fetched, only languages present in the
@@ -213,7 +226,7 @@ The document renderer changes its syntax theme with the surrounding workbench.
 
 Review context is shareable without turning the URL into evidence storage. The
 Dashboard records the run guard, split/status filters, bounded query, selected
-evidence or diff ID, diff layout, wrapping, and focus mode as URL presentation
+evidence, diff, or Action Center view, diff layout, wrapping, and focus mode as URL presentation
 state. A permalink that names another run is blocked instead of silently
 showing the server's current run, and browser Back/Forward replays review
 navigation. `Mod+K` opens a read-only evidence locator across cases, projected

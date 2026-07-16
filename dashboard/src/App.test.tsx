@@ -162,6 +162,106 @@ const data: DashboardData = {
     ],
     rejected_candidates: [{ round: 1, status: "no-change" }],
   },
+  action_center: {
+    next_action: "authorize_audit",
+    owner: "lead_agent",
+    acceptance: {
+      status: "accepted",
+      accepted: true,
+      decision_run_id: "run-product-test",
+      criteria: [
+        {
+          id: "hard_gates",
+          status: "satisfied",
+          passed: 4,
+          total: 4,
+          evidence_ids: ["gate:safety"],
+        },
+        {
+          id: "pareto",
+          status: "satisfied",
+          passed: 1,
+          total: 1,
+          evidence_ids: ["case:selection-quality"],
+        },
+        {
+          id: "material_improvement",
+          status: "satisfied",
+          passed: 1,
+          total: 1,
+          evidence_ids: ["case:selection-quality"],
+        },
+      ],
+    },
+    attribution: {
+      primary: "human",
+      items: [
+        { id: "skill", status: "clear", signals: [], evidence_ids: [] },
+        { id: "eval", status: "clear", signals: [], evidence_ids: [] },
+        {
+          id: "execution_environment",
+          status: "clear",
+          signals: [],
+          evidence_ids: [],
+        },
+        { id: "evidence", status: "clear", signals: [], evidence_ids: [] },
+        {
+          id: "human",
+          status: "waiting",
+          signals: ["audit_authorization_required"],
+          evidence_ids: [],
+        },
+      ],
+    },
+    actions: [
+      {
+        id: "generate_candidate",
+        available: false,
+        recommended: false,
+        owner: "lead_agent",
+        human_confirmation_required: false,
+        evidence_ids: [],
+      },
+      {
+        id: "rerun_execution",
+        available: false,
+        recommended: false,
+        owner: "lead_agent",
+        human_confirmation_required: false,
+        evidence_ids: [],
+      },
+      {
+        id: "propose_eval_change",
+        available: false,
+        recommended: false,
+        owner: "lead_agent",
+        human_confirmation_required: true,
+        evidence_ids: [],
+      },
+      {
+        id: "authorize_audit",
+        available: true,
+        recommended: true,
+        owner: "lead_agent",
+        human_confirmation_required: true,
+        evidence_ids: ["gate:safety", "case:selection-quality"],
+      },
+      {
+        id: "request_release_confirmation",
+        available: false,
+        recommended: false,
+        owner: "lead_agent",
+        human_confirmation_required: true,
+        evidence_ids: [],
+      },
+    ],
+    task_gateway: {
+      request_endpoint: "/dashboard-action-requests",
+      audit_endpoint: "/dashboard-action-requests.json",
+      evidence_mutation: false,
+      eval_mutation: false,
+    },
+  },
   cases: [
     {
       id: "selection-quality",
@@ -316,7 +416,7 @@ describe("EvidenceDashboard", () => {
     );
   });
 
-  it("exposes live release evidence without execution controls", async () => {
+  it("exposes live release evidence without direct execution controls", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -412,6 +512,115 @@ describe("EvidenceDashboard", () => {
         "cases/selection-quality/with_skill/repeat-1/outputs/response.md",
       ).length,
     ).toBeGreaterThan(0);
+  });
+
+  it("projects the next action and creates only an audited lead-Agent task", async () => {
+    const task = {
+      contract: "skill-reviewer.dashboard-action-task" as const,
+      id: "task-audit-0001",
+      sequence: 1,
+      created_at: "2026-07-16T06:30:00+00:00",
+      previous_digest: null,
+      run_id: data.run.id,
+      dashboard_digest: "7".repeat(64),
+      expected_next_action: "authorize_audit",
+      action_id: "authorize_audit" as const,
+      owner: "lead_agent" as const,
+      requested_by: "human_reviewer" as const,
+      status: "requested" as const,
+      human_confirmation_required: true,
+      evidence_ids: ["gate:safety", "case:selection-quality"],
+      idempotency_key: "authorize-audit-test",
+      digest: "8".repeat(64),
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/dashboard-action-requests.json") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            contract: "skill-reviewer.dashboard-action-task-log",
+            run_id: data.run.id,
+            owner: "lead_agent",
+            evidence_mutation: false,
+            eval_mutation: false,
+            tasks: [],
+          }),
+        };
+      }
+      if (url === "/dashboard-action-requests" && init?.method === "POST") {
+        const request = JSON.parse(String(init.body));
+        return {
+          ok: true,
+          status: 201,
+          json: async () => ({
+            contract: "skill-reviewer.dashboard-action-task-response",
+            created: true,
+            task: {
+              ...task,
+              expected_next_action: request.expected_next_action,
+              action_id: request.action_id,
+              evidence_ids: request.evidence_ids,
+              idempotency_key: request.idempotency_key,
+            },
+          }),
+        };
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithPreferences(<EvidenceDashboard data={data} connectionState="live" />);
+    fireEvent.click(screen.getByRole("tab", { name: "Action center" }));
+
+    expect(
+      screen.getByRole("heading", { name: "Can this candidate be accepted?" }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("Hard gates").length).toBeGreaterThan(0);
+    expect(screen.getByText("Pareto admissibility")).toBeInTheDocument();
+    expect(screen.getByText("Material improvement")).toBeInTheDocument();
+    expect(screen.getByText("Primary attribution: Human decision")).toBeInTheDocument();
+    expect(screen.getAllByText("Request audit authorization").length).toBeGreaterThan(0);
+    expect(
+      screen.getByText("Buttons create tasks; they do not execute work or change evidence.", {
+        exact: false,
+      }),
+    ).toBeInTheDocument();
+    await screen.findByText("No action task has been requested for this run.");
+
+    const createButton = screen.getByRole("button", {
+      name: "Create lead-Agent task",
+    });
+    fireEvent.click(createButton);
+
+    expect(await screen.findByText("Requested")).toBeInTheDocument();
+    const postCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url) === "/dashboard-action-requests" && init?.method === "POST",
+    );
+    expect(postCall).toBeTruthy();
+    const body = JSON.parse(String(postCall?.[1]?.body));
+    expect(body).toEqual(
+      expect.objectContaining({
+        contract: "skill-reviewer.dashboard-action-request",
+        run_id: data.run.id,
+        action_id: "authorize_audit",
+        expected_next_action: "authorize_audit",
+        evidence_ids: ["gate:safety", "case:selection-quality"],
+        idempotency_key: expect.any(String),
+      }),
+    );
+    expect(body).not.toHaveProperty("eval");
+    expect(body).not.toHaveProperty("evidence");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Switch to Simplified Chinese" }),
+    );
+    expect(screen.getByText("这个候选可以接受吗？")).toBeInTheDocument();
+    expect(screen.getAllByText("状态机下一步").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("由主 Agent 负责执行").length).toBeGreaterThan(0);
+    expect(screen.getByText("evals.json 保持不可变")).toBeInTheDocument();
   });
 
   it("separates evidence hierarchy disclosure from opening inspector details", () => {

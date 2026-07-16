@@ -4829,6 +4829,307 @@ def _dashboard_evidence_fields(
     }
 
 
+def _dashboard_action_center(
+    *,
+    state: dict[str, Any] | None,
+    decisions: list[dict[str, Any]],
+    case_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Project a control-plane handoff without granting mutation authority."""
+    selection_decision = next(
+        (
+            decision
+            for decision in reversed(decisions)
+            if decision.get("phase") == "selection"
+        ),
+        None,
+    )
+    decision_status = (
+        str(selection_decision.get("status"))
+        if isinstance(selection_decision, dict)
+        else "pending"
+    )
+    hard_gates = (
+        [
+            gate
+            for gate in selection_decision.get("hard_gates", [])
+            if isinstance(gate, dict)
+        ]
+        if isinstance(selection_decision, dict)
+        else []
+    )
+    objectives = (
+        [
+            objective
+            for objective in selection_decision.get("objectives", [])
+            if isinstance(objective, dict)
+        ]
+        if isinstance(selection_decision, dict)
+        else []
+    )
+    primary_objectives = [
+        objective for objective in objectives if objective.get("primary") is not False
+    ]
+    hard_gates_passed = sum(gate.get("passed") is True for gate in hard_gates)
+    non_regressed = sum(
+        objective.get("non_regressed") is True for objective in objectives
+    )
+    materially_improved = sum(
+        objective.get("materially_improved") is True
+        for objective in primary_objectives
+    )
+
+    def criterion_status(*, passed: bool | None, total: int) -> str:
+        if passed is None or total == 0:
+            return "pending"
+        return "satisfied" if passed else "failed"
+
+    acceptance = {
+        "status": decision_status,
+        "accepted": selection_decision.get("accepted")
+        if isinstance(selection_decision, dict)
+        else None,
+        "decision_run_id": selection_decision.get("run_id")
+        if isinstance(selection_decision, dict)
+        else None,
+        "criteria": [
+            {
+                "id": "hard_gates",
+                "status": criterion_status(
+                    passed=selection_decision.get("hard_gates_passed")
+                    if isinstance(selection_decision, dict)
+                    else None,
+                    total=len(hard_gates),
+                ),
+                "passed": hard_gates_passed,
+                "total": len(hard_gates),
+                "evidence_ids": [
+                    f"gate:{gate.get('id')}" for gate in hard_gates
+                ],
+            },
+            {
+                "id": "pareto",
+                "status": criterion_status(
+                    passed=selection_decision.get("pareto_admissible")
+                    if isinstance(selection_decision, dict)
+                    else None,
+                    total=len(objectives),
+                ),
+                "passed": non_regressed,
+                "total": len(objectives),
+                "evidence_ids": [
+                    f"case:{objective.get('case_id')}" for objective in objectives
+                ],
+            },
+            {
+                "id": "material_improvement",
+                "status": criterion_status(
+                    passed=selection_decision.get("material_improvement")
+                    if isinstance(selection_decision, dict)
+                    else None,
+                    total=len(primary_objectives),
+                ),
+                "passed": materially_improved,
+                "total": len(primary_objectives),
+                "evidence_ids": [
+                    f"case:{objective.get('case_id')}"
+                    for objective in primary_objectives
+                ],
+            },
+        ],
+    }
+
+    next_action = str(state.get("next_action")) if state else "review_evidence"
+    signals: dict[str, list[str]] = {
+        "skill": [],
+        "eval": [],
+        "execution_environment": [],
+        "evidence": [],
+        "human": [],
+    }
+    evidence_ids: dict[str, set[str]] = {key: set() for key in signals}
+    for case in case_rows:
+        case_id = str(case.get("id"))
+        candidate = next(
+            (
+                arm
+                for arm in case.get("arms", [])
+                if isinstance(arm, dict) and arm.get("id") == "with_skill"
+            ),
+            None,
+        )
+        arms = [arm for arm in case.get("arms", []) if isinstance(arm, dict)]
+        if any(arm.get("binding_errors") for arm in arms):
+            signals["execution_environment"].append("binding_error")
+            evidence_ids["execution_environment"].add(f"case:{case_id}")
+        if not isinstance(candidate, dict) or candidate.get("complete") is not True:
+            signals["evidence"].append("candidate_evidence_incomplete")
+            evidence_ids["evidence"].add(f"case:{case_id}")
+        elif candidate.get("passed") is not True:
+            signals["skill"].append("required_assertion_failed")
+            evidence_ids["skill"].add(f"case:{case_id}")
+        if isinstance(candidate, dict) and (
+            candidate.get("forbidden_actions") or candidate.get("side_effects")
+        ):
+            signals["skill"].append("unsafe_behavior_observed")
+            evidence_ids["skill"].add(f"case:{case_id}")
+        if case.get("regressed") is True:
+            signals["skill"].append("objective_regressed")
+            evidence_ids["skill"].add(f"case:{case_id}")
+        if case.get("direction_disagreement") is True:
+            signals["skill"].append("stochastic_direction_disagreement")
+            evidence_ids["skill"].add(f"case:{case_id}")
+        if case.get("missing_objective_metrics"):
+            signals["eval"].append("objective_metric_unavailable")
+            evidence_ids["eval"].add(f"case:{case_id}")
+        for arm in arms:
+            if arm.get("id") != "with_skill" and arm.get("complete") is not True:
+                signals["evidence"].append("baseline_evidence_incomplete")
+                evidence_ids["evidence"].add(f"case:{case_id}")
+
+    if isinstance(selection_decision, dict):
+        if selection_decision.get("pareto_admissible") is False and objectives:
+            signals["skill"].append("pareto_regression")
+            evidence_ids["skill"].update(
+                f"case:{objective.get('case_id')}" for objective in objectives
+            )
+        if (
+            selection_decision.get("material_improvement") is False
+            and primary_objectives
+        ):
+            signals["skill"].append("material_improvement_missing")
+            evidence_ids["skill"].update(
+                f"case:{objective.get('case_id')}"
+                for objective in primary_objectives
+            )
+        if not objectives:
+            signals["eval"].append("objective_evidence_missing")
+        for gate in hard_gates:
+            if gate.get("passed") is True:
+                continue
+            gate_id = str(gate.get("id"))
+            if gate_id.endswith(":metric-present"):
+                signals["eval"].append("declared_metric_missing")
+                evidence_ids["eval"].add(f"gate:{gate_id}")
+            elif ":paired-" in gate_id or gate_id.endswith(":evidence-present"):
+                signals["evidence"].append("paired_evidence_missing")
+                evidence_ids["evidence"].add(f"gate:{gate_id}")
+
+    if next_action == "authorize_audit":
+        signals["human"].append("audit_authorization_required")
+    elif next_action == "request_user_release":
+        signals["human"].append("release_confirmation_required")
+
+    for category in signals:
+        signals[category] = sorted(set(signals[category]))
+
+    if signals["human"]:
+        primary_attribution: str | None = "human"
+    elif signals["execution_environment"]:
+        primary_attribution = "execution_environment"
+    elif signals["evidence"]:
+        primary_attribution = "evidence"
+    elif signals["skill"]:
+        primary_attribution = "skill"
+    elif signals["eval"]:
+        primary_attribution = "eval"
+    else:
+        primary_attribution = None
+
+    attribution_items = []
+    for category in ("skill", "eval", "execution_environment", "evidence", "human"):
+        if category == primary_attribution:
+            status = "waiting" if category == "human" else "primary"
+        elif signals[category]:
+            status = "contributing"
+        else:
+            status = "clear"
+        attribution_items.append(
+            {
+                "id": category,
+                "status": status,
+                "signals": signals[category],
+                "evidence_ids": sorted(evidence_ids[category]),
+            }
+        )
+
+    failed_evidence_ids = sorted(
+        {
+            evidence_id
+            for category_ids in evidence_ids.values()
+            for evidence_id in category_ids
+        }
+    )
+    acceptance_evidence_ids = sorted(
+        {
+            evidence_id
+            for criterion in acceptance["criteria"]
+            for evidence_id in criterion["evidence_ids"]
+        }
+    )
+    action_requirements = {
+        "generate_candidate": next_action == "propose_candidate",
+        "rerun_execution": next_action
+        in {"run_authorized_selection", "run_authorized_audit"},
+        "propose_eval_change": bool(signals["eval"])
+        and decision_status in {"rejected", "inconclusive", "no-change"},
+        "authorize_audit": next_action == "authorize_audit",
+        "request_release_confirmation": next_action == "request_user_release",
+    }
+    recommended_action = {
+        "propose_candidate": "generate_candidate",
+        "run_authorized_selection": "rerun_execution",
+        "run_authorized_audit": "rerun_execution",
+        "authorize_audit": "authorize_audit",
+        "request_user_release": "request_release_confirmation",
+    }.get(next_action)
+    if primary_attribution == "eval" and action_requirements["propose_eval_change"]:
+        recommended_action = "propose_eval_change"
+
+    actions = []
+    for action_id in (
+        "generate_candidate",
+        "rerun_execution",
+        "propose_eval_change",
+        "authorize_audit",
+        "request_release_confirmation",
+    ):
+        actions.append(
+            {
+                "id": action_id,
+                "available": action_requirements[action_id],
+                "recommended": action_id == recommended_action,
+                "owner": "lead_agent",
+                "human_confirmation_required": action_id
+                in {
+                    "propose_eval_change",
+                    "authorize_audit",
+                    "request_release_confirmation",
+                },
+                "evidence_ids": acceptance_evidence_ids
+                if action_id in {"authorize_audit", "request_release_confirmation"}
+                else failed_evidence_ids,
+            }
+        )
+
+    return {
+        "next_action": next_action,
+        "owner": "lead_agent",
+        "acceptance": acceptance,
+        "attribution": {
+            "primary": primary_attribution,
+            "items": attribution_items,
+        },
+        "actions": actions,
+        "task_gateway": {
+            "request_endpoint": "/dashboard-action-requests",
+            "audit_endpoint": "/dashboard-action-requests.json",
+            "evidence_mutation": False,
+            "eval_mutation": False,
+        },
+    }
+
+
 def project_dashboard(
     *, workspace: Path, output: Path, state_path: Path | None = None
 ) -> dict[str, Any]:
@@ -5427,6 +5728,11 @@ def project_dashboard(
             if state
             else [],
         },
+        "action_center": _dashboard_action_center(
+            state=state,
+            decisions=decisions,
+            case_rows=case_rows,
+        ),
         "cases": case_rows,
         "diffs": skill_diffs,
         "iterations": decisions,

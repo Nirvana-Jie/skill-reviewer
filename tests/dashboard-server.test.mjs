@@ -1,7 +1,14 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,7 +36,7 @@ function sha256Text(content) {
 }
 
 describe("serve_skill_dashboard.py", () => {
-  it("validates the read model and static build without exposing writes", () => {
+  it("keeps evidence read-only and reports the external action task plane", () => {
     const root = mkdtempSync(join(tmpdir(), "skill-reviewer-dashboard-server-"));
     try {
       const workspace = join(root, "workspace");
@@ -61,8 +68,10 @@ describe("serve_skill_dashboard.py", () => {
       expect(JSON.parse(result.stdout)).toEqual(
         expect.objectContaining({
           ok: true,
-          read_only: true,
+          evidence_read_only: true,
+          action_requests_enabled: true,
           run_id: "run-check",
+          action_task_count: 0,
         }),
       );
     } finally {
@@ -160,6 +169,175 @@ describe("serve_skill_dashboard.py", () => {
         (await fetch(`${report.url}/dashboard-evidence/${"b".repeat(24)}.json`))
           .status,
       ).toBe(400);
+    } finally {
+      if (child && child.exitCode === null) {
+        child.kill("SIGTERM");
+        await once(child, "exit");
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 10_000);
+
+  it("creates idempotent, digest-bound lead-agent tasks outside evidence", async () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-dashboard-server-"));
+    let child;
+    try {
+      const workspace = join(root, "workspace");
+      const staticRoot = join(root, "dist");
+      const taskRoot = join(root, "action-tasks");
+      const model = {
+        contract: "skill-reviewer.dashboard-data",
+        run: { id: "run-action" },
+        spine: [
+          { id: "case:failed-case", kind: "case", status: "failed" },
+        ],
+        action_center: {
+          next_action: "propose_candidate",
+          owner: "lead_agent",
+          actions: [
+            {
+              id: "generate_candidate",
+              available: true,
+              owner: "lead_agent",
+              human_confirmation_required: false,
+              evidence_ids: ["case:failed-case"],
+            },
+          ],
+        },
+      };
+      write(staticRoot, "index.html", "<!doctype html><title>Evidence Lab</title>");
+      write(workspace, "dashboard-data.json", JSON.stringify(model));
+      child = spawn(
+        python,
+        [
+          server,
+          "--workspace",
+          workspace,
+          "--static-root",
+          staticRoot,
+          "--task-root",
+          taskRoot,
+          "--port",
+          "0",
+        ],
+        { cwd: repoRoot, stdio: ["ignore", "pipe", "pipe"] },
+      );
+      let stdout = "";
+      let stderr = "";
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      const report = await new Promise((resolveReport, rejectReport) => {
+        child.stdout.setEncoding("utf8");
+        child.stdout.on("data", (chunk) => {
+          stdout += chunk;
+          const newline = stdout.indexOf("\n");
+          if (newline < 0) return;
+          try {
+            resolveReport(JSON.parse(stdout.slice(0, newline)));
+          } catch (error) {
+            rejectReport(error);
+          }
+        });
+        child.once("exit", (code) => {
+          rejectReport(new Error(`dashboard server exited early (${code}): ${stderr}`));
+        });
+      });
+
+      const request = {
+        contract: "skill-reviewer.dashboard-action-request",
+        run_id: "run-action",
+        action_id: "generate_candidate",
+        expected_next_action: "propose_candidate",
+        evidence_ids: ["case:failed-case"],
+        idempotency_key: "test-action-0001",
+      };
+      const create = await fetch(`${report.url}/dashboard-action-requests`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+      });
+      expect(create.status).toBe(201);
+      const created = await create.json();
+      expect(created).toEqual(
+        expect.objectContaining({
+          created: true,
+          task: expect.objectContaining({
+            action_id: "generate_candidate",
+            owner: "lead_agent",
+            requested_by: "human_reviewer",
+            status: "requested",
+            dashboard_digest: expect.stringMatching(/^[a-f0-9]{64}$/),
+            digest: expect.stringMatching(/^[a-f0-9]{64}$/),
+          }),
+        }),
+      );
+      const duplicate = await fetch(`${report.url}/dashboard-action-requests`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+      });
+      expect(duplicate.status).toBe(200);
+      expect((await duplicate.json()).created).toBe(false);
+
+      const logResponse = await fetch(
+        `${report.url}/dashboard-action-requests.json`,
+      );
+      expect(logResponse.status).toBe(200);
+      expect(logResponse.headers.get("cache-control")).toBe("no-store");
+      const log = await logResponse.json();
+      expect(log).toEqual(
+        expect.objectContaining({
+          owner: "lead_agent",
+          evidence_mutation: false,
+          eval_mutation: false,
+          tasks: [expect.objectContaining({ id: created.task.id })],
+        }),
+      );
+      expect(readdirSync(workspace)).toEqual(["dashboard-data.json"]);
+      const taskFiles = readdirSync(taskRoot);
+      expect(taskFiles).toHaveLength(1);
+      expect(statSync(join(taskRoot, taskFiles[0])).mode & 0o222).toBe(0);
+
+      const substitutedEvidence = await fetch(
+        `${report.url}/dashboard-action-requests`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...request,
+            evidence_ids: [],
+            idempotency_key: "test-action-0002",
+          }),
+        },
+      );
+      expect(substitutedEvidence.status).toBe(400);
+
+      write(
+        workspace,
+        "dashboard-data.json",
+        JSON.stringify({
+          ...model,
+          action_center: {
+            next_action: "authorize_audit",
+            owner: "lead_agent",
+            actions: [],
+          },
+        }),
+      );
+      const stale = await fetch(`${report.url}/dashboard-action-requests`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...request, idempotency_key: "test-action-0003" }),
+      });
+      expect(stale.status).toBe(400);
+      const evidencePost = await fetch(`${report.url}/dashboard-data.json`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      expect(evidencePost.status).toBe(405);
     } finally {
       if (child && child.exitCode === null) {
         child.kill("SIGTERM");

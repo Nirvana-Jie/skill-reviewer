@@ -192,6 +192,33 @@ behavioral gates are release-eligible, not that the package has been published
 or approved. The lead still combines static/package/permission gates and asks
 the user for the final release decision.
 
+## Dashboard action handoff
+
+Project the validated `next_action` into the Dashboard Action Center; do not
+replace it with a generic label such as `optimizing`. The same projection must
+show the selection conjunction separately:
+
+1. all hard gates pass;
+2. every objective is Pareto non-regressed;
+3. at least one primary objective improves materially.
+
+The Action Center may route failures to Skill, Eval, execution environment,
+missing evidence, or human decision, but attribution never changes the
+acceptance decision. It only explains which owner should inspect the retained
+signals.
+
+Map `next_action` to one available lead-Agent task as defined in
+`action-center.md`. A browser click appends intent to an external task ledger;
+it does not call `evolution-authorize`, advance state, edit a candidate, rerun a
+plan, change Eval assets, or confirm release. Before consuming a task, the lead
+Agent must verify its run/Dashboard digest and ensure its
+`expected_next_action` still matches the authoritative state. A mismatch is a
+stale request and must not be executed.
+
+`propose_eval_change` remains a proposal workflow. The current Eval identity is
+immutable. Only explicit user confirmation may start a new cycle with changed
+Eval assets and a new lock.
+
 ## Stop conditions
 
 Stop immediately when any of these occurs:

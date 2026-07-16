@@ -278,7 +278,8 @@ describe("skills CLI installation contract", () => {
         expect(JSON.parse(dashboard.stdout)).toEqual(
           expect.objectContaining({
             ok: true,
-            read_only: true,
+            evidence_read_only: true,
+            action_requests_enabled: true,
             run_id: "installed-package-check",
           }),
         );

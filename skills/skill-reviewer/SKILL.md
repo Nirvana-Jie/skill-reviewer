@@ -186,7 +186,7 @@ Missing evals never lower a normal review score. But when runtime verification
 was requested, a failed declared check, missing paired evidence, or false
 verification claim is a Critical Issue.
 
-After grading, project the read-only Dashboard model:
+After grading, project the evidence-bound Dashboard model:
 
 ```bash
 python3 scripts/skill_eval_runtime.py project-dashboard \
@@ -194,11 +194,23 @@ python3 scripts/skill_eval_runtime.py project-dashboard \
   --output <workspace>/dashboard-data.json
 ```
 
-The Dashboard is a presentation of the retained evidence chain, not a new
-source of truth and not an execution/approval surface. For evolution runs, add
-`--state <evolution-control-workspace>/evolution-state.json` so query budgets,
-lineage, rejected candidates, and continuity are projected as well. Projection
-also creates digest-bound `dashboard-diffs/*.json` sidecars for bounded text
+The Dashboard evidence plane is a presentation of the retained evidence chain,
+not a new source of truth. For evolution runs, add `--state
+<evolution-control-workspace>/evolution-state.json` so query budgets, lineage,
+rejected candidates, continuity, the exact `next_action`, candidate
+acceptability, deterministic failure attribution, and available action requests
+are projected as well. Read `references/action-center.md` completely before
+serving or acting on the Action Center.
+
+The Action Center is a separate control-plane handoff. Its buttons may append
+only bounded, digest-chained tasks outside the evidence workspace, owned by the
+lead Agent. They never execute a scenario, authorize audit, confirm release,
+edit evidence, or edit `evals.json`. The lead Agent must revalidate the bound
+run, Dashboard digest, referenced evidence, and expected `next_action` before
+consuming a task. An Eval action creates a proposal only; applying it still
+requires explicit user confirmation and a new locked run.
+
+Projection also creates digest-bound `dashboard-diffs/*.json` sidecars for bounded text
 previews; the server validates each sidecar SHA-256 over the response bytes,
 and applies its 512 KiB per-side cap to parsed UTF-8 text rather than escaped
 JSON size. Binary or oversized files stay metadata-only. This presentation
@@ -216,7 +228,8 @@ mismatched, drifted, unsafe, or conflicting evidence is
 
 ### 5. Evolve only on explicit request
 
-Read `references/evolution-workflow.md` completely. Keep authoritative
+Read `references/evolution-workflow.md` and `references/action-center.md`
+completely. Keep authoritative
 selection/audit evals, fixtures, snapshots, graders, and the accepted baseline
 immutable. A development surrogate may evolve only under a separate digest and
 lineage. The optimizer may restructure the rest of the skill package without an
@@ -312,6 +325,9 @@ consistent, and no claim exceeds the retained evidence.
   semantic grader is dispatched.
 - `references/evolution-workflow.md` — bounded optimizer/selection/audit state
   machine; read only for explicit evolution.
+- `references/action-center.md` — Dashboard acceptance, attribution, state
+  projection, external task ledger, and lead-Agent handoff contract; read for
+  Dashboard actions or any request to continue from them.
 - `evals/evals.json` — executable trigger, routing, behavior, and assertion
   cases; use for self-validation.
 - `evals/local-skill-review-snapshot.json` and `evals/fixtures/` — calibrated
@@ -324,7 +340,9 @@ consistent, and no claim exceeds the retained evidence.
 - `scripts/skill_eval_runtime.py` — compile, lock, grade, decide, evolve-state,
   and Dashboard projection adapter; it never spawns an agent or edits a skill.
 - `dashboard/dist/` and `scripts/serve_skill_dashboard.py` — install-ready React
-  Evidence Lab and local read-only server; presentation only.
+  Evidence Lab, read-only evidence server, and external append-only lead-Agent
+  task gateway. The gateway cannot mutate evidence, Eval, authorization, or
+  release state.
 
 ## Working style
 

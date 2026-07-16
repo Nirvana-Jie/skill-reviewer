@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Serve the built Evidence Lab and one workspace read model over local GETs."""
+"""Serve immutable evidence plus an external, append-only action task gateway."""
 
 from __future__ import annotations
 
@@ -7,8 +7,10 @@ import argparse
 import hashlib
 import json
 import mimetypes
+import os
 import re
 import sys
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -22,6 +24,9 @@ class DashboardServerError(ValueError):
 
 DIFF_ID_PATTERN = re.compile(r"[a-f0-9]{24}")
 DIGEST_PATTERN = re.compile(r"[a-f0-9]{64}")
+IDEMPOTENCY_KEY_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{8,128}")
+ACTION_ID_PATTERN = re.compile(r"[a-z][a-z0-9_]{2,63}")
+ACTION_REQUEST_LIMIT_BYTES = 16 * 1024
 DASHBOARD_DIFF_RENDER_LIMIT_BYTES = 512 * 1024
 DASHBOARD_EVIDENCE_SOURCE_LIMIT_BYTES = 2 * 1024 * 1024
 DASHBOARD_EVIDENCE_PREVIEW_LIMIT_BYTES = 256 * 1024
@@ -59,6 +64,239 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _canonical_json(value: object) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _validated_task_root(workspace: Path, task_root: Path) -> Path:
+    workspace = workspace.resolve()
+    task_root = task_root.resolve()
+    if task_root == workspace or workspace in task_root.parents:
+        raise DashboardServerError(
+            "dashboard action tasks must be stored outside the evidence workspace"
+        )
+    if task_root.exists() and (task_root.is_symlink() or not task_root.is_dir()):
+        raise DashboardServerError("dashboard action task root is not a safe directory")
+    return task_root
+
+
+def _task_digest(record: dict[str, object]) -> str:
+    payload = {key: value for key, value in record.items() if key != "digest"}
+    return _sha256_bytes(_canonical_json(payload))
+
+
+def _load_action_tasks(task_root: Path) -> list[dict[str, object]]:
+    if not task_root.exists():
+        return []
+    if task_root.is_symlink() or not task_root.is_dir():
+        raise DashboardServerError("dashboard action task root changed identity")
+    tasks: list[dict[str, object]] = []
+    previous_digest: str | None = None
+    for sequence, path in enumerate(sorted(task_root.glob("*.json")), start=1):
+        if path.is_symlink() or not path.is_file() or path.parent != task_root:
+            raise DashboardServerError("dashboard action task ledger contains an unsafe entry")
+        try:
+            task = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise DashboardServerError(
+                f"dashboard action task is invalid: {path.name}"
+            ) from error
+        if not isinstance(task, dict) or task.get("contract") != (
+            "skill-reviewer.dashboard-action-task"
+        ):
+            raise DashboardServerError(
+                f"dashboard action task contract is invalid: {path.name}"
+            )
+        if task.get("sequence") != sequence:
+            raise DashboardServerError("dashboard action task sequence is not contiguous")
+        if task.get("previous_digest") != previous_digest:
+            raise DashboardServerError("dashboard action task digest chain is broken")
+        digest = task.get("digest")
+        if not isinstance(digest, str) or digest != _task_digest(task):
+            raise DashboardServerError("dashboard action task digest is invalid")
+        expected_name = f"{sequence:06d}-{task.get('id')}.json"
+        if path.name != expected_name:
+            raise DashboardServerError("dashboard action task filename is invalid")
+        tasks.append(task)
+        previous_digest = digest
+    return tasks
+
+
+def _action_task_log(
+    *, task_root: Path, run_id: str
+) -> dict[str, object]:
+    tasks = [
+        task for task in _load_action_tasks(task_root) if task.get("run_id") == run_id
+    ]
+    return {
+        "contract": "skill-reviewer.dashboard-action-task-log",
+        "run_id": run_id,
+        "owner": "lead_agent",
+        "evidence_mutation": False,
+        "eval_mutation": False,
+        "tasks": tasks,
+    }
+
+
+def _validate_action_request(
+    *, payload: object, data: dict[str, object]
+) -> tuple[dict[str, object], dict[str, object]]:
+    if not isinstance(payload, dict):
+        raise DashboardServerError("dashboard action request must be a JSON object")
+    expected_keys = {
+        "contract",
+        "run_id",
+        "action_id",
+        "expected_next_action",
+        "evidence_ids",
+        "idempotency_key",
+    }
+    if set(payload) != expected_keys:
+        raise DashboardServerError("dashboard action request fields are invalid")
+    if payload.get("contract") != "skill-reviewer.dashboard-action-request":
+        raise DashboardServerError("dashboard action request contract is invalid")
+    run = data.get("run")
+    run_id = run.get("id") if isinstance(run, dict) else None
+    if not isinstance(run_id, str) or payload.get("run_id") != run_id:
+        raise DashboardServerError("dashboard action request run is stale")
+    action_center = data.get("action_center")
+    if not isinstance(action_center, dict):
+        raise DashboardServerError("dashboard action center is unavailable")
+    next_action = action_center.get("next_action")
+    if (
+        not isinstance(next_action, str)
+        or payload.get("expected_next_action") != next_action
+    ):
+        raise DashboardServerError("dashboard action request state is stale")
+    action_id = payload.get("action_id")
+    if not isinstance(action_id, str) or not ACTION_ID_PATTERN.fullmatch(action_id):
+        raise DashboardServerError("dashboard action id is invalid")
+    actions = action_center.get("actions")
+    action = next(
+        (
+            item
+            for item in actions
+            if isinstance(item, dict) and item.get("id") == action_id
+        ),
+        None,
+    ) if isinstance(actions, list) else None
+    if not isinstance(action, dict) or action.get("available") is not True:
+        raise DashboardServerError("dashboard action is not available in this state")
+    if action.get("owner") != "lead_agent":
+        raise DashboardServerError("dashboard action does not belong to the lead agent")
+    idempotency_key = payload.get("idempotency_key")
+    if not isinstance(idempotency_key, str) or not IDEMPOTENCY_KEY_PATTERN.fullmatch(
+        idempotency_key
+    ):
+        raise DashboardServerError("dashboard action idempotency key is invalid")
+    raw_evidence_ids = payload.get("evidence_ids")
+    if (
+        not isinstance(raw_evidence_ids, list)
+        or len(raw_evidence_ids) > 32
+        or any(not isinstance(value, str) or not value for value in raw_evidence_ids)
+        or len(set(raw_evidence_ids)) != len(raw_evidence_ids)
+    ):
+        raise DashboardServerError("dashboard action evidence references are invalid")
+    spine = data.get("spine")
+    known_evidence_ids = {
+        item.get("id")
+        for item in spine
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    } if isinstance(spine, list) else set()
+    if not set(raw_evidence_ids).issubset(known_evidence_ids):
+        raise DashboardServerError("dashboard action cites unknown evidence")
+    projected_evidence_ids = action.get("evidence_ids")
+    if (
+        not isinstance(projected_evidence_ids, list)
+        or any(
+            not isinstance(value, str) or not value
+            for value in projected_evidence_ids
+        )
+        or raw_evidence_ids != projected_evidence_ids
+    ):
+        raise DashboardServerError(
+            "dashboard action evidence does not match the state projection"
+        )
+    return payload, action
+
+
+def _append_action_task(
+    *,
+    task_root: Path,
+    request: dict[str, object],
+    action: dict[str, object],
+    dashboard_digest: str,
+) -> tuple[dict[str, object], bool]:
+    task_root.mkdir(parents=True, exist_ok=True)
+    if task_root.is_symlink():
+        raise DashboardServerError("dashboard action task root changed identity")
+    tasks = _load_action_tasks(task_root)
+    for task in tasks:
+        if (
+            task.get("run_id") == request.get("run_id")
+            and task.get("idempotency_key") == request.get("idempotency_key")
+        ):
+            if task.get("action_id") != request.get("action_id"):
+                raise DashboardServerError(
+                    "dashboard action idempotency key was reused for another action"
+                )
+            return task, False
+    sequence = len(tasks) + 1
+    previous_digest = tasks[-1].get("digest") if tasks else None
+    record: dict[str, object] = {
+        "contract": "skill-reviewer.dashboard-action-task",
+        "sequence": sequence,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "previous_digest": previous_digest,
+        "run_id": request["run_id"],
+        "dashboard_digest": dashboard_digest,
+        "expected_next_action": request["expected_next_action"],
+        "action_id": request["action_id"],
+        "owner": "lead_agent",
+        "requested_by": "human_reviewer",
+        "status": "requested",
+        "human_confirmation_required": action.get(
+            "human_confirmation_required", False
+        ),
+        "evidence_ids": request["evidence_ids"],
+        "idempotency_key": request["idempotency_key"],
+    }
+    identity_digest = _sha256_bytes(
+        _canonical_json(
+            {
+                "run_id": request["run_id"],
+                "action_id": request["action_id"],
+                "idempotency_key": request["idempotency_key"],
+                "dashboard_digest": dashboard_digest,
+            }
+        )
+    )
+    record["id"] = f"task-{identity_digest[:16]}"
+    digest = _task_digest(record)
+    record["digest"] = digest
+    path = task_root / f"{sequence:06d}-{record['id']}.json"
+    temporary = task_root / f".{path.name}.{os.getpid()}.tmp"
+    try:
+        with temporary.open("x", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.chmod(0o444)
+        temporary.replace(path)
+    except OSError as error:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise DashboardServerError("dashboard action task could not be retained") from error
+    return record, True
 
 
 def _load_dashboard_snapshot(
@@ -313,9 +551,17 @@ def _render_evidence_payload(
     ).encode("utf-8")
 
 
-def validate_sources(workspace: Path, static_root: Path) -> dict[str, object]:
+def validate_sources(
+    workspace: Path, static_root: Path, task_root: Path | None = None
+) -> dict[str, object]:
     workspace = workspace.resolve()
     static_root = static_root.resolve()
+    task_root = _validated_task_root(
+        workspace,
+        task_root
+        if task_root is not None
+        else workspace.parent / f"{workspace.name}.dashboard-actions",
+    )
     data_path = workspace / "dashboard-data.json"
     index_path = static_root / "index.html"
     if not data_path.is_file():
@@ -329,33 +575,46 @@ def validate_sources(workspace: Path, static_root: Path) -> dict[str, object]:
         raise DashboardServerError(
             f"dashboard build is missing: {index_path}; run pnpm dashboard:build"
         )
+    tasks = _load_action_tasks(task_root)
     return {
         "ok": True,
-        "read_only": True,
+        "evidence_read_only": True,
+        "action_requests_enabled": True,
         "workspace": str(workspace),
         "static_root": str(static_root),
+        "task_root": str(task_root),
         "run_id": data.get("run", {}).get("id")
         if isinstance(data.get("run"), dict)
         else None,
         "lazy_diff_count": len(diff_routes),
         "evidence_preview_count": len(evidence_routes),
+        "action_task_count": len(tasks),
     }
 
 
-def create_handler(workspace: Path, static_root: Path) -> type[BaseHTTPRequestHandler]:
+def create_handler(
+    workspace: Path, static_root: Path, task_root: Path | None = None
+) -> type[BaseHTTPRequestHandler]:
     workspace = workspace.resolve()
     static_root = static_root.resolve()
+    task_root = _validated_task_root(
+        workspace,
+        task_root
+        if task_root is not None
+        else workspace.parent / f"{workspace.name}.dashboard-actions",
+    )
     data_path = workspace / "dashboard-data.json"
-    data, snapshot_body = _load_dashboard_snapshot(data_path)
-    initial_diff_routes = _validated_diff_routes(workspace, data)
-    initial_evidence_routes = _validated_evidence_routes(workspace, data)
+    snapshot_data, snapshot_body = _load_dashboard_snapshot(data_path)
+    initial_diff_routes = _validated_diff_routes(workspace, snapshot_data)
+    initial_evidence_routes = _validated_evidence_routes(workspace, snapshot_data)
     snapshot_digest = _sha256_bytes(snapshot_body)
     known_diff_routes = dict(initial_diff_routes)
     known_evidence_routes = dict(initial_evidence_routes)
     snapshot_lock = RLock()
+    task_lock = RLock()
 
     def refresh_snapshot() -> bytes:
-        nonlocal snapshot_body, snapshot_digest
+        nonlocal snapshot_data, snapshot_body, snapshot_digest
         with snapshot_lock:
             next_data, next_body = _load_dashboard_snapshot(data_path)
             next_digest = _sha256_bytes(next_body)
@@ -377,9 +636,26 @@ def create_handler(workspace: Path, static_root: Path) -> type[BaseHTTPRequestHa
                         f"dashboard evidence route changed content identity: {route}"
                     )
             known_evidence_routes.update(next_evidence_routes)
+            snapshot_data = next_data
             snapshot_body = next_body
             snapshot_digest = next_digest
             return snapshot_body
+
+    def current_snapshot() -> tuple[dict[str, object], str]:
+        refresh_snapshot()
+        with snapshot_lock:
+            return snapshot_data, snapshot_digest
+
+    def action_task_log_body() -> bytes:
+        data, _ = current_snapshot()
+        run = data.get("run")
+        run_id = run.get("id") if isinstance(run, dict) else None
+        if not isinstance(run_id, str):
+            raise DashboardServerError("dashboard run id is unavailable")
+        with task_lock:
+            return _canonical_json(
+                _action_task_log(task_root=task_root, run_id=run_id)
+            )
 
     def resolve_diff_route(request_path: str) -> tuple[Path, str] | None:
         with snapshot_lock:
@@ -404,6 +680,13 @@ def create_handler(workspace: Path, static_root: Path) -> type[BaseHTTPRequestHa
                     "application/json; charset=utf-8",
                     None,
                     refresh_snapshot(),
+                )
+            if request_path == "/dashboard-action-requests.json":
+                return (
+                    None,
+                    "application/json; charset=utf-8",
+                    None,
+                    action_task_log_body(),
                 )
             diff_route = resolve_diff_route(request_path)
             if diff_route is not None:
@@ -509,7 +792,78 @@ def create_handler(workspace: Path, static_root: Path) -> type[BaseHTTPRequestHa
             self._serve(include_body=False)
 
         def do_POST(self) -> None:  # noqa: N802 - stdlib callback name
-            self.send_error(HTTPStatus.METHOD_NOT_ALLOWED, "dashboard is read-only")
+            request_path = unquote(urlparse(self.path).path)
+            if request_path != "/dashboard-action-requests":
+                self.send_error(
+                    HTTPStatus.METHOD_NOT_ALLOWED,
+                    "evidence routes are read-only",
+                )
+                return
+            content_type = self.headers.get("Content-Type", "").split(";", 1)[0]
+            if content_type.strip().lower() != "application/json":
+                self.send_error(
+                    HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+                    "dashboard action requests require application/json",
+                )
+                return
+            origin = self.headers.get("Origin")
+            host = self.headers.get("Host")
+            if origin and (not host or origin != f"http://{host}"):
+                self.send_error(
+                    HTTPStatus.FORBIDDEN,
+                    "dashboard action request origin is not trusted",
+                )
+                return
+            try:
+                content_length = int(self.headers.get("Content-Length", ""))
+            except ValueError:
+                content_length = -1
+            if content_length < 0 or content_length > ACTION_REQUEST_LIMIT_BYTES:
+                self.send_error(
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                    "dashboard action request exceeds the bounded size",
+                )
+                return
+            try:
+                raw = self.rfile.read(content_length)
+                if len(raw) != content_length:
+                    raise DashboardServerError(
+                        "dashboard action request body is incomplete"
+                    )
+                payload = json.loads(raw.decode("utf-8"))
+                data, dashboard_digest = current_snapshot()
+                request, action = _validate_action_request(
+                    payload=payload,
+                    data=data,
+                )
+                with task_lock:
+                    task, created = _append_action_task(
+                        task_root=task_root,
+                        request=request,
+                        action=action,
+                        dashboard_digest=dashboard_digest,
+                    )
+                response = _canonical_json(
+                    {
+                        "contract": "skill-reviewer.dashboard-action-task-response",
+                        "created": created,
+                        "task": task,
+                    }
+                )
+            except (UnicodeDecodeError, json.JSONDecodeError, DashboardServerError) as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            self.send_response(HTTPStatus.CREATED if created else HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(response)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header(
+                "Content-Security-Policy", DASHBOARD_CONTENT_SECURITY_POLICY
+            )
+            self.end_headers()
+            self.wfile.write(response)
 
         def log_message(self, format: str, *args: object) -> None:
             print(f"dashboard {self.address_string()} {format % args}", file=sys.stderr)
@@ -522,6 +876,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--static-root", type=Path, default=repository / "dashboard" / "dist")
+    parser.add_argument(
+        "--task-root",
+        type=Path,
+        help="Append-only task ledger outside the immutable run workspace.",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=4174)
     parser.add_argument("--check", action="store_true")
@@ -531,11 +890,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
     try:
-        report = validate_sources(args.workspace, args.static_root)
+        report = validate_sources(args.workspace, args.static_root, args.task_root)
         if args.check:
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0
-        handler = create_handler(args.workspace, args.static_root)
+        handler = create_handler(args.workspace, args.static_root, args.task_root)
         server = ThreadingHTTPServer((args.host, args.port), handler)
     except (DashboardServerError, OSError) as error:
         print(json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False))

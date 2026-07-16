@@ -3911,6 +3911,34 @@ describe("skill_eval_runtime dashboard projection", () => {
       expect(data.run.status).toBe("optimizing");
       expect(data.summary.current_round).toBe(3);
       expect(data.iterations.map((item) => item.iteration)).toEqual([1, 2]);
+      expect(data.action_center).toEqual(
+        expect.objectContaining({
+          next_action: "propose_candidate",
+          owner: "lead_agent",
+          actions: expect.arrayContaining([
+            expect.objectContaining({
+              id: "generate_candidate",
+              available: true,
+              recommended: true,
+            }),
+            expect.objectContaining({
+              id: "propose_eval_change",
+              available: false,
+              recommended: false,
+            }),
+          ]),
+          attribution: expect.objectContaining({
+            primary: "skill",
+            items: expect.arrayContaining([
+              expect.objectContaining({
+                id: "skill",
+                status: "primary",
+                signals: expect.arrayContaining(["material_improvement_missing"]),
+              }),
+            ]),
+          }),
+        }),
+      );
     });
   });
 
@@ -4367,6 +4395,57 @@ describe("skill_eval_runtime dashboard projection", () => {
               }),
             ],
           }),
+          action_center: {
+            next_action: "authorize_audit",
+            owner: "lead_agent",
+            acceptance: expect.objectContaining({
+              status: "accepted",
+              accepted: true,
+              criteria: [
+                expect.objectContaining({
+                  id: "hard_gates",
+                  status: "satisfied",
+                }),
+                expect.objectContaining({
+                  id: "pareto",
+                  status: "satisfied",
+                }),
+                expect.objectContaining({
+                  id: "material_improvement",
+                  status: "satisfied",
+                }),
+              ],
+            }),
+            attribution: expect.objectContaining({
+              primary: "human",
+              items: expect.arrayContaining([
+                expect.objectContaining({
+                  id: "human",
+                  status: "waiting",
+                  signals: ["audit_authorization_required"],
+                }),
+              ]),
+            }),
+            actions: expect.arrayContaining([
+              expect.objectContaining({
+                id: "authorize_audit",
+                available: true,
+                recommended: true,
+                owner: "lead_agent",
+                human_confirmation_required: true,
+              }),
+              expect.objectContaining({
+                id: "generate_candidate",
+                available: false,
+              }),
+            ]),
+            task_gateway: {
+              request_endpoint: "/dashboard-action-requests",
+              audit_endpoint: "/dashboard-action-requests.json",
+              evidence_mutation: false,
+              eval_mutation: false,
+            },
+          },
           cases: [
             expect.objectContaining({
               id: "dashboard-case",

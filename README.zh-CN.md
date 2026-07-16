@@ -44,7 +44,7 @@ npx skills add Nirvana-Jie/skill-reviewer --skill skill-reviewer
 - **本地 snapshot** → `evals/local-skill-review-snapshot.json`
 - **可执行 eval runtime** → `scripts/skill_eval_runtime.py`（compile、lock、
   grade、decide、evolve、project）
-- **证据产品** → React/Vite/Vitest `dashboard/` 与只读本地服务
+- **证据产品** → React/Vite/Vitest `dashboard/`、只读证据面与独立的主 Agent 审计任务入口
 
 改完 rubric，重跑 fixture 和本地 snapshot，发版。不需要再去读 300 行散文，确认你那句“稍微严格一点”有没有把正向用例静默打挂。
 
@@ -64,7 +64,7 @@ npx skills add Nirvana-Jie/skill-reviewer --skill skill-reviewer
 | subagent 效果验证          | 成对运行 `with_skill` / baseline，记录 digest、artifact 和验证等级 |
 | 可执行 eval 契约           | 严格 `skill-reviewer.evals` contract；无效 manifest 阻塞发布，不静默跳过 |
 | 有界连续进化               | development / selection / 一次性 opaque audit，最多 3 轮，硬门禁 + Pareto 改进、查询授权与候选谱系 |
-| 证据 Dashboard             | React + TypeScript + Vite Evidence Lab，只消费 read model，不执行或审批 |
+| 证据 Dashboard             | React + TypeScript + Vite Evidence Lab；投影 `next_action`，只创建外部主 Agent 任务，不直接执行、审批或修改 Eval |
 | full vs focused review     | 同样的 11 段结构；无关段落坍塌为 `N/A — focused review of <artifact>` |
 | 可直接粘贴的重写           | `Suggested Rewrites` 直接输出 YAML / Markdown                    |
 | 中英双模板                 | 按分支加载模板 + 可归一化的 snapshot 抽取                        |
@@ -159,7 +159,7 @@ python3 skills/skill-reviewer/scripts/skill_eval_runtime.py grade \
 surrogate 可在独立 digest 下演进。权威 eval 如需调整，必须先让用户确认并重新锁定。完整协议见
 [`references/evolution-workflow.md`](./skills/skill-reviewer/references/evolution-workflow.md)。
 
-证据可投影为只读产品界面：
+证据可投影为产品界面；证据面保持只读，行动请求写入独立任务目录：
 
 ```bash
 python3 skills/skill-reviewer/scripts/skill_eval_runtime.py project-dashboard \
@@ -167,7 +167,9 @@ python3 skills/skill-reviewer/scripts/skill_eval_runtime.py project-dashboard \
   --state /tmp/skill-reviewer-control/evolution-state.json \
   --output /tmp/skill-reviewer-run/dashboard-data.json
 pnpm dashboard:build
-pnpm dashboard:serve -- --workspace /tmp/skill-reviewer-run
+pnpm dashboard:serve -- \
+  --workspace /tmp/skill-reviewer-run \
+  --task-root /tmp/skill-reviewer-action-tasks
 ```
 
 Dashboard 使用 React 与 `@pierre/diffs` 从锁定 snapshot 渲染 candidate/baseline
@@ -176,10 +178,18 @@ sidecar 按需加载，二进制文件或任一侧超过 512 KiB 时只显示 di
 sidecar SHA-256 会写入 read model，并由本地服务器对每次响应的实际字节重新校验；512 KiB
 规则作用于解析后的每侧 UTF-8 正文，而不是 JSON 转义后的文件大小。实际挂载的
 worker-pool provider 与虚拟化用于控制主线程和 DOM 开销；这个展示上限不是发布层的 diff
-大小门禁。它仍是只读证据面；`audit-passed` 之后必须由用户单独确认最终发布。
+大小门禁。证据路由仍然只读；`audit-passed` 之后必须由用户单独确认最终发布。
 
-审阅上下文现在可以通过 URL 精确复现：run guard、split/状态筛选、受限查询、证据或
-diff 的稳定 ID、布局、换行和专注模式都会进入 presentation state，但原始 prompt、正文和
+连续演进运行还会展示“行动中心”：直接投影状态机的 `next_action`，把候选能否接受拆成
+硬门禁、Pareto 不退化、主要目标实质提升三项合取条件，并将保留证据中的失败信号确定性归因到
+Skill、Eval、执行环境、证据缺失或人工裁决。页面只展示当前状态可用的动作。点击后只会在
+`--task-root` 下追加一条绑定 run、Dashboard digest、前置 `next_action` 和证据 ID 的主 Agent
+任务；不会直接执行场景、推进状态、授权 audit、确认发布或修改 `evals.json`。Eval 动作只提交
+建议，仍需用户明确确认并重新锁定。完整协议见
+[`references/action-center.md`](./skills/skill-reviewer/references/action-center.md)。
+
+审阅上下文现在可以通过 URL 精确复现：run guard、split/状态筛选、受限查询、证据、
+diff 或行动中心视图、布局、换行和专注模式都会进入 presentation state，但原始 prompt、正文和
 主机路径不会进入 URL。链接指向其它 run，或轮询时服务端切换到新 run，界面都会先阻塞
 提示，而不是静默展示错误证据；浏览器前进/后退可以重放审阅导航。`Mod+K` 提供只读的
 全局证据定位，可搜索 case、已投影证据 metadata、变更文件和安全的显示/复制/刷新操作。

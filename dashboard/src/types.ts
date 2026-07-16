@@ -99,6 +99,88 @@ export interface AcceptanceDecision {
   objectives?: Array<Record<string, unknown>>;
 }
 
+export type ActionAttributionId =
+  | "skill"
+  | "eval"
+  | "execution_environment"
+  | "evidence"
+  | "human";
+
+export type DashboardActionId =
+  | "generate_candidate"
+  | "rerun_execution"
+  | "propose_eval_change"
+  | "authorize_audit"
+  | "request_release_confirmation";
+
+export interface DashboardActionCenter {
+  next_action: string;
+  owner: "lead_agent";
+  acceptance: {
+    status: string;
+    accepted: boolean | null;
+    decision_run_id: string | null;
+    criteria: Array<{
+      id: "hard_gates" | "pareto" | "material_improvement";
+      status: "satisfied" | "failed" | "pending";
+      passed: number;
+      total: number;
+      evidence_ids: string[];
+    }>;
+  };
+  attribution: {
+    primary: ActionAttributionId | null;
+    items: Array<{
+      id: ActionAttributionId;
+      status: "primary" | "contributing" | "clear" | "waiting";
+      signals: string[];
+      evidence_ids: string[];
+    }>;
+  };
+  actions: Array<{
+    id: DashboardActionId;
+    available: boolean;
+    recommended: boolean;
+    owner: "lead_agent";
+    human_confirmation_required: boolean;
+    evidence_ids: string[];
+  }>;
+  task_gateway: {
+    request_endpoint: string;
+    audit_endpoint: string;
+    evidence_mutation: false;
+    eval_mutation: false;
+  };
+}
+
+export interface DashboardActionTask {
+  contract: "skill-reviewer.dashboard-action-task";
+  id: string;
+  sequence: number;
+  created_at: string;
+  run_id: string;
+  dashboard_digest: string;
+  expected_next_action: string;
+  action_id: DashboardActionId;
+  owner: "lead_agent";
+  requested_by: "human_reviewer";
+  status: "requested";
+  human_confirmation_required: boolean;
+  evidence_ids: string[];
+  idempotency_key: string;
+  previous_digest: string | null;
+  digest: string;
+}
+
+export interface DashboardActionTaskLog {
+  contract: "skill-reviewer.dashboard-action-task-log";
+  run_id: string;
+  owner: "lead_agent";
+  evidence_mutation: false;
+  eval_mutation: false;
+  tasks: DashboardActionTask[];
+}
+
 export interface DashboardDiff {
   id: string;
   path: string;
@@ -195,6 +277,7 @@ export interface DashboardData {
     }>;
     rejected_candidates: Array<Record<string, unknown>>;
   };
+  action_center: DashboardActionCenter;
   cases: DashboardCase[];
   diffs: DashboardDiff[];
   iterations: AcceptanceDecision[];

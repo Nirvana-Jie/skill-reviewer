@@ -69,4 +69,17 @@ describe("dashboard view state", () => {
     expect(window.location.search).toContain("run=run-product-test");
     expect(window.location.search).toContain("node=case%3Aselection-quality");
   });
+
+  it("persists the action center as a first-class review destination", () => {
+    const state = {
+      ...defaultDashboardViewState,
+      runId: "run-action",
+      canvasView: "action" as const,
+    };
+
+    const url = dashboardViewUrl(state, "https://review.example.test/");
+
+    expect(url.searchParams.get("view")).toBe("action");
+    expect(readDashboardViewState(url.search)).toEqual(state);
+  });
 });

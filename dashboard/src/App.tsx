@@ -2,6 +2,7 @@ import {
   Activity,
   Archive,
   Beaker,
+  Bot,
   Check,
   ChevronRight,
   CircleAlert,
@@ -37,6 +38,11 @@ import {
 } from "react";
 
 import { CommandPalette, type DashboardCommand } from "./CommandPalette";
+import {
+  ActionAuditGuide,
+  ActionCenter,
+  nextActionMessageKey,
+} from "./ActionCenter";
 import { copyText, downloadDashboardData } from "./dashboard-actions";
 import { EvidenceReader } from "./EvidenceReader";
 import {
@@ -1021,6 +1027,10 @@ export function EvidenceDashboard({
     locale,
     refreshControls?.lastAttemptAt ?? null,
   );
+  const nextActionLabel = t(
+    nextActionMessageKey(data.action_center.next_action) ??
+      "nextActionReviewEvidence",
+  );
 
   const commands: DashboardCommand[] = [
     {
@@ -1036,6 +1046,15 @@ export function EvidenceDashboard({
       label: t("showDiff"),
       detail: t("runtimeFilesChanged", { count: data.diffs.length }),
       run: () => setCanvasView("diff"),
+    },
+    {
+      id: "action-show-action-center",
+      group: t("actionGroup"),
+      label: t("showActionCenter"),
+      detail: t("actionCenterContext", {
+        action: nextActionLabel,
+      }),
+      run: () => setCanvasView("action"),
     },
     {
       id: "action-attention",
@@ -1183,7 +1202,7 @@ export function EvidenceDashboard({
     <main
       className={`app-shell ${focusMode ? "is-focus-mode" : ""} ${
         refreshControls?.error ? "has-transport-warning" : ""
-      }`}
+      } ${canvasView === "action" ? "is-action-mode" : ""}`}
     >
       <a className="skip-link" href="#evidence-workspace">
         {t("skipToEvidence")}
@@ -1505,6 +1524,19 @@ export function EvidenceDashboard({
               >
                 {t("diff")} ({data.diffs.length})
               </button>
+              <button
+                id="canvas-tab-action"
+                type="button"
+                role="tab"
+                data-roving-item
+                aria-controls="canvas-panel"
+                aria-selected={canvasView === "action"}
+                tabIndex={canvasView === "action" ? 0 : -1}
+                className={canvasView === "action" ? "is-active" : ""}
+                onClick={() => setCanvasView("action")}
+              >
+                {t("actionCenter")}
+              </button>
             </div>
             <div className="canvas-context">
               <span>
@@ -1513,7 +1545,11 @@ export function EvidenceDashboard({
                       visible: displayedNodes.length,
                       total: visibleNodes.length,
                     })
-                  : t("runtimeFilesChanged", { count: data.diffs.length })}
+                  : canvasView === "diff"
+                    ? t("runtimeFilesChanged", { count: data.diffs.length })
+                    : t("actionCenterContext", {
+                        action: nextActionLabel,
+                      })}
               </span>
               {canvasView === "diff" && data.diffs.length > 0 && (
                 <button
@@ -1535,7 +1571,15 @@ export function EvidenceDashboard({
             role="tabpanel"
             aria-labelledby={`canvas-tab-${canvasView}`}
           >
-          {canvasView === "evidence" ? (
+          {canvasView === "action" ? (
+            <ActionCenter
+              data={data}
+              onOpenEvidence={(evidenceId) => {
+                const node = data.spine.find((item) => item.id === evidenceId);
+                if (node) openEvidence(node);
+              }}
+            />
+          ) : canvasView === "evidence" ? (
             <div className="evidence-stage">
               <div className="stage-intro">
                 <div>
@@ -1706,7 +1750,25 @@ export function EvidenceDashboard({
           </div>
         </section>
 
-        <aside className="inspector pane" aria-label={t("evidenceInspector")}>
+        <aside
+          className="inspector pane"
+          aria-label={
+            canvasView === "action" ? t("actionCenter") : t("evidenceInspector")
+          }
+        >
+          {canvasView === "action" ? (
+            <>
+              <div className="pane-heading action-inspector-heading">
+                <div>
+                  <span className="pane-kicker">{t("humanDecisionHandoff")}</span>
+                  <h2>{t("actionCenter")}</h2>
+                </div>
+                <Bot size={17} aria-hidden="true" />
+              </div>
+              <ActionAuditGuide data={data} />
+            </>
+          ) : (
+            <>
           <div className="pane-heading">
             <div>
               <span className="pane-kicker">{t("inspector")}</span>
@@ -2063,6 +2125,8 @@ export function EvidenceDashboard({
               <p>{t("noLimitations")}</p>
             )}
           </div>
+            </>
+          )}
         </aside>
       </div>
 
