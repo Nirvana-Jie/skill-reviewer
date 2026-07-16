@@ -601,13 +601,11 @@ export function EvidenceDashboard({
     [data.cases, data.spine, locale],
   );
 
-  const visibleCases = useMemo(
+  const matchingCases = useMemo(
     () => {
       const normalized = caseQuery.trim().toLocaleLowerCase();
       return data.cases.filter((item) => {
         if (split !== "all" && item.split !== split) return false;
-        if (caseStatus === "passed" && isAttentionCase(item)) return false;
-        if (caseStatus === "attention" && !isAttentionCase(item)) return false;
         if (!normalized) return true;
         const semantic = caseSemanticsById.get(item.id);
         return [
@@ -624,7 +622,24 @@ export function EvidenceDashboard({
           .includes(normalized);
       });
     },
-    [caseQuery, caseSemanticsById, caseStatus, data.cases, split],
+    [caseQuery, caseSemanticsById, data.cases, split],
+  );
+  const caseStatusCounts = useMemo(
+    () => ({
+      all: matchingCases.length,
+      passed: matchingCases.filter((item) => !isAttentionCase(item)).length,
+      attention: matchingCases.filter(isAttentionCase).length,
+    }),
+    [matchingCases],
+  );
+  const visibleCases = useMemo(
+    () =>
+      matchingCases.filter((item) => {
+        if (caseStatus === "passed") return !isAttentionCase(item);
+        if (caseStatus === "attention") return isAttentionCase(item);
+        return true;
+      }),
+    [caseStatus, matchingCases],
   );
   const visibleCaseNodeIds = useMemo(
     () => new Set(visibleCases.map((item) => `case:${item.id}`)),
@@ -1308,22 +1323,34 @@ export function EvidenceDashboard({
             </label>
             <div className="case-status-control">
               <span>{t("caseStatus")}</span>
-              <div className="segmented-control compact-segments">
+              <div
+                className="segmented-control compact-segments"
+                role="group"
+                aria-label={t("caseStatus")}
+              >
                 {(["all", "passed", "attention"] as CaseStatusFilter[]).map(
-                  (item) => (
-                    <button
-                      type="button"
-                      key={item}
-                      className={caseStatus === item ? "is-active" : ""}
-                      aria-label={`${t("caseStatus")}: ${
-                        item === "attention" ? t("attention") : t(item)
-                      }`}
-                      aria-pressed={caseStatus === item}
-                      onClick={() => setCaseStatus(item)}
-                    >
-                      {item === "attention" ? t("attention") : t(item)}
-                    </button>
-                  ),
+                  (item) => {
+                    const label =
+                      item === "attention" ? t("attention") : t(item);
+                    return (
+                      <button
+                        type="button"
+                        key={item}
+                        className={caseStatus === item ? "is-active" : ""}
+                        aria-label={t("caseFilterOption", {
+                          label,
+                          count: caseStatusCounts[item],
+                        })}
+                        aria-pressed={caseStatus === item}
+                        onClick={() => setCaseStatus(item)}
+                      >
+                        <span>{label}</span>
+                        <span className="case-filter-count" aria-hidden="true">
+                          {caseStatusCounts[item]}
+                        </span>
+                      </button>
+                    );
+                  },
                 )}
               </div>
             </div>
@@ -1333,6 +1360,7 @@ export function EvidenceDashboard({
                 total: data.cases.length,
               })}
             </div>
+            <p className="case-filter-scope">{t("caseFilterScope")}</p>
           </div>
 
           <div
@@ -1514,6 +1542,20 @@ export function EvidenceDashboard({
                   <span className="pane-kicker">{t("immutableRunRecord")}</span>
                   <h2>{t("evidenceChain")}</h2>
                   <p>{t("evidenceChainDescription")}</p>
+                  {(failedCaseCount > 0 || failedGateCount > 0) && (
+                    <div className="blocking-evidence-scope" role="note">
+                      <div className="blocking-evidence-flow">
+                        <CircleAlert size={13} aria-hidden="true" />
+                        <strong>
+                          {t("blockingEvidenceFlow", {
+                            cases: failedCaseCount,
+                            gates: failedGateCount,
+                          })}
+                        </strong>
+                      </div>
+                      <span>{t("blockingEvidenceExplanation")}</span>
+                    </div>
+                  )}
                 </div>
                 <div className="stage-guide">
                   <span className="first-review-guide">{t("firstReviewGuide")}</span>

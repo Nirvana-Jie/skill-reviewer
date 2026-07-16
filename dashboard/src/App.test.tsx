@@ -640,6 +640,24 @@ describe("EvidenceDashboard", () => {
       screen.getByText("1 个场景、1 项发布门禁尚未通过。"),
     ).toBeInTheDocument();
     expect(
+      screen.getByText("当前阻塞：1 个需处理场景 → 1 项未通过发布门禁"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "发布门禁由场景证据汇总；同一个阻塞问题可能作为“场景结论”和“门禁结论”各显示一次，但场景数只计一次。",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", {
+        name: "需处理场景；匹配场景数：1",
+      }),
+    ).toHaveTextContent("需处理场景1");
+    expect(
+      screen.getByText(
+        "此处只筛选和统计评测场景；发布门禁会在中间证据树中单独展示。",
+      ),
+    ).toBeInTheDocument();
+    expect(
       screen.getByRole("button", { name: "收起 本次评测运行" }),
     ).toHaveAttribute("aria-expanded", "true");
     expect(
@@ -758,7 +776,9 @@ describe("EvidenceDashboard", () => {
       "true",
     );
     expect(
-      screen.getByRole("button", { name: "Case status: Attention" }),
+      screen.getByRole("button", {
+        name: "Needs attention; matching scenario count: 1",
+      }),
     ).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("tab", { name: "Diff (1)" })).toHaveAttribute(
       "aria-selected",
@@ -827,7 +847,9 @@ describe("EvidenceDashboard", () => {
     );
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Case status: Attention" }),
+      screen.getByRole("button", {
+        name: "Needs attention; matching scenario count: 1",
+      }),
     );
     expect(container.querySelectorAll(".case-row")).toHaveLength(1);
     expect(screen.getAllByText("Public safety audit").length).toBeGreaterThan(0);
