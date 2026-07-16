@@ -46,6 +46,13 @@ import {
   type DashboardSplit,
   type DashboardViewState,
 } from "./dashboard-view-state";
+import {
+  describeAssertion,
+  describeDashboardCase,
+  describeEvidenceNode,
+  localizeLimitation,
+  repeatFromEvidenceNode,
+} from "./evidence-semantics";
 import { handleRovingListKeyDown } from "./keyboard-navigation";
 import type { DashboardCase, DashboardData, SpineNode } from "./types";
 import {
@@ -495,6 +502,26 @@ export function EvidenceDashboard({
     typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform)
       ? "⌘K"
       : "Ctrl K";
+  const caseSemanticsById = useMemo(
+    () =>
+      new Map(
+        data.cases.map((item) => [
+          item.id,
+          describeDashboardCase(locale, item),
+        ]),
+      ),
+    [data.cases, locale],
+  );
+  const nodeSemanticsById = useMemo(
+    () =>
+      new Map(
+        data.spine.map((node) => [
+          node.id,
+          describeEvidenceNode(locale, node, data.cases),
+        ]),
+      ),
+    [data.cases, data.spine, locale],
+  );
 
   const visibleCases = useMemo(
     () => {
@@ -504,14 +531,22 @@ export function EvidenceDashboard({
         if (caseStatus === "passed" && isAttentionCase(item)) return false;
         if (caseStatus === "attention" && !isAttentionCase(item)) return false;
         if (!normalized) return true;
-        return [item.id, item.purpose, item.status, item.split]
+        const semantic = caseSemanticsById.get(item.id);
+        return [
+          item.id,
+          item.purpose,
+          item.status,
+          item.split,
+          semantic?.title,
+          semantic?.description,
+        ]
           .filter(Boolean)
           .join(" ")
           .toLocaleLowerCase()
           .includes(normalized);
       });
     },
-    [caseQuery, caseStatus, data.cases, split],
+    [caseQuery, caseSemanticsById, caseStatus, data.cases, split],
   );
   const visibleCaseNodeIds = useMemo(
     () => new Set(visibleCases.map((item) => `case:${item.id}`)),
@@ -814,6 +849,10 @@ export function EvidenceDashboard({
     selected?.kind === "case"
       ? data.cases.find((item) => `case:${item.id}` === selected.id)
       : null;
+  const selectedSemantic = selected
+    ? nodeSemanticsById.get(selected.id) ??
+      describeEvidenceNode(locale, selected, data.cases)
+    : null;
   const runTone = statusTone(data.run.status);
   const releaseMessage = data.run.release_eligible
     ? t("releaseEligible")
@@ -824,6 +863,9 @@ export function EvidenceDashboard({
     const reference = [
       `### ${t("evidenceReference")}`,
       `- Run: \`${data.run.id}\``,
+      selectedSemantic
+        ? `- ${t("semanticSummary")}: ${selectedSemantic.title}`
+        : null,
       `- ${t("evidenceId")}: \`${selected.id}\``,
       `- ${t("status")}: \`${selected.status}\``,
       selected.artifact ? `- ${t("decisionArtifact")}: \`${selected.artifact}\`` : null,
@@ -838,7 +880,15 @@ export function EvidenceDashboard({
     void copyText(reference)
       .then(() => notify(t("evidenceReferenceCopied")))
       .catch(() => notify(t("evidenceReferenceCopyFailed")));
-  }, [currentView, data.run.id, data.run.subject?.digest, notify, selected, t]);
+  }, [
+    currentView,
+    data.run.id,
+    data.run.subject?.digest,
+    notify,
+    selected,
+    selectedSemantic,
+    t,
+  ]);
   const generatedTime = formatTimestamp(locale, data.generated_at);
   const loadedTime = formatTimestamp(
     locale,
@@ -895,7 +945,7 @@ export function EvidenceDashboard({
             id: "action-copy-evidence",
             group: t("actionGroup"),
             label: t("copyEvidenceReference"),
-            detail: selected.label,
+            detail: selectedSemantic?.title ?? selected.label,
             run: copyEvidenceReference,
           },
         ]
@@ -936,24 +986,41 @@ export function EvidenceDashboard({
           },
         ]
       : []),
-    ...data.cases.map((item) => ({
-      id: `case-${item.id}`,
-      group: t("caseGroup"),
-      label: item.id,
-      detail: `${localizeValue(locale, item.split)} · ${localizeStatus(locale, item.status)}${
-        item.purpose ? ` · ${item.purpose}` : ""
-      }`,
-      keywords: [item.status, item.split, item.purpose ?? ""],
-      run: () => openCase(item),
-    })),
-    ...data.spine.map((node) => ({
-      id: `evidence-${node.id}`,
-      group: t("evidenceGroup"),
-      label: node.label,
-      detail: `${localizeValue(locale, node.kind)} · ${localizeStatus(locale, node.status)}`,
-      keywords: [node.id, node.kind, node.status, node.detail ?? "", node.path ?? ""],
-      run: () => openEvidence(node),
-    })),
+    ...data.cases.map((item) => {
+      const semantic = caseSemanticsById.get(item.id)!;
+      return {
+        id: `case-${item.id}`,
+        group: t("caseGroup"),
+        label: semantic.title,
+        detail: `${localizeValue(locale, item.split)} · ${localizeStatus(locale, item.status)} · ${semantic.description}`,
+        keywords: [
+          item.id,
+          item.status,
+          item.split,
+          item.purpose ?? "",
+          semantic.description,
+        ],
+        run: () => openCase(item),
+      };
+    }),
+    ...data.spine.map((node) => {
+      const semantic = nodeSemanticsById.get(node.id)!;
+      return {
+        id: `evidence-${node.id}`,
+        group: t("evidenceGroup"),
+        label: semantic.title,
+        detail: `${localizeValue(locale, node.kind)} · ${localizeStatus(locale, node.status)} · ${semantic.description}`,
+        keywords: [
+          node.id,
+          node.label,
+          node.kind,
+          node.status,
+          node.detail ?? "",
+          node.path ?? "",
+        ],
+        run: () => openEvidence(node),
+      };
+    }),
     ...data.diffs.map((diff) => ({
       id: `file-${diff.id}`,
       group: t("fileGroup"),
@@ -1164,45 +1231,51 @@ export function EvidenceDashboard({
             aria-live="polite"
             onKeyDown={(event) => handleRovingListKeyDown(event)}
           >
-            {visibleCases.map((item, index) => (
-              <button
-                id="canvas-tab-evidence"
-                type="button"
-                data-roving-item
-                tabIndex={
-                  selectedId === `case:${item.id}` ||
-                  (index === 0 && !visibleCaseNodeIds.has(selectedId))
-                    ? 0
-                    : -1
-                }
-                className={`case-row ${
-                  selectedId === `case:${item.id}` ? "is-selected" : ""
-                }`}
-                aria-current={
-                  selectedId === `case:${item.id}` ? "true" : undefined
-                }
-                key={item.id}
-                onClick={() => setSelectedId(`case:${item.id}`)}
-              >
-                <span
-                  className={`case-status status-${statusTone(item.status)}`}
-                  aria-hidden="true"
-                />
-                <span className="case-copy">
-                  <strong>{item.id}</strong>
-                  <small>
-                    {localizeValue(locale, item.split)} ·{" "}
-                    {localizeValue(locale, item.holdout_visibility)}
-                  </small>
-                  <small>
-                    {t("pairedRuns", {
-                      count: item.determinism === "stochastic" ? item.repeats : 1,
-                    })}
-                  </small>
-                </span>
-                <StatusChip status={item.status} />
-              </button>
-            ))}
+            {visibleCases.map((item, index) => {
+              const semantic = caseSemanticsById.get(item.id)!;
+              return (
+                <button
+                  type="button"
+                  data-roving-item
+                  tabIndex={
+                    selectedId === `case:${item.id}` ||
+                    (index === 0 && !visibleCaseNodeIds.has(selectedId))
+                      ? 0
+                      : -1
+                  }
+                  className={`case-row ${
+                    selectedId === `case:${item.id}` ? "is-selected" : ""
+                  }`}
+                  aria-current={
+                    selectedId === `case:${item.id}` ? "true" : undefined
+                  }
+                  aria-label={`${semantic.title} · ${semantic.technicalLabel}`}
+                  key={item.id}
+                  onClick={() => setSelectedId(`case:${item.id}`)}
+                >
+                  <span
+                    className={`case-status status-${statusTone(item.status)}`}
+                    aria-hidden="true"
+                  />
+                  <span className="case-copy">
+                    <strong>{semantic.title}</strong>
+                    <small className="case-purpose">{semantic.description}</small>
+                    <span className="case-technical-line">
+                      <code>{semantic.technicalLabel}</code>
+                      <small>
+                        {localizeValue(locale, item.split)} ·{" "}
+                        {localizeValue(locale, item.holdout_visibility)} ·{" "}
+                        {t("pairedRuns", {
+                          count:
+                            item.determinism === "stochastic" ? item.repeats : 1,
+                        })}
+                      </small>
+                    </span>
+                  </span>
+                  <StatusChip status={item.status} />
+                </button>
+              );
+            })}
             {visibleCases.length === 0 && (
               <div className="case-empty">
                 <p className="empty-note">
@@ -1269,7 +1342,7 @@ export function EvidenceDashboard({
               onKeyDown={(event) => handleRovingListKeyDown(event, "horizontal")}
             >
               <button
-                id="canvas-tab-diff"
+                id="canvas-tab-evidence"
                 type="button"
                 role="tab"
                 data-roving-item
@@ -1282,6 +1355,7 @@ export function EvidenceDashboard({
                 {t("evidence")}
               </button>
               <button
+                id="canvas-tab-diff"
                 type="button"
                 role="tab"
                 data-roving-item
@@ -1370,6 +1444,8 @@ export function EvidenceDashboard({
                   const depth = nodeDepth(node, nodesById);
                   const childCount = visibleChildCounts.get(node.id) ?? 0;
                   const isExpanded = expandedNodeIds.has(node.id);
+                  const semantic = nodeSemanticsById.get(node.id)!;
+                  const repeat = repeatFromEvidenceNode(node);
                   return (
                     <div
                       className={`evidence-row tone-${statusTone(node.status)} ${
@@ -1387,11 +1463,11 @@ export function EvidenceDashboard({
                           aria-expanded={isExpanded}
                           aria-label={t(
                             isExpanded ? "collapseEvidence" : "expandEvidence",
-                            { label: node.label },
+                            { label: semantic.title },
                           )}
                           title={t(
                             isExpanded ? "collapseEvidence" : "expandEvidence",
-                            { label: node.label },
+                            { label: semantic.title },
                           )}
                           onClick={() => toggleEvidenceGroup(node)}
                         >
@@ -1417,24 +1493,26 @@ export function EvidenceDashboard({
                             : -1
                         }
                         aria-current={selectedId === node.id ? "true" : undefined}
-                        aria-label={t("viewEvidenceDetails", { label: node.label })}
+                        aria-label={t("viewEvidenceDetails", {
+                          label: semantic.title,
+                        })}
                         onClick={() => setSelectedId(node.id)}
                       >
                         <span className="node-copy">
                           <span className="node-meta">
                             {localizeValue(locale, node.kind)}
-                            {node.arm ? ` · ${node.arm}` : ""}
-                            {node.repeat
-                              ? ` · ${t("repeatMeta", { count: node.repeat })}`
+                            {node.arm
+                              ? ` · ${localizeValue(locale, node.arm)}`
+                              : ""}
+                            {repeat
+                              ? ` · ${t("repeatMeta", { count: repeat })}`
                               : ""}
                             {childCount
                               ? ` · ${t("childItems", { count: childCount })}`
                               : ""}
                           </span>
-                          <strong>{node.label}</strong>
-                          <small>
-                            {node.detail ?? node.path ?? t("retainedEvidenceRecord")}
-                          </small>
+                          <strong>{semantic.title}</strong>
+                          <small>{semantic.description}</small>
                         </span>
                         <StatusChip status={node.status} />
                         <span className="evidence-detail-action" aria-hidden="true">
@@ -1501,11 +1579,16 @@ export function EvidenceDashboard({
                     <Link2 size={13} />
                   </button>
                 </div>
-                <h3>{selected.label}</h3>
+                <h3>{selectedSemantic?.title ?? selected.label}</h3>
                 <p>
-                  {selected.detail ??
+                  {selectedSemantic?.description ??
                     t("retainedEvidenceDescription")}
                 </p>
+                {selectedSemantic && (
+                  <code className="inspector-technical-label">
+                    {selectedSemantic.technicalLabel}
+                  </code>
+                )}
               </div>
 
               <dl className="fact-list">
@@ -1513,10 +1596,15 @@ export function EvidenceDashboard({
                   <dt>{t("evidenceId")}</dt>
                   <dd><code>{selected.id}</code></dd>
                 </div>
-                {selected.arm && <div><dt>{t("arm")}</dt><dd>{selected.arm}</dd></div>}
-                {selected.repeat && <div><dt>{t("repeat")}</dt><dd>{selected.repeat}</dd></div>}
+                {selected.arm && <div><dt>{t("arm")}</dt><dd>{localizeValue(locale, selected.arm)}</dd></div>}
+                {repeatFromEvidenceNode(selected) && (
+                  <div>
+                    <dt>{t("repeat")}</dt>
+                    <dd>{repeatFromEvidenceNode(selected)}</dd>
+                  </div>
+                )}
                 {selected.assertion_type && (
-                  <div><dt>{t("assertion")}</dt><dd>{selected.assertion_type}</dd></div>
+                  <div><dt>{t("assertion")}</dt><dd>{localizeValue(locale, selected.assertion_type)}</dd></div>
                 )}
                 {selected.path && (
                   <div className="fact-path"><dt>{t("artifactPath")}</dt><dd>{selected.path}</dd></div>
@@ -1541,7 +1629,7 @@ export function EvidenceDashboard({
                   {selectedCase.arms.map((arm) => (
                     <article key={arm.id}>
                       <div>
-                        <strong>{arm.id}</strong>
+                        <strong>{localizeValue(locale, arm.id)}</strong>
                         <StatusChip
                           status={
                             arm.passed
@@ -1580,28 +1668,43 @@ export function EvidenceDashboard({
                   <div className="section-label">
                     <Beaker size={13} /> {t("semanticEvidence")}
                   </div>
-                  {selectedCase.semantic_assertions.map((assertion) => (
-                    <article key={assertion.id}>
-                      <div>
-                        <strong>{assertion.id}</strong>
-                        <StatusChip
-                          status={assertion.passed ? "passed" : assertion.status}
-                        />
-                      </div>
-                      <p>
-                        {t("preference", {
-                          value: assertion.preference ?? t("unresolved"),
-                        })}
-                        {assertion.resolved_winners?.length
-                          ? ` · ${assertion.resolved_winners.join(" / ")}`
-                          : ""}
-                      </p>
-                      {assertion.reason && (
-                        <p className="arm-warning">{assertion.reason}</p>
-                      )}
-                      {assertion.artifact && <p>{assertion.artifact}</p>}
-                    </article>
-                  ))}
+                  {selectedCase.semantic_assertions.map((assertion) => {
+                    const semantic = describeAssertion(
+                      locale,
+                      assertion.id,
+                      "semantic_pair",
+                    );
+                    return (
+                      <article key={assertion.id}>
+                        <div>
+                          <strong>{semantic.title}</strong>
+                          <StatusChip
+                            status={assertion.passed ? "passed" : assertion.status}
+                          />
+                        </div>
+                        <code className="semantic-technical-id">
+                          {semantic.technicalLabel}
+                        </code>
+                        <p>{semantic.description}</p>
+                        <p>
+                          {t("preference", {
+                            value: assertion.preference
+                              ? localizeValue(locale, assertion.preference)
+                              : t("unresolved"),
+                          })}
+                          {assertion.resolved_winners?.length
+                            ? ` · ${assertion.resolved_winners
+                                .map((winner) => localizeValue(locale, winner))
+                                .join(" / ")}`
+                            : ""}
+                        </p>
+                        {assertion.reason && (
+                          <p className="arm-warning">{assertion.reason}</p>
+                        )}
+                        {assertion.artifact && <p>{assertion.artifact}</p>}
+                      </article>
+                    );
+                  })}
                 </div>
               )}
 
@@ -1614,11 +1717,11 @@ export function EvidenceDashboard({
                   <div><dt>{t("baseline")}</dt><dd>{data.run.baseline?.kind ? localizeValue(locale, data.run.baseline.kind) : t("none")}</dd></div>
                   <div><dt>{t("plan")}</dt><dd>{shortDigest(data.run.integrity?.plan_digest, t("notRecorded"))}</dd></div>
                   <div><dt>{t("profile")}</dt><dd>{shortDigest(data.run.execution_profile?.digest, t("notRecorded"))}</dd></div>
-                  <div><dt>{t("target")}</dt><dd>{data.run.execution_profile?.target ?? t("unknown")}</dd></div>
-                  <div><dt>{t("harness")}</dt><dd>{data.run.execution_profile?.harness ?? t("unknown")}</dd></div>
+                  <div><dt>{t("target")}</dt><dd>{data.run.execution_profile?.target ? localizeValue(locale, data.run.execution_profile.target) : t("unknown")}</dd></div>
+                  <div><dt>{t("harness")}</dt><dd>{data.run.execution_profile?.harness ? localizeValue(locale, data.run.execution_profile.harness) : t("unknown")}</dd></div>
                   <div><dt>{t("holdout")}</dt><dd>{localizeValue(locale, data.run.holdout?.visibility ?? "public")}</dd></div>
                   <div><dt>{t("evidence")}</dt><dd>{localizeValue(locale, data.run.evidence_scope)}</dd></div>
-                  <div><dt>{t("controlAnchor")}</dt><dd>{data.run.control_anchor ?? t("notUsed")}</dd></div>
+                  <div><dt>{t("controlAnchor")}</dt><dd>{data.run.control_anchor ? localizeValue(locale, data.run.control_anchor) : t("notUsed")}</dd></div>
                 </dl>
               </div>
             </div>
@@ -1632,7 +1735,9 @@ export function EvidenceDashboard({
             </div>
             {data.limitations.length ? (
               <ul>
-                {data.limitations.map((item) => <li key={item}>{item}</li>)}
+                {data.limitations.map((item) => (
+                  <li key={item}>{localizeLimitation(locale, item)}</li>
+                ))}
               </ul>
             ) : (
               <p>{t("noLimitations")}</p>

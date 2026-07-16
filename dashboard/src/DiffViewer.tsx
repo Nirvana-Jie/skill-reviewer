@@ -3,6 +3,8 @@ import {
   ChevronRight,
   ClipboardCopy,
   Columns2,
+  Folder,
+  FolderOpen,
   RefreshCw,
   Rows3,
   Search,
@@ -20,6 +22,11 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
 import { copyText } from "./dashboard-actions";
 import type { DashboardDiffLayout } from "./dashboard-view-state";
+import {
+  buildDiffTree,
+  directoryAncestorIds,
+  flattenDiffTree,
+} from "./diff-tree";
 import { handleRovingListKeyDown } from "./keyboard-navigation";
 import type { DashboardDiff, DashboardDiffPayload } from "./types";
 import { localizeValue, useUiPreferences } from "./ui-preferences";
@@ -185,6 +192,9 @@ function DiffBrowser({
   const [retryToken, setRetryToken] = useState(0);
   const [diagnosticsStatus, setDiagnosticsStatus] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [collapsedDirectoryIds, setCollapsedDirectoryIds] = useState<Set<string>>(
+    new Set(),
+  );
   const [localLayout, setLocalLayout] = useState<DashboardDiffLayout>("split");
   const [localWrapLines, setLocalWrapLines] = useState(false);
   const selectedId = controlledSelectedId ?? localSelectedId;
@@ -224,6 +234,17 @@ function DiffBrowser({
     if (!normalized) return diffs;
     return diffs.filter((diff) => diff.path.toLowerCase().includes(normalized));
   }, [diffs, query]);
+  const diffTree = useMemo(() => buildDiffTree(visibleDiffs), [visibleDiffs]);
+  const searchExpandsDirectories = query.trim().length > 0;
+  const diffTreeRows = useMemo(
+    () =>
+      flattenDiffTree(
+        diffTree,
+        collapsedDirectoryIds,
+        searchExpandsDirectories,
+      ),
+    [collapsedDirectoryIds, diffTree, searchExpandsDirectories],
+  );
   const selected = useMemo(
     () => visibleDiffs.find((diff) => diff.id === selectedId) ?? visibleDiffs[0],
     [selectedId, visibleDiffs],
@@ -235,6 +256,21 @@ function DiffBrowser({
   useEffect(() => {
     if (selected && selected.id !== selectedId) selectId(selected.id);
   }, [selected, selectedId]);
+
+  useEffect(() => {
+    if (!selected) return;
+    const ancestorIds = directoryAncestorIds(selected.path);
+    if (!ancestorIds.length) return;
+    setCollapsedDirectoryIds((current) => {
+      const next = new Set(current);
+      let changed = false;
+      ancestorIds.forEach((id) => {
+        if (!next.delete(id)) return;
+        changed = true;
+      });
+      return changed ? next : current;
+    });
+  }, [selected?.path]);
 
   const selectedPayload = selected ? payloads[selected.id] : undefined;
 
@@ -333,7 +369,7 @@ function DiffBrowser({
     <div className="diff-browser">
       <aside className="diff-sidebar">
         <div className="diff-sidebar-heading">
-          <strong>{t("changedFiles")}</strong>
+          <strong>{t("changedFileTree")}</strong>
           <span>{visibleDiffs.length} / {diffs.length}</span>
         </div>
         <label className="diff-search">
@@ -348,28 +384,77 @@ function DiffBrowser({
         </label>
         <nav
           className="diff-file-list"
-          aria-label={t("changedRuntimeFiles")}
+          aria-label={t("changedRuntimeFileTree")}
           onKeyDown={(event) => handleRovingListKeyDown(event)}
         >
-          {visibleDiffs.map((diff, index) => {
-            const path = splitPath(diff.path, t("rootDirectory"));
+          {diffTreeRows.map(({ node, depth }, index) => {
+            if (node.kind === "directory") {
+              const expanded =
+                searchExpandsDirectories ||
+                !collapsedDirectoryIds.has(node.id);
+              return (
+                <button
+                  type="button"
+                  data-roving-item
+                  tabIndex={!selected && index === 0 ? 0 : -1}
+                  key={node.id}
+                  className="diff-tree-directory"
+                  style={{ "--tree-depth": depth } as CSSProperties}
+                  aria-expanded={expanded}
+                  aria-label={t(
+                    expanded ? "collapseDirectory" : "expandDirectory",
+                    { name: node.name },
+                  )}
+                  aria-disabled={searchExpandsDirectories || undefined}
+                  title={node.path}
+                  onClick={() => {
+                    if (searchExpandsDirectories) return;
+                    setCollapsedDirectoryIds((current) => {
+                      const next = new Set(current);
+                      if (expanded) next.add(node.id);
+                      else next.delete(node.id);
+                      return next;
+                    });
+                  }}
+                >
+                  <ChevronRight
+                    className="diff-tree-chevron"
+                    size={12}
+                    aria-hidden="true"
+                  />
+                  {expanded ? (
+                    <FolderOpen size={14} aria-hidden="true" />
+                  ) : (
+                    <Folder size={14} aria-hidden="true" />
+                  )}
+                  <strong>{node.name}</strong>
+                  <small>
+                    {t("directoryFileCount", { count: node.fileCount })}
+                  </small>
+                </button>
+              );
+            }
+            const diff = node.diff;
             return (
               <button
                 type="button"
                 data-roving-item
                 tabIndex={diff.id === selected?.id || index === 0 && !selected ? 0 : -1}
-                key={diff.id}
-                className={diff.id === selected?.id ? "is-selected" : ""}
+                key={node.id}
+                className={`diff-tree-file ${
+                  diff.id === selected?.id ? "is-selected" : ""
+                }`}
+                style={{ "--tree-depth": depth } as CSSProperties}
                 aria-pressed={diff.id === selected?.id}
                 aria-label={t("openDiff", { path: diff.path })}
+                title={diff.path}
                 onClick={() => selectId(diff.id)}
               >
                 <span className={`change-mark change-${diff.status}`}>
                   {changeMark(diff.status)}
                 </span>
                 <span className="diff-file-copy">
-                  <strong>{path.name}</strong>
-                  <small>{path.directory}</small>
+                  <strong>{node.name}</strong>
                 </span>
                 <small className="diff-size">
                   {formatBytes(diff.old_size)} → {formatBytes(diff.new_size)}
@@ -377,7 +462,7 @@ function DiffBrowser({
               </button>
             );
           })}
-          {visibleDiffs.length === 0 && (
+          {diffTreeRows.length === 0 && (
             <p className="diff-no-results">
               {t("noChangedFilesMatch", { query })}
             </p>

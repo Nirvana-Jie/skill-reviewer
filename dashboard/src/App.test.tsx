@@ -345,7 +345,9 @@ describe("EvidenceDashboard", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "All" }));
     fireEvent.click(
-      screen.getByRole("button", { name: "View details for selection-quality" }),
+      screen.getByRole("button", {
+        name: "View details for Release quality selection",
+      }),
     );
     expect(screen.getByText("Semantic evidence")).toBeInTheDocument();
     expect(screen.getByText("blind-quality")).toBeInTheDocument();
@@ -391,10 +393,10 @@ describe("EvidenceDashboard", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Evidence" }));
     expect(container.querySelector(".app-shell")).not.toHaveClass("is-focus-mode");
     fireEvent.click(
-      screen.getByRole("button", { name: "Expand selection-quality" }),
+      screen.getByRole("button", { name: "Expand Release quality selection" }),
     );
     fireEvent.click(
-      screen.getByRole("button", { name: /View details for response.md/i }),
+      screen.getByRole("button", { name: /View details for Agent final response/i }),
     );
     expect(
       screen.getAllByText(
@@ -409,39 +411,41 @@ describe("EvidenceDashboard", () => {
     );
 
     expect(
-      screen.getByRole("button", { name: "Collapse run-product-test" }),
+      screen.getByRole("button", { name: "Collapse Immutable evaluation run" }),
     ).toHaveAttribute("aria-expanded", "true");
     expect(
-      screen.getByRole("button", { name: "Expand selection-quality" }),
+      screen.getByRole("button", { name: "Expand Release quality selection" }),
     ).toHaveAttribute("aria-expanded", "false");
     expect(
-      screen.queryByRole("button", { name: "View details for response.md" }),
+      screen.queryByRole("button", { name: "View details for Agent final response" }),
     ).not.toBeInTheDocument();
     expect(screen.getByText("Showing 4 of 5 evidence nodes")).toBeInTheDocument();
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Expand selection-quality" }),
+      screen.getByRole("button", { name: "Expand Release quality selection" }),
     );
     expect(
-      screen.getByRole("button", { name: "Collapse selection-quality" }),
+      screen.getByRole("button", { name: "Collapse Release quality selection" }),
     ).toHaveAttribute("aria-expanded", "true");
     expect(
-      screen.getByRole("button", { name: "View details for response.md" }),
+      screen.getByRole("button", { name: "View details for Agent final response" }),
     ).toBeInTheDocument();
     expect(screen.getByText("Showing 5 of 5 evidence nodes")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Collapse all" }));
     expect(
-      screen.getByRole("button", { name: "Expand run-product-test" }),
+      screen.getByRole("button", { name: "Expand Immutable evaluation run" }),
     ).toHaveAttribute("aria-expanded", "false");
     expect(
-      screen.queryByRole("button", { name: "View details for Safety hard gate" }),
+      screen.queryByRole("button", {
+        name: "View details for Evaluation scenario · hard gate",
+      }),
     ).not.toBeInTheDocument();
     expect(screen.getByText("Showing 1 of 5 evidence nodes")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Expand all" }));
     expect(
-      screen.getByRole("button", { name: "View details for response.md" }),
+      screen.getByRole("button", { name: "View details for Agent final response" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Expand all" })).toBeDisabled();
   });
@@ -476,8 +480,12 @@ describe("EvidenceDashboard", () => {
     expect(document.title).toBe("Skill Reviewer · 证据工作台");
     expect(screen.getByText("证据链")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "收起 run-product-test" }),
+      screen.getByRole("button", { name: "收起 不可变评测运行" }),
     ).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getAllByText("发布质量选拔").length).toBeGreaterThan(0);
+    expect(screen.getByText("审计尚未通过。")).toBeInTheDocument();
+    expect(screen.getByText("原生 Agent 执行")).toBeInTheDocument();
+    expect(screen.getByText("主 Agent 分发")).toBeInTheDocument();
     expect(screen.getAllByText("查看详情").length).toBeGreaterThan(0);
     expect(screen.getAllByText("公开校准").length).toBeGreaterThan(0);
     expect(screen.getByText("回归已验证")).toBeInTheDocument();
@@ -592,7 +600,7 @@ describe("EvidenceDashboard", () => {
     expect(palette).not.toBeInTheDocument();
     expect(
       container.querySelector(".case-row.is-selected .case-copy strong"),
-    ).toHaveTextContent("public-safety-audit");
+    ).toHaveTextContent("Public safety audit");
     expect(window.location.search).toContain("split=audit");
   });
 
@@ -690,7 +698,7 @@ describe("EvidenceDashboard", () => {
     );
     expect(
       view.container.querySelector(".case-row.is-selected .case-copy strong"),
-    ).toHaveTextContent("selection-quality");
+    ).toHaveTextContent("Release quality selection");
 
     const nextRun = {
       ...data,
@@ -705,6 +713,78 @@ describe("EvidenceDashboard", () => {
       screen.getByRole("heading", { name: "This link targets a different run" }),
     ).toBeInTheDocument();
     expect(screen.getByText(/Requested run-product-test/)).toBeInTheDocument();
+  });
+
+  it("groups changed files into a collapsible directory tree and expands search results", () => {
+    const nestedDiffs: DashboardData["diffs"] = [
+      {
+        ...data.diffs[0]!,
+        id: "root",
+        render_mode: "summary",
+        content_url: null,
+        payload_digest: null,
+      },
+      {
+        ...data.diffs[0]!,
+        id: "rubric",
+        path: "references/review-rubric.md",
+        render_mode: "summary",
+        content_url: null,
+        payload_digest: null,
+      },
+      {
+        ...data.diffs[0]!,
+        id: "workflow",
+        path: "references/evolution/workflow.md",
+        render_mode: "summary",
+        content_url: null,
+        payload_digest: null,
+      },
+      {
+        ...data.diffs[0]!,
+        id: "runner",
+        path: "scripts/run.py",
+        render_mode: "summary",
+        content_url: null,
+        payload_digest: null,
+      },
+    ];
+
+    renderWithPreferences(
+      <DiffViewer diffs={nestedDiffs} enableWorkerPool={false} />,
+    );
+
+    expect(screen.getByText("Changed file tree")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Collapse directory references" }),
+    ).toHaveAttribute("aria-expanded", "true");
+    expect(
+      screen.getByRole("button", {
+        name: "Open diff references/evolution/workflow.md",
+      }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Collapse directory references" }),
+    );
+    expect(
+      screen.queryByRole("button", {
+        name: "Open diff references/evolution/workflow.md",
+      }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.change(
+      screen.getByRole("searchbox", { name: "Filter changed files" }),
+      { target: { value: "workflow" } },
+    );
+    expect(
+      screen.getByRole("button", {
+        name: "Open diff references/evolution/workflow.md",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Collapse directory evolution" }),
+    ).toHaveAttribute("aria-disabled", "true");
   });
 
   it("retries a failed lazy diff without leaving the evidence surface", async () => {
