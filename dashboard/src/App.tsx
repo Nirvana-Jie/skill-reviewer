@@ -50,7 +50,8 @@ import {
   describeAssertion,
   describeDashboardCase,
   describeEvidenceNode,
-  localizeLimitation,
+  describeLimitation,
+  describeReviewStatus,
   repeatFromEvidenceNode,
 } from "./evidence-semantics";
 import { handleRovingListKeyDown } from "./keyboard-navigation";
@@ -101,6 +102,7 @@ function statusTone(status: string): "good" | "bad" | "warn" | "neutral" {
       "invalid",
       "stale",
       "disagreement",
+      "blocked",
     ].some((value) => normalized.includes(value))
   ) {
     return "bad";
@@ -853,10 +855,34 @@ export function EvidenceDashboard({
     ? nodeSemanticsById.get(selected.id) ??
       describeEvidenceNode(locale, selected, data.cases)
     : null;
-  const runTone = statusTone(data.run.status);
+  const selectedRepeat = selected ? repeatFromEvidenceNode(selected) : null;
+  const selectedFinding = selected
+    ? describeReviewStatus(locale, selected.status)
+    : null;
+  const failedGateCount = Math.max(
+    0,
+    data.summary.hard_gates_total - data.summary.hard_gates_passed,
+  );
+  const failedCaseCount = Math.max(0, data.summary.candidate_failed);
+  const runTone = data.run.release_eligible
+    ? "good"
+    : failedCaseCount > 0 || failedGateCount > 0
+      ? "bad"
+      : "warn";
   const releaseMessage = data.run.release_eligible
     ? t("releaseEligible")
     : t("releaseBlocked");
+  const releaseDecision = data.run.release_eligible
+    ? t("releaseReady")
+    : t("releaseBlockedTitle");
+  const releaseDecisionSummary = data.run.release_eligible
+    ? t("releaseReadySummary")
+    : failedCaseCount > 0 || failedGateCount > 0
+      ? t("releaseBlockedSummary", {
+          cases: failedCaseCount,
+          gates: failedGateCount,
+        })
+      : t("releaseBlockedGenericSummary");
   const copyEvidenceReference = useCallback(() => {
     if (!selected) return;
     const permalink = dashboardViewUrl(currentView, window.location.href).toString();
@@ -1119,7 +1145,8 @@ export function EvidenceDashboard({
       >
         <div className="release-state">
           <span>{t("releaseState")}</span>
-          <strong>{localizeStatus(locale, data.run.status)}</strong>
+          <strong>{releaseDecision}</strong>
+          <small>{releaseDecisionSummary}</small>
         </div>
         <div className="summary-metrics" role="list" aria-label={t("runSummary")}>
           <div role="listitem">
@@ -1141,7 +1168,7 @@ export function EvidenceDashboard({
             </strong>
           </div>
           <div role="listitem">
-            <span>{t("evidence")}</span>
+            <span>{t("evidenceScope")}</span>
             <strong>{localizeValue(locale, data.run.evidence_scope)}</strong>
           </div>
         </div>
@@ -1249,7 +1276,7 @@ export function EvidenceDashboard({
                   aria-current={
                     selectedId === `case:${item.id}` ? "true" : undefined
                   }
-                  aria-label={`${semantic.title} · ${semantic.technicalLabel}`}
+                  aria-label={`${semantic.title} · ${localizeStatus(locale, item.status)}`}
                   key={item.id}
                   onClick={() => setSelectedId(`case:${item.id}`)}
                 >
@@ -1260,16 +1287,13 @@ export function EvidenceDashboard({
                   <span className="case-copy">
                     <strong>{semantic.title}</strong>
                     <small className="case-purpose">{semantic.description}</small>
-                    <span className="case-technical-line">
-                      <code>{semantic.technicalLabel}</code>
-                      <small>
-                        {localizeValue(locale, item.split)} ·{" "}
-                        {localizeValue(locale, item.holdout_visibility)} ·{" "}
-                        {t("pairedRuns", {
-                          count:
-                            item.determinism === "stochastic" ? item.repeats : 1,
-                        })}
-                      </small>
+                    <span className="case-meta-line">
+                      {localizeValue(locale, item.split)} ·{" "}
+                      {localizeValue(locale, item.holdout_visibility)} ·{" "}
+                      {t("pairedRuns", {
+                        count:
+                          item.determinism === "stochastic" ? item.repeats : 1,
+                      })}
                     </span>
                   </span>
                   <StatusChip status={item.status} />
@@ -1318,9 +1342,13 @@ export function EvidenceDashboard({
             </p>
             <div className="lineage-list" aria-label={t("candidateLineage")}>
               {data.evolution.candidate_lineage.slice(-2).map((candidate) => (
-                <div key={`${candidate.run_id}-${candidate.round}`}>
-                  <span>R{candidate.round ?? "—"}</span>
-                  <code>{shortDigest(candidate.candidate_digest, t("notRecorded"))}</code>
+                <div
+                  key={`${candidate.run_id}-${candidate.round}`}
+                  title={candidate.candidate_digest ?? undefined}
+                >
+                  <span>
+                    {t("lineageRound", { round: candidate.round ?? "—" })}
+                  </span>
                   <em>{localizeValue(locale, candidate.continuity ?? "continue")}</em>
                 </div>
               ))}
@@ -1584,35 +1612,123 @@ export function EvidenceDashboard({
                   {selectedSemantic?.description ??
                     t("retainedEvidenceDescription")}
                 </p>
-                {selectedSemantic && (
-                  <code className="inspector-technical-label">
-                    {selectedSemantic.technicalLabel}
-                  </code>
-                )}
               </div>
 
-              <dl className="fact-list">
-                <div>
-                  <dt>{t("evidenceId")}</dt>
-                  <dd><code>{selected.id}</code></dd>
+              {selectedFinding && (
+                <div
+                  className={`inspector-outcome outcome-${statusTone(selected.status)}`}
+                >
+                  <span>{t("currentFinding")}</span>
+                  <strong>{selectedFinding.title}</strong>
+                  <p>{selectedFinding.description}</p>
                 </div>
-                {selected.arm && <div><dt>{t("arm")}</dt><dd>{localizeValue(locale, selected.arm)}</dd></div>}
-                {repeatFromEvidenceNode(selected) && (
+              )}
+
+              {(selected.arm || selectedRepeat || selected.assertion_type) && (
+                <dl className="fact-list human-fact-list">
+                  {selected.arm && (
+                    <div>
+                      <dt>{t("arm")}</dt>
+                      <dd>{localizeValue(locale, selected.arm)}</dd>
+                    </div>
+                  )}
+                  {selectedRepeat && (
+                    <div>
+                      <dt>{t("repeat")}</dt>
+                      <dd>{selectedRepeat}</dd>
+                    </div>
+                  )}
+                  {selected.assertion_type && (
+                    <div>
+                      <dt>{t("assertion")}</dt>
+                      <dd>{localizeValue(locale, selected.assertion_type)}</dd>
+                    </div>
+                  )}
+                </dl>
+              )}
+
+              <details className="technical-facts">
+                <summary>
+                  <ChevronRight size={13} aria-hidden="true" />
+                  {t("technicalTrace")}
+                </summary>
+                <dl className="fact-list">
                   <div>
-                    <dt>{t("repeat")}</dt>
-                    <dd>{repeatFromEvidenceNode(selected)}</dd>
+                    <dt>{t("evidenceId")}</dt>
+                    <dd><code>{selected.id}</code></dd>
                   </div>
-                )}
-                {selected.assertion_type && (
-                  <div><dt>{t("assertion")}</dt><dd>{localizeValue(locale, selected.assertion_type)}</dd></div>
-                )}
-                {selected.path && (
-                  <div className="fact-path"><dt>{t("artifactPath")}</dt><dd>{selected.path}</dd></div>
-                )}
-                {selected.artifact && (
-                  <div className="fact-path"><dt>{t("decisionArtifact")}</dt><dd>{selected.artifact}</dd></div>
-                )}
-              </dl>
+                  {selectedSemantic && (
+                    <div>
+                      <dt>{t("technicalName")}</dt>
+                      <dd><code>{selectedSemantic.technicalLabel}</code></dd>
+                    </div>
+                  )}
+                  {selected.path && (
+                    <div className="fact-path">
+                      <dt>{t("artifactPath")}</dt>
+                      <dd>{selected.path}</dd>
+                    </div>
+                  )}
+                  {selected.artifact && (
+                    <div className="fact-path">
+                      <dt>{t("decisionArtifact")}</dt>
+                      <dd>{selected.artifact}</dd>
+                    </div>
+                  )}
+                  <div>
+                    <dt>{t("subjectFingerprint")}</dt>
+                    <dd>
+                      <code>
+                        {shortDigest(
+                          data.run.subject?.digest,
+                          t("notRecorded"),
+                        )}
+                      </code>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>{t("baselineFingerprint")}</dt>
+                    <dd>
+                      <code>
+                        {shortDigest(
+                          data.run.baseline?.digest,
+                          t("notRecorded"),
+                        )}
+                      </code>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>{t("plan")}</dt>
+                    <dd>
+                      <code>
+                        {shortDigest(
+                          data.run.integrity?.plan_digest,
+                          t("notRecorded"),
+                        )}
+                      </code>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>{t("profile")}</dt>
+                    <dd>
+                      <code>
+                        {shortDigest(
+                          data.run.execution_profile?.digest,
+                          t("notRecorded"),
+                        )}
+                      </code>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>{t("controlAnchor")}</dt>
+                    <dd>
+                      {data.run.control_anchor
+                        ? localizeValue(locale, data.run.control_anchor)
+                        : t("notUsed")}
+                    </dd>
+                  </div>
+                </dl>
+              </details>
 
               {selectedCase && (
                 <div className="arm-matrix">
@@ -1682,9 +1798,6 @@ export function EvidenceDashboard({
                             status={assertion.passed ? "passed" : assertion.status}
                           />
                         </div>
-                        <code className="semantic-technical-id">
-                          {semantic.technicalLabel}
-                        </code>
                         <p>{semantic.description}</p>
                         <p>
                           {t("preference", {
@@ -1701,7 +1814,12 @@ export function EvidenceDashboard({
                         {assertion.reason && (
                           <p className="arm-warning">{assertion.reason}</p>
                         )}
-                        {assertion.artifact && <p>{assertion.artifact}</p>}
+                        {assertion.artifact && (
+                          <details className="inline-technical-facts">
+                            <summary>{t("technicalTrace")}</summary>
+                            <code>{assertion.artifact}</code>
+                          </details>
+                        )}
                       </article>
                     );
                   })}
@@ -1713,15 +1831,11 @@ export function EvidenceDashboard({
                   <Fingerprint size={13} /> {t("provenance")}
                 </div>
                 <dl>
-                  <div><dt>{t("subject")}</dt><dd>{shortDigest(data.run.subject?.digest, t("notRecorded"))}</dd></div>
                   <div><dt>{t("baseline")}</dt><dd>{data.run.baseline?.kind ? localizeValue(locale, data.run.baseline.kind) : t("none")}</dd></div>
-                  <div><dt>{t("plan")}</dt><dd>{shortDigest(data.run.integrity?.plan_digest, t("notRecorded"))}</dd></div>
-                  <div><dt>{t("profile")}</dt><dd>{shortDigest(data.run.execution_profile?.digest, t("notRecorded"))}</dd></div>
                   <div><dt>{t("target")}</dt><dd>{data.run.execution_profile?.target ? localizeValue(locale, data.run.execution_profile.target) : t("unknown")}</dd></div>
                   <div><dt>{t("harness")}</dt><dd>{data.run.execution_profile?.harness ? localizeValue(locale, data.run.execution_profile.harness) : t("unknown")}</dd></div>
                   <div><dt>{t("holdout")}</dt><dd>{localizeValue(locale, data.run.holdout?.visibility ?? "public")}</dd></div>
                   <div><dt>{t("evidence")}</dt><dd>{localizeValue(locale, data.run.evidence_scope)}</dd></div>
-                  <div><dt>{t("controlAnchor")}</dt><dd>{data.run.control_anchor ? localizeValue(locale, data.run.control_anchor) : t("notUsed")}</dd></div>
                 </dl>
               </div>
             </div>
@@ -1734,10 +1848,22 @@ export function EvidenceDashboard({
               <CircleAlert size={13} /> {t("limitations")}
             </div>
             {data.limitations.length ? (
-              <ul>
-                {data.limitations.map((item) => (
-                  <li key={item}>{localizeLimitation(locale, item)}</li>
-                ))}
+              <ul className="limitation-list">
+                {data.limitations.map((item) => {
+                  const limitation = describeLimitation(locale, item);
+                  return (
+                    <li key={item}>
+                      <article>
+                        <strong>{limitation.title}</strong>
+                        <p>{limitation.description}</p>
+                        <details className="inline-technical-facts">
+                          <summary>{t("technicalTrace")}</summary>
+                          <code>{limitation.technicalLabel}</code>
+                        </details>
+                      </article>
+                    </li>
+                  );
+                })}
               </ul>
             ) : (
               <p>{t("noLimitations")}</p>
@@ -1807,7 +1933,9 @@ export function EvidenceDashboard({
         )}
         <span className="statusbar-spacer" />
         <span><FileText size={12} /> {t("retainedJsonArtifacts")}</span>
-        <span><FileText size={12} /> {data.contract}</span>
+        <span title={data.contract}>
+          <FileText size={12} /> {t("evidenceDataLoaded")}
+        </span>
       </footer>
 
       <CommandPalette

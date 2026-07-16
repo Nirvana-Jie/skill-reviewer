@@ -4,6 +4,8 @@ import {
   describeAssertion,
   describeDashboardCase,
   describeEvidenceNode,
+  describeLimitation,
+  describeReviewStatus,
   localizeLimitation,
   repeatFromEvidenceNode,
 } from "./evidence-semantics";
@@ -38,8 +40,8 @@ function node(overrides: Partial<SpineNode>): SpineNode {
 describe("evidence semantics", () => {
   it("presents localized human meaning while retaining the immutable case ID", () => {
     expect(describeDashboardCase("zh-CN", selectionCase)).toEqual({
-      title: "发布质量选拔",
-      description: "验证候选是否达到发布质量要求，并在成对执行中保持稳定。",
+      title: "候选质量是否达到发布要求",
+      description: "通过候选版与旧版的多轮对照，判断质量提升是否稳定且足以进入发布。",
       technicalLabel: "selection-quality",
     });
   });
@@ -55,20 +57,37 @@ describe("evidence semantics", () => {
     expect(
       describeEvidenceNode("zh-CN", gate, [selectionCase]),
     ).toMatchObject({
-      title: "发布质量选拔 · 候选必需断言",
-      description: "候选证据不完整，或至少一个必须通过的断言失败。",
+      title: "候选质量是否达到发布要求｜候选结果检查",
+      description: "候选版缺少必需证据，或至少一项检查未通过；本场景不能判定通过。",
     });
   });
 
   it("gives known assertions a semantic name and keeps unknown IDs traceable", () => {
     expect(describeAssertion("zh-CN", "response-exists", "file_exists")).toMatchObject({
-      title: "Agent 响应已保留",
+      title: "已生成并保留 Agent 回答",
       technicalLabel: "response-exists",
     });
     expect(describeAssertion("zh-CN", "custom-check", "custom_type")).toEqual({
-      title: "自定义验证断言",
-      description: "根据评测清单中声明的规则检查保留的 Agent 输出。",
+      title: "自定义检查项",
+      description: "按照评测清单中声明的规则检查保留的 Agent 回答。",
       technicalLabel: "custom-check",
+    });
+  });
+
+  it("explains evidence-insufficiency checks without exposing implementation jargon", () => {
+    const missingBaselineCase: DashboardCase = {
+      ...selectionCase,
+      id: "missing-baseline-is-inconclusive",
+      status: "failed",
+    };
+    expect(describeDashboardCase("zh-CN", missingBaselineCase)).toMatchObject({
+      title: "缺少基线时，不判定退化",
+    });
+    expect(
+      describeAssertion("zh-CN", "no-false-regression-claim", "text_not_contains"),
+    ).toMatchObject({
+      title: "没有在缺少基线时声称退化",
+      description: "旧版对照证据缺失或不完整时，不允许把候选版描述为已经退化。",
     });
   });
 
@@ -82,12 +101,59 @@ describe("evidence semantics", () => {
     ).toBe(3);
   });
 
-  it("localizes known evidence limitations without mutating source data", () => {
+  it("explains review status in terms of its consequence", () => {
+    expect(describeReviewStatus("zh-CN", "failed")).toEqual({
+      title: "检查未通过",
+      description: "现有证据未满足这项要求；请继续查看失败检查或缺失产物。",
+      technicalLabel: "failed",
+    });
+    expect(describeReviewStatus("zh-CN", "awaiting-audit")).toMatchObject({
+      title: "等待安全审计",
+    });
+  });
+
+  it.each([
+    "passed",
+    "failed",
+    "audit-passed",
+    "audit-failed",
+    "behavior-verified",
+    "regression-verified",
+    "regressed",
+    "disagreement",
+    "pending",
+    "incomplete",
+    "missing",
+    "retained",
+    "optimizing",
+    "awaiting-audit",
+    "inconclusive",
+    "agreement",
+    "no-change",
+    "exhausted",
+    "completed",
+    "accepted",
+    "rejected",
+    "invalid",
+    "stale",
+    "blocked",
+  ])("provides reviewer-facing Chinese for the %s state", (status) => {
+    expect(describeReviewStatus("zh-CN", status).title).not.toBe(
+      "当前状态待进一步解释",
+    );
+  });
+
+  it("turns recorded limitations into reviewer-facing explanations", () => {
+    expect(describeLimitation("zh-CN", "Audit has not passed.")).toEqual({
+      title: "安全审计尚未通过",
+      description: "发布仍被审计结果阻塞；请先处理审计场景中的失败项。",
+      technicalLabel: "Audit has not passed.",
+    });
     expect(localizeLimitation("zh-CN", "Audit has not passed.")).toBe(
-      "审计尚未通过。",
+      "发布仍被审计结果阻塞；请先处理审计场景中的失败项。",
     );
     expect(localizeLimitation("en", "Audit has not passed.")).toBe(
-      "Audit has not passed.",
+      "Release remains blocked until the failed audit checks are resolved.",
     );
   });
 });

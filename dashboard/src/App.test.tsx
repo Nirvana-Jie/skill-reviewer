@@ -336,11 +336,12 @@ describe("EvidenceDashboard", () => {
     expect(screen.getByText(/behavioral evidence blocked/)).toBeInTheDocument();
     expect(screen.getAllByText("2 / 3").length).toBeGreaterThan(0);
     expect(screen.getByText(/continuity epoch 1/)).toBeInTheDocument();
-    expect(screen.getAllByText("selection-quality").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Release quality selection").length).toBeGreaterThan(0);
+    expect(screen.queryByText("selection-quality")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /execute|approve|run eval/i })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Audit" }));
-    expect(screen.getAllByText("public-safety-audit").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Public safety audit").length).toBeGreaterThan(0);
     expect(screen.queryByText("selection-quality")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "All" }));
@@ -350,7 +351,7 @@ describe("EvidenceDashboard", () => {
       }),
     );
     expect(screen.getByText("Semantic evidence")).toBeInTheDocument();
-    expect(screen.getByText("blind-quality")).toBeInTheDocument();
+    expect(screen.getByText("Blind quality comparison")).toBeInTheDocument();
     expect(screen.getByText(/preference candidate/)).toBeInTheDocument();
     expect(screen.getByText("native-agent")).toBeInTheDocument();
     expect(screen.getByText("lead-agent-dispatch")).toBeInTheDocument();
@@ -478,20 +479,29 @@ describe("EvidenceDashboard", () => {
 
     expect(document.documentElement).toHaveAttribute("lang", "zh-CN");
     expect(document.title).toBe("Skill Reviewer · 证据工作台");
-    expect(screen.getByText("证据链")).toBeInTheDocument();
+    expect(screen.getByText("评测证据")).toBeInTheDocument();
+    expect(screen.getByText("暂不可发布")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "收起 不可变评测运行" }),
+      screen.getByText("1 个场景、1 项发布门禁尚未通过。"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "收起 本次评测运行" }),
     ).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getAllByText("发布质量选拔").length).toBeGreaterThan(0);
-    expect(screen.getByText("审计尚未通过。")).toBeInTheDocument();
-    expect(screen.getByText("原生 Agent 执行")).toBeInTheDocument();
-    expect(screen.getByText("主 Agent 分发")).toBeInTheDocument();
+    expect(
+      screen.getAllByText("候选质量是否达到发布要求").length,
+    ).toBeGreaterThan(0);
+    expect(screen.getByText("安全审计尚未通过")).toBeInTheDocument();
+    expect(
+      screen.getByText("发布仍被审计结果阻塞；请先处理审计场景中的失败项。"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("由主 Agent 直接执行")).toBeInTheDocument();
+    expect(screen.getByText("由主 Agent 负责分发")).toBeInTheDocument();
     expect(screen.getAllByText("查看详情").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("公开校准").length).toBeGreaterThan(0);
-    expect(screen.getByText("回归已验证")).toBeInTheDocument();
+    expect(screen.getAllByText("公开校准场景").length).toBeGreaterThan(0);
+    expect(screen.getByText("已完成新旧版对照验证")).toBeInTheDocument();
     expect(window.localStorage.getItem(preferenceStorageKeys.locale)).toBe("zh-CN");
 
-    fireEvent.click(screen.getByRole("tab", { name: "差异 (1)" }));
+    fireEvent.click(screen.getByRole("tab", { name: "文件差异 (1)" }));
     expect(await screen.findByText("Rendered diff SKILL.md")).toBeInTheDocument();
     expect(diffOptionsSpy).toHaveBeenLastCalledWith(
       expect.objectContaining({ theme: "pierre-light" }),
@@ -523,10 +533,41 @@ describe("EvidenceDashboard", () => {
 
     expect(document.documentElement).toHaveAttribute("lang", "zh-CN");
     expect(document.documentElement).toHaveAttribute("data-theme", "dark");
-    expect(screen.getByText("证据链")).toBeInTheDocument();
+    expect(screen.getByText("评测证据")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "切换到浅色主题" }),
     ).toBeInTheDocument();
+  });
+
+  it("keeps reviewer meaning visible and raw identifiers in a collapsed trace", () => {
+    const { container } = renderWithPreferences(
+      <EvidenceDashboard data={data} connectionState="live" />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Switch to Simplified Chinese" }),
+    );
+
+    const caseList = container.querySelector(".case-list");
+    expect(caseList).toHaveTextContent("候选质量是否达到发布要求");
+    expect(caseList).not.toHaveTextContent("selection-quality");
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "候选质量是否达到发布要求 · 通过",
+      }),
+    );
+    expect(screen.getByText("检查通过")).toBeInTheDocument();
+
+    const trace = container.querySelector<HTMLDetailsElement>(
+      ".inspector .technical-facts",
+    );
+    expect(trace).not.toBeNull();
+    expect(trace?.open).toBe(false);
+    expect(trace).toHaveTextContent("selection-quality");
+
+    fireEvent.click(trace!.querySelector("summary")!);
+    expect(trace?.open).toBe(true);
   });
 
   it("restores a guarded diff permalink and keeps review controls in the URL", async () => {
@@ -633,7 +674,7 @@ describe("EvidenceDashboard", () => {
       screen.getByRole("button", { name: "Case status: Attention" }),
     );
     expect(container.querySelectorAll(".case-row")).toHaveLength(1);
-    expect(screen.getAllByText("public-safety-audit").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Public safety audit").length).toBeGreaterThan(0);
     expect(screen.getByText("Last refresh failed")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Retry connection" }));
