@@ -1203,7 +1203,7 @@ describe("EvidenceDashboard", () => {
     });
     expect(references).toHaveAttribute("aria-expanded", "true");
     expect(
-      view.container.querySelector(".diff-file-icon.icon-python"),
+      view.container.querySelector('[data-file-icon="python"]'),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("button", {

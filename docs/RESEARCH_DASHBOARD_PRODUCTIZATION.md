@@ -248,6 +248,8 @@ Reload、copy、搜索结果数和连接状态用 `role=status`/polite live regi
 
 当前 diff 路径已经采用 Pierre 官方建议的大型 diff 组合：virtualization、worker pool、cacheKey 和按需 sidecar。无需为了“看起来更工程化”替换为编辑器组件；只有未来需要把所有文件放进同一连续滚动 surface 时，才需要重新评估 Pierre 的 CodeView 或其它 renderer。[Pierre Diffs](https://diffs.com/docs)
 
+文件目录树使用 [React Symbols](https://www.npmjs.com/package/%40react-symbols/icons) 的 VS Code Symbols 图标，但不调用运行时自动分配器：项目显式导入实际需要的文件与目录 SVG，再由本地确定性规则按文件名、测试后缀和扩展名映射。这样可以离线渲染，并保持“文件类型图标”和行尾 Git A/M/D 状态各自只表达一件事。当前生产构建相对接入前仅让懒加载 DiffViewer 增加约 12.3 KiB gzip。
+
 下一步性能工作应聚焦尚未有界的列表和可测门禁：
 
 1. 建立大型 synthetic fixture，例如 2,000 cases、20,000 spine nodes、2,000 diff metadata；这些数字是项目 stress guardrail，不是外部论文结论；

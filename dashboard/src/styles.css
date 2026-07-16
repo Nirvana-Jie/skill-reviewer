@@ -45,12 +45,6 @@
   --change-add-surface: #dff0e7;
   --change-remove-ink: #9b3e34;
   --change-remove-surface: #f5e2df;
-  --explorer-folder: #6f8798;
-  --explorer-document: #4c7eaa;
-  --explorer-code: #31819a;
-  --explorer-data: #9a6d2f;
-  --explorer-style: #80649f;
-  --explorer-test: #a86e2b;
   --active-control-line: #bdbde8;
   --active-control-ink: #4444b7;
   --disabled-ink: #b7b7b1;
@@ -105,12 +99,6 @@
   --change-add-surface: #183225;
   --change-remove-ink: #ef9990;
   --change-remove-surface: #38201f;
-  --explorer-folder: #8ca8ba;
-  --explorer-document: #6fa8d4;
-  --explorer-code: #63b6ca;
-  --explorer-data: #d7aa66;
-  --explorer-style: #b69bd1;
-  --explorer-test: #e1a65d;
   --active-control-line: #6262a6;
   --active-control-ink: #c4c3ff;
   --disabled-ink: #575c66;
@@ -2341,7 +2329,7 @@ dd {
 }
 
 .diff-root-icon {
-  color: var(--accent);
+  filter: saturate(1.08);
 }
 
 .diff-tree-directory {
@@ -2368,10 +2356,6 @@ dd {
   transform: rotate(90deg);
 }
 
-.diff-tree-directory > svg:not(.diff-tree-chevron) {
-  color: var(--explorer-folder);
-}
-
 .diff-tree-directory strong {
   min-width: 0;
   overflow: hidden;
@@ -2394,32 +2378,18 @@ dd {
   height: 1px;
 }
 
-.diff-file-icon {
+.diff-file-icon,
+.diff-folder-icon {
   display: inline-grid;
   width: 16px;
   height: 18px;
   place-items: center;
-  color: var(--explorer-document);
+  flex: none;
 }
 
-.diff-file-icon.icon-code,
-.diff-file-icon.icon-markup,
-.diff-file-icon.icon-shell {
-  color: var(--explorer-code);
-}
-
-.diff-file-icon.icon-data,
-.diff-file-icon.icon-config,
-.diff-file-icon.icon-python {
-  color: var(--explorer-data);
-}
-
-.diff-file-icon.icon-style {
-  color: var(--explorer-style);
-}
-
-.diff-file-icon.icon-test {
-  color: var(--explorer-test);
+.diff-file-icon svg,
+.diff-folder-icon svg {
+  display: block;
 }
 
 .diff-tree-label {

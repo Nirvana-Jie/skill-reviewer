@@ -1,21 +1,11 @@
 import {
-  Braces,
   ChevronLeft,
   ChevronRight,
   ClipboardCopy,
   Columns2,
-  FileCode2,
-  FileCog,
-  FileText,
-  FlaskConical,
-  Folder,
-  FolderOpen,
-  FolderRoot,
-  Palette,
   RefreshCw,
   Rows3,
   Search,
-  Terminal,
   WrapText,
 } from "lucide-react";
 import {
@@ -35,6 +25,7 @@ import {
   directoryAncestorIds,
   flattenDiffTree,
 } from "./diff-tree";
+import { FileTypeIcon, FolderTypeIcon, RootFolderIcon } from "./file-icons";
 import { handleRovingListKeyDown } from "./keyboard-navigation";
 import type { DashboardDiff, DashboardDiffPayload } from "./types";
 import { localizeValue, useUiPreferences } from "./ui-preferences";
@@ -142,65 +133,6 @@ function changeMark(status: DashboardDiff["status"]): string {
   if (status === "added") return "A";
   if (status === "removed") return "D";
   return "M";
-}
-
-type FileIconKind =
-  | "code"
-  | "config"
-  | "data"
-  | "document"
-  | "markup"
-  | "python"
-  | "shell"
-  | "style"
-  | "test";
-
-function fileIconKind(path: string): FileIconKind {
-  const lowerPath = path.toLowerCase();
-  const extension = lowerPath.split(".").pop() ?? "";
-  if (
-    /(^|\/)(tests?|__tests__)(\/|$)/.test(lowerPath) ||
-    /\.(?:test|spec)\.[^.]+$/.test(lowerPath)
-  ) {
-    return "test";
-  }
-  if (["ts", "tsx", "js", "jsx", "mjs", "cjs"].includes(extension)) {
-    return "code";
-  }
-  if (extension === "py") return "python";
-  if (["csv", "json", "jsonc", "jsonl", "tsv"].includes(extension)) {
-    return "data";
-  }
-  if (["html", "xml", "svg"].includes(extension)) return "markup";
-  if (["css", "scss", "sass", "less"].includes(extension)) return "style";
-  if (["sh", "bash", "zsh"].includes(extension)) return "shell";
-  if (["yaml", "yml", "toml", "ini"].includes(extension)) return "config";
-  return "document";
-}
-
-function FileTreeIcon({ path }: { path: string }) {
-  const kind = fileIconKind(path);
-  const icon =
-    kind === "test" ? (
-      <FlaskConical size={14} />
-    ) : kind === "data" ? (
-      <Braces size={14} />
-    ) : kind === "style" ? (
-      <Palette size={14} />
-    ) : kind === "shell" ? (
-      <Terminal size={14} />
-    ) : kind === "config" ? (
-      <FileCog size={14} />
-    ) : kind === "document" ? (
-      <FileText size={14} />
-    ) : (
-      <FileCode2 size={14} />
-    );
-  return (
-    <span className={`diff-file-icon icon-${kind}`} aria-hidden="true">
-      {icon}
-    </span>
-  );
 }
 
 function validatePayload(
@@ -496,7 +428,7 @@ function DiffBrowser({
               size={12}
               aria-hidden="true"
             />
-            <FolderRoot className="diff-root-icon" size={15} aria-hidden="true" />
+            <RootFolderIcon />
             <strong>{t("changedFilesRoot")}</strong>
             <small>{visibleDiffs.length}</small>
           </button>
@@ -542,11 +474,7 @@ function DiffBrowser({
                     size={12}
                     aria-hidden="true"
                   />
-                  {expanded ? (
-                    <FolderOpen size={14} aria-hidden="true" />
-                  ) : (
-                    <Folder size={14} aria-hidden="true" />
-                  )}
+                  <FolderTypeIcon name={node.name} expanded={expanded} />
                   <strong>{node.name}</strong>
                 </button>
               );
@@ -568,7 +496,7 @@ function DiffBrowser({
                 onClick={() => selectId(diff.id)}
               >
                 <span className="diff-tree-chevron-spacer" aria-hidden="true" />
-                <FileTreeIcon path={diff.path} />
+                <FileTypeIcon path={diff.path} />
                 <span className="diff-tree-label">
                   {node.name}
                 </span>

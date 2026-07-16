@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@pierre/diffs": "1.2.12",
+    "@react-symbols/icons": "1.4.1",
     "lucide-react": "1.24.0",
     "react": "19.2.7",
     "react-dom": "19.2.7"

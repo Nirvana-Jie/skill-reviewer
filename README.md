@@ -193,7 +193,9 @@ bytes on every local-server response; the 512 KiB rule is applied to each
 parsed UTF-8 side, not to JSON-escaped file size. A mounted worker-pool provider
 moves syntax highlighting off the main thread, and
 virtualization avoids an unbounded DOM. This display cap is not a release diff
-size gate. The Dashboard evidence plane remains read-only, and
+size gate. The changed-file tree uses VS Code Symbols-style file and folder
+icons for document, data, configuration, language, and test artifacts while
+keeping Git A/M/D status independent. The Dashboard evidence plane remains read-only, and
 `audit-passed` still requires an explicit user release decision.
 
 For evolution runs, the Action Center projects the exact state-machine
