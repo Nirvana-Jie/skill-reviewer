@@ -16,6 +16,7 @@ import {
   LockKeyhole,
   Maximize2,
   Minimize2,
+  PanelRightOpen,
   Pause,
   Play,
   RefreshCw,
@@ -174,6 +175,40 @@ function nodeDepth(node: SpineNode, nodesById: Map<string, SpineNode>): number {
     parentId = nodesById.get(parentId)?.parent_id ?? null;
   }
   return depth;
+}
+
+function nodeAncestorIds(
+  nodeId: string,
+  nodesById: Map<string, SpineNode>,
+): string[] {
+  const ancestors: string[] = [];
+  const visited = new Set<string>();
+  let parentId = nodesById.get(nodeId)?.parent_id ?? null;
+  while (parentId && !visited.has(parentId)) {
+    visited.add(parentId);
+    ancestors.push(parentId);
+    parentId = nodesById.get(parentId)?.parent_id ?? null;
+  }
+  return ancestors;
+}
+
+function initialExpandedNodeIds(
+  nodes: SpineNode[],
+  selectedId: string,
+): Set<string> {
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  return new Set([
+    ...nodes.filter((node) => node.parent_id === null).map((node) => node.id),
+    ...nodeAncestorIds(selectedId, nodesById),
+  ]);
+}
+
+function isDescendantOf(
+  nodeId: string,
+  ancestorId: string,
+  nodesById: Map<string, SpineNode>,
+): boolean {
+  return nodeAncestorIds(nodeId, nodesById).includes(ancestorId);
 }
 
 function useDashboardData() {
@@ -429,10 +464,13 @@ export function EvidenceDashboard({
     initialView.caseStatus,
   );
   const [caseQuery, setCaseQuery] = useState(initialView.query);
-  const [selectedId, setSelectedId] = useState(
+  const initialEvidenceId =
     data.spine.some((node) => node.id === initialView.evidenceId)
       ? (initialView.evidenceId ?? "")
-      : (data.spine[0]?.id ?? ""),
+      : (data.spine[0]?.id ?? "");
+  const [selectedId, setSelectedId] = useState(initialEvidenceId);
+  const [expandedNodeIds, setExpandedNodeIds] = useState<Set<string>>(
+    () => initialExpandedNodeIds(data.spine, initialEvidenceId),
   );
   const [selectedDiffId, setSelectedDiffId] = useState(
     data.diffs.some((diff) => diff.id === initialView.diffId)
@@ -501,7 +539,40 @@ export function EvidenceDashboard({
     () => new Map(data.spine.map((node) => [node.id, node])),
     [data.spine],
   );
-  const selectedNodeIsVisible = visibleNodes.some((node) => node.id === selectedId);
+  const visibleChildCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    visibleNodes.forEach((node) => {
+      if (!node.parent_id) return;
+      counts.set(node.parent_id, (counts.get(node.parent_id) ?? 0) + 1);
+    });
+    return counts;
+  }, [visibleNodes]);
+  const expandableNodeIds = useMemo(() => {
+    const ids = new Set<string>();
+    data.spine.forEach((node) => {
+      if (node.parent_id) ids.add(node.parent_id);
+    });
+    return ids;
+  }, [data.spine]);
+  const displayedNodes = useMemo(
+    () =>
+      visibleNodes.filter((node) =>
+        nodeAncestorIds(node.id, nodesById).every(
+          (ancestorId) =>
+            !visibleChildCounts.has(ancestorId) || expandedNodeIds.has(ancestorId),
+        ),
+      ),
+    [expandedNodeIds, nodesById, visibleChildCounts, visibleNodes],
+  );
+  const selectedNodeIsDisplayed = displayedNodes.some(
+    (node) => node.id === selectedId,
+  );
+  const allEvidenceExpanded = Array.from(expandableNodeIds).every((nodeId) =>
+    expandedNodeIds.has(nodeId),
+  );
+  const allEvidenceCollapsed = Array.from(expandableNodeIds).every(
+    (nodeId) => !expandedNodeIds.has(nodeId),
+  );
 
   const currentView = useMemo<DashboardViewState>(
     () => ({
@@ -561,21 +632,65 @@ export function EvidenceDashboard({
     setCaseQuery("");
   }, []);
 
+  const revealEvidence = useCallback((nodeId: string) => {
+    const ancestorIds = nodeAncestorIds(nodeId, nodesById);
+    setExpandedNodeIds((current) => {
+      const next = new Set(current);
+      let changed = false;
+      ancestorIds.forEach((ancestorId) => {
+        if (next.has(ancestorId)) return;
+        next.add(ancestorId);
+        changed = true;
+      });
+      return changed ? next : current;
+    });
+  }, [nodesById]);
+
   const openCase = useCallback((item: DashboardCase) => {
+    const nodeId = `case:${item.id}`;
     setSplit(item.split);
     setCaseStatus("all");
     setCaseQuery("");
-    setSelectedId(`case:${item.id}`);
+    revealEvidence(nodeId);
+    setSelectedId(nodeId);
     setCanvasView("evidence");
-  }, []);
+  }, [revealEvidence]);
 
   const openEvidence = useCallback((node: SpineNode) => {
     setSplit(node.split ?? "all");
     setCaseStatus("all");
     setCaseQuery("");
+    revealEvidence(node.id);
     setSelectedId(node.id);
     setCanvasView("evidence");
-  }, []);
+  }, [revealEvidence]);
+
+  const toggleEvidenceGroup = useCallback((node: SpineNode) => {
+    const isExpanded = expandedNodeIds.has(node.id);
+    setExpandedNodeIds((current) => {
+      const next = new Set(current);
+      if (isExpanded) next.delete(node.id);
+      else next.add(node.id);
+      return next;
+    });
+    if (
+      isExpanded &&
+      selectedId !== node.id &&
+      isDescendantOf(selectedId, node.id, nodesById)
+    ) {
+      setSelectedId(node.id);
+    }
+  }, [expandedNodeIds, nodesById, selectedId]);
+
+  const expandEvidenceTree = useCallback(() => {
+    setExpandedNodeIds(new Set(expandableNodeIds));
+  }, [expandableNodeIds]);
+
+  const collapseEvidenceTree = useCallback(() => {
+    setExpandedNodeIds(new Set());
+    const rootNode = visibleNodes.find((node) => node.parent_id === null);
+    if (rootNode) setSelectedId(rootNode.id);
+  }, [visibleNodes]);
 
   const openDiff = useCallback((id: string) => {
     setSelectedDiffId(id);
@@ -587,6 +702,16 @@ export function EvidenceDashboard({
       setSelectedId(visibleNodes[0]?.id ?? "");
     }
   }, [selectedId, visibleNodes]);
+
+  useEffect(() => {
+    revealEvidence(selectedId);
+  }, [revealEvidence, selectedId]);
+
+  useEffect(() => {
+    setExpandedNodeIds(initialExpandedNodeIds(data.spine, selectedId));
+    // A newly presented immutable run starts with its top-level evidence visible.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data.run.id]);
 
   useEffect(() => {
     if (canvasView !== "diff") setFocusMode(false);
@@ -1172,7 +1297,10 @@ export function EvidenceDashboard({
             <div className="canvas-context">
               <span>
                 {canvasView === "evidence"
-                  ? t("retainedNodes", { count: visibleNodes.length })
+                  ? t("displayedEvidenceNodes", {
+                      visible: displayedNodes.length,
+                      total: visibleNodes.length,
+                    })
                   : t("runtimeFilesChanged", { count: data.diffs.length })}
               </span>
               {canvasView === "diff" && data.diffs.length > 0 && (
@@ -1203,58 +1331,118 @@ export function EvidenceDashboard({
                   <h2>{t("evidenceChain")}</h2>
                   <p>{t("evidenceChainDescription")}</p>
                 </div>
-                <div className="legend" aria-label={t("statusLegend")}>
-                  <span><i className="legend-dot good" /> {t("passed")}</span>
-                  <span><i className="legend-dot warn" /> {t("pending")}</span>
-                  <span><i className="legend-dot bad" /> {t("blocked")}</span>
+                <div className="stage-guide">
+                  <div
+                    className="evidence-tree-actions"
+                    role="group"
+                    aria-label={t("evidenceTreeControls")}
+                  >
+                    <button
+                      type="button"
+                      onClick={expandEvidenceTree}
+                      disabled={allEvidenceExpanded}
+                    >
+                      {t("expandAllEvidence")}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={collapseEvidenceTree}
+                      disabled={allEvidenceCollapsed}
+                    >
+                      {t("collapseAllEvidence")}
+                    </button>
+                  </div>
+                  <div className="legend" aria-label={t("statusLegend")}>
+                    <span><i className="legend-dot good" /> {t("passed")}</span>
+                    <span><i className="legend-dot warn" /> {t("pending")}</span>
+                    <span><i className="legend-dot bad" /> {t("blocked")}</span>
+                  </div>
                 </div>
               </div>
 
               <div
                 className="evidence-list"
+                aria-label={t("evidenceHierarchy")}
                 onKeyDown={(event) => handleRovingListKeyDown(event)}
               >
-                {visibleNodes.map((node, index) => {
+                {displayedNodes.map((node, index) => {
                   const Icon = iconByKind[node.kind];
                   const depth = nodeDepth(node, nodesById);
+                  const childCount = visibleChildCounts.get(node.id) ?? 0;
+                  const isExpanded = expandedNodeIds.has(node.id);
                   return (
-                    <button
-                      type="button"
-                      data-roving-item
-                      tabIndex={
-                        selectedId === node.id ||
-                        (index === 0 && !selectedNodeIsVisible)
-                          ? 0
-                          : -1
-                      }
+                    <div
                       className={`evidence-row tone-${statusTone(node.status)} ${
                         selectedId === node.id ? "is-selected" : ""
+                      } ${childCount ? "is-group" : "is-leaf"} ${
+                        isExpanded ? "is-expanded" : ""
                       }`}
                       key={node.id}
-                      aria-current={selectedId === node.id ? "true" : undefined}
-                      aria-label={t("openEvidence", { label: node.label })}
-                      onClick={() => setSelectedId(node.id)}
                       style={{ "--node-depth": depth } as React.CSSProperties}
                     >
+                      {childCount ? (
+                        <button
+                          type="button"
+                          className="node-disclosure"
+                          aria-expanded={isExpanded}
+                          aria-label={t(
+                            isExpanded ? "collapseEvidence" : "expandEvidence",
+                            { label: node.label },
+                          )}
+                          title={t(
+                            isExpanded ? "collapseEvidence" : "expandEvidence",
+                            { label: node.label },
+                          )}
+                          onClick={() => toggleEvidenceGroup(node)}
+                        >
+                          <ChevronRight size={14} aria-hidden="true" />
+                        </button>
+                      ) : (
+                        <span
+                          className="node-disclosure-placeholder"
+                          aria-hidden="true"
+                        />
+                      )}
                       <span className="node-icon">
                         <Icon size={15} strokeWidth={1.8} />
                       </span>
-                      <span className="node-copy">
-                        <span className="node-meta">
-                          {localizeValue(locale, node.kind)}
-                          {node.arm ? ` · ${node.arm}` : ""}
-                          {node.repeat
-                            ? ` · ${t("repeatMeta", { count: node.repeat })}`
-                            : ""}
+                      <button
+                        type="button"
+                        className="evidence-open"
+                        data-roving-item
+                        tabIndex={
+                          selectedId === node.id ||
+                          (index === 0 && !selectedNodeIsDisplayed)
+                            ? 0
+                            : -1
+                        }
+                        aria-current={selectedId === node.id ? "true" : undefined}
+                        aria-label={t("viewEvidenceDetails", { label: node.label })}
+                        onClick={() => setSelectedId(node.id)}
+                      >
+                        <span className="node-copy">
+                          <span className="node-meta">
+                            {localizeValue(locale, node.kind)}
+                            {node.arm ? ` · ${node.arm}` : ""}
+                            {node.repeat
+                              ? ` · ${t("repeatMeta", { count: node.repeat })}`
+                              : ""}
+                            {childCount
+                              ? ` · ${t("childItems", { count: childCount })}`
+                              : ""}
+                          </span>
+                          <strong>{node.label}</strong>
+                          <small>
+                            {node.detail ?? node.path ?? t("retainedEvidenceRecord")}
+                          </small>
                         </span>
-                        <strong>{node.label}</strong>
-                        <small>
-                          {node.detail ?? node.path ?? t("retainedEvidenceRecord")}
-                        </small>
-                      </span>
-                      <StatusChip status={node.status} />
-                      <ChevronRight size={14} aria-hidden="true" />
-                    </button>
+                        <StatusChip status={node.status} />
+                        <span className="evidence-detail-action" aria-hidden="true">
+                          <PanelRightOpen size={13} />
+                          <span>{t("viewDetails")}</span>
+                        </span>
+                      </button>
+                    </div>
                   );
                 })}
               </div>

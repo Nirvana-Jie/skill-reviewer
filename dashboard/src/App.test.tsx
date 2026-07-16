@@ -344,7 +344,9 @@ describe("EvidenceDashboard", () => {
     expect(screen.queryByText("selection-quality")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "All" }));
-    fireEvent.click(screen.getByRole("button", { name: "Open evidence selection-quality" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "View details for selection-quality" }),
+    );
     expect(screen.getByText("Semantic evidence")).toBeInTheDocument();
     expect(screen.getByText("blind-quality")).toBeInTheDocument();
     expect(screen.getByText(/preference candidate/)).toBeInTheDocument();
@@ -388,12 +390,60 @@ describe("EvidenceDashboard", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "Evidence" }));
     expect(container.querySelector(".app-shell")).not.toHaveClass("is-focus-mode");
-    fireEvent.click(screen.getByRole("button", { name: /Open evidence response.md/i }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Expand selection-quality" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: /View details for response.md/i }),
+    );
     expect(
       screen.getAllByText(
         "cases/selection-quality/with_skill/repeat-1/outputs/response.md",
       ).length,
     ).toBeGreaterThan(0);
+  });
+
+  it("separates evidence hierarchy disclosure from opening inspector details", () => {
+    renderWithPreferences(
+      <EvidenceDashboard data={data} connectionState="live" />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Collapse run-product-test" }),
+    ).toHaveAttribute("aria-expanded", "true");
+    expect(
+      screen.getByRole("button", { name: "Expand selection-quality" }),
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(
+      screen.queryByRole("button", { name: "View details for response.md" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("Showing 4 of 5 evidence nodes")).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Expand selection-quality" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Collapse selection-quality" }),
+    ).toHaveAttribute("aria-expanded", "true");
+    expect(
+      screen.getByRole("button", { name: "View details for response.md" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Showing 5 of 5 evidence nodes")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Collapse all" }));
+    expect(
+      screen.getByRole("button", { name: "Expand run-product-test" }),
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(
+      screen.queryByRole("button", { name: "View details for Safety hard gate" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("Showing 1 of 5 evidence nodes")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand all" }));
+    expect(
+      screen.getByRole("button", { name: "View details for response.md" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Expand all" })).toBeDisabled();
   });
 
   it("switches locale and monochrome theme across the complete workbench", async () => {
@@ -425,6 +475,10 @@ describe("EvidenceDashboard", () => {
     expect(document.documentElement).toHaveAttribute("lang", "zh-CN");
     expect(document.title).toBe("Skill Reviewer · 证据工作台");
     expect(screen.getByText("证据链")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "收起 run-product-test" }),
+    ).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getAllByText("查看详情").length).toBeGreaterThan(0);
     expect(screen.getAllByText("公开校准").length).toBeGreaterThan(0);
     expect(screen.getByText("回归已验证")).toBeInTheDocument();
     expect(window.localStorage.getItem(preferenceStorageKeys.locale)).toBe("zh-CN");
