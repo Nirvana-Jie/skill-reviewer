@@ -113,6 +113,7 @@ const data: DashboardData = {
     id: "run-product-test",
     status: "awaiting-audit",
     verification_level: "regression-verified",
+    manifest: { path: "/skills/candidate/evals/evals.json", digest: "e".repeat(64) },
     subject: { path: "/skills/candidate", digest: "a".repeat(64) },
     baseline: { kind: "old_skill", path: "/skills/accepted", digest: "b".repeat(64) },
     splits: ["selection", "audit"],
@@ -288,6 +289,16 @@ const data: DashboardData = {
           metrics: {},
           assertions: { passed: 3, total: 3 },
           artifact_count: 2,
+          executions: [1, 2, 3].map((repeat) => ({
+            repeat,
+            status: "completed",
+            binding_error_count: 0,
+            execution_digest: String(repeat).repeat(64),
+            artifact_count: repeat === 1 ? 2 : 0,
+            assertions: { passed: 1, total: 1 },
+            required_pass_rate: 1,
+            metrics: {},
+          })),
         },
       ],
       semantic_assertions: [
@@ -443,6 +454,24 @@ describe("EvidenceDashboard", () => {
     expect(screen.getAllByText("Release quality selection").length).toBeGreaterThan(0);
     expect(screen.queryByText("selection-quality")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /execute|approve|run eval/i })).not.toBeInTheDocument();
+    const failedCaseRow = screen
+      .getByRole("button", {
+        name: "Review scenario result: Public safety audit",
+      })
+      .closest(".evidence-row");
+    expect(failedCaseRow?.querySelector('[data-evidence-icon="circle-x"]')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Execution trace" }));
+    expect(
+      screen.getByRole("heading", { name: "Real eval execution trace" }),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("tab", { name: "Release quality selection" }),
+    );
+    expect(screen.getAllByText("Fully bound").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("3 / 3").length).toBeGreaterThan(0);
+    expect(screen.getByText("Observable execution, not private chain-of-thought")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Evidence" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Audit" }));
     expect(screen.getAllByText("Public safety audit").length).toBeGreaterThan(0);

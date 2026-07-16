@@ -1,6 +1,4 @@
 import {
-  Activity,
-  Archive,
   Beaker,
   Bot,
   Check,
@@ -44,6 +42,11 @@ import {
   nextActionMessageKey,
 } from "./ActionCenter";
 import { copyText, downloadDashboardData } from "./dashboard-actions";
+import {
+  EvalExecutionTraceGuide,
+  EvalExecutionTraceView,
+} from "./EvalExecutionTrace";
+import { EvidenceNodeIcon } from "./EvidenceNodeIcon";
 import { EvidenceReader } from "./EvidenceReader";
 import {
   dashboardViewUrl,
@@ -67,6 +70,7 @@ import {
   repeatFromEvidenceNode,
   type DecisionBasisItem,
 } from "./evidence-semantics";
+import { buildEvalExecutionTrace } from "./eval-execution-trace";
 import { handleRovingListKeyDown } from "./keyboard-navigation";
 import type { DashboardCase, DashboardData, SpineNode } from "./types";
 import {
@@ -82,15 +86,6 @@ type CanvasView = DashboardCanvasView;
 const DiffViewer = lazy(() => import("./DiffViewer"));
 
 const splitOptions: SplitFilter[] = ["all", "development", "selection", "audit"];
-
-const iconByKind = {
-  run: Activity,
-  gate: ShieldCheck,
-  iteration: GitCompareArrows,
-  case: Beaker,
-  assertion: FileCheck2,
-  artifact: Archive,
-} satisfies Record<SpineNode["kind"], typeof Activity>;
 
 function statusTone(status: string): "good" | "bad" | "warn" | "neutral" {
   const normalized = status.toLowerCase();
@@ -715,7 +710,10 @@ export function EvidenceDashboard({
       caseStatus,
       query: caseQuery,
       canvasView,
-      evidenceId: canvasView === "evidence" ? selectedId || null : null,
+      evidenceId:
+        canvasView === "evidence" || canvasView === "execution"
+          ? selectedId || null
+          : null,
       diffId: canvasView === "diff" ? selectedDiffId : null,
       diffLayout,
       wrapLines,
@@ -945,6 +943,9 @@ export function EvidenceDashboard({
   const selected =
     data.spine.find((node) => node.id === selectedId) ?? visibleNodes[0];
   const selectedCase = caseForEvidenceNode(selected, nodesById, data.cases);
+  const executionCase =
+    selectedCase ?? data.cases.find(isAttentionCase) ?? data.cases[0] ?? null;
+  const executionTrace = buildEvalExecutionTrace(data, executionCase?.id);
   const selectedSemantic = selected
     ? nodeSemanticsById.get(selected.id) ??
       describeEvidenceNode(locale, selected, data.cases)
@@ -1039,6 +1040,21 @@ export function EvidenceDashboard({
       label: t("showEvidence"),
       detail: t("evidenceChainDescription"),
       run: () => setCanvasView("evidence"),
+    },
+    {
+      id: "action-show-execution-trace",
+      group: t("actionGroup"),
+      label: t("showExecutionTrace"),
+      detail: executionTrace
+        ? t("executionTraceContext", {
+            observed: executionTrace.observedExecutions,
+            expected: executionTrace.expectedExecutions,
+          })
+        : t("notRecorded"),
+      run: () => {
+        if (executionCase) setSelectedId(`case:${executionCase.id}`);
+        setCanvasView("execution");
+      },
     },
     {
       id: "action-show-diff",
@@ -1202,7 +1218,9 @@ export function EvidenceDashboard({
     <main
       className={`app-shell ${focusMode ? "is-focus-mode" : ""} ${
         refreshControls?.error ? "has-transport-warning" : ""
-      } ${canvasView === "action" ? "is-action-mode" : ""}`}
+      } ${canvasView === "action" ? "is-action-mode" : ""} ${
+        canvasView === "execution" ? "is-execution-mode" : ""
+      }`}
     >
       <a className="skip-link" href="#evidence-workspace">
         {t("skipToEvidence")}
@@ -1512,6 +1530,22 @@ export function EvidenceDashboard({
                 {t("evidence")}
               </button>
               <button
+                id="canvas-tab-execution"
+                type="button"
+                role="tab"
+                data-roving-item
+                aria-controls="canvas-panel"
+                aria-selected={canvasView === "execution"}
+                tabIndex={canvasView === "execution" ? 0 : -1}
+                className={canvasView === "execution" ? "is-active" : ""}
+                onClick={() => {
+                  if (executionCase) setSelectedId(`case:${executionCase.id}`);
+                  setCanvasView("execution");
+                }}
+              >
+                {t("executionTrace")}
+              </button>
+              <button
                 id="canvas-tab-diff"
                 type="button"
                 role="tab"
@@ -1545,6 +1579,13 @@ export function EvidenceDashboard({
                       visible: displayedNodes.length,
                       total: visibleNodes.length,
                     })
+                  : canvasView === "execution"
+                    ? executionTrace
+                      ? t("executionTraceContext", {
+                          observed: executionTrace.observedExecutions,
+                          expected: executionTrace.expectedExecutions,
+                        })
+                      : t("notRecorded")
                   : canvasView === "diff"
                     ? t("runtimeFilesChanged", { count: data.diffs.length })
                     : t("actionCenterContext", {
@@ -1579,6 +1620,25 @@ export function EvidenceDashboard({
                 if (node) openEvidence(node);
               }}
             />
+          ) : canvasView === "execution" && executionTrace ? (
+            <EvalExecutionTraceView
+              trace={executionTrace}
+              cases={data.cases}
+              manifest={data.run.manifest}
+              planDigest={data.run.integrity?.plan_digest}
+              executionProfile={data.run.execution_profile}
+              onSelectCase={(caseId) => setSelectedId(`case:${caseId}`)}
+              onOpenEvidence={(evidenceId) => {
+                const node = data.spine.find((item) => item.id === evidenceId);
+                if (node) openEvidence(node);
+              }}
+            />
+          ) : canvasView === "execution" ? (
+            <div className="diff-empty">
+              <Bot size={24} />
+              <strong>{t("noCasesMatch")}</strong>
+              <p>{t("notRecorded")}</p>
+            </div>
           ) : canvasView === "evidence" ? (
             <div className="evidence-stage">
               <div className="stage-intro">
@@ -1637,7 +1697,7 @@ export function EvidenceDashboard({
                 onKeyDown={(event) => handleRovingListKeyDown(event)}
               >
                 {displayedNodes.map((node, index) => {
-                  const Icon = iconByKind[node.kind];
+                  const tone = statusTone(node.status);
                   const depth = nodeDepth(node, nodesById);
                   const childCount = visibleChildCounts.get(node.id) ?? 0;
                   const isExpanded = expandedNodeIds.has(node.id);
@@ -1645,7 +1705,7 @@ export function EvidenceDashboard({
                   const repeat = repeatFromEvidenceNode(node);
                   return (
                     <div
-                      className={`evidence-row tone-${statusTone(node.status)} ${
+                      className={`evidence-row tone-${tone} ${
                         selectedId === node.id ? "is-selected" : ""
                       } ${childCount ? "is-group" : "is-leaf"} ${
                         isExpanded ? "is-expanded" : ""
@@ -1676,9 +1736,7 @@ export function EvidenceDashboard({
                           aria-hidden="true"
                         />
                       )}
-                      <span className="node-icon">
-                        <Icon size={15} strokeWidth={1.8} />
-                      </span>
+                      <EvidenceNodeIcon kind={node.kind} tone={tone} />
                       <button
                         type="button"
                         className="evidence-open"
@@ -1753,7 +1811,11 @@ export function EvidenceDashboard({
         <aside
           className="inspector pane"
           aria-label={
-            canvasView === "action" ? t("actionCenter") : t("evidenceInspector")
+            canvasView === "action"
+              ? t("actionCenter")
+              : canvasView === "execution"
+                ? t("executionTraceInspector")
+                : t("evidenceInspector")
           }
         >
           {canvasView === "action" ? (
@@ -1767,6 +1829,24 @@ export function EvidenceDashboard({
               </div>
               <ActionAuditGuide data={data} />
             </>
+          ) : canvasView === "execution" && executionTrace ? (
+            <>
+              <div className="pane-heading execution-inspector-heading">
+                <div>
+                  <span className="pane-kicker">{t("actualExecution")}</span>
+                  <h2>{t("executionTraceInspector")}</h2>
+                </div>
+                <Fingerprint size={17} aria-hidden="true" />
+              </div>
+              <EvalExecutionTraceGuide
+                trace={executionTrace}
+                manifest={data.run.manifest}
+                planDigest={data.run.integrity?.plan_digest}
+                executionProfileDigest={data.run.execution_profile?.digest}
+              />
+            </>
+          ) : canvasView === "execution" ? (
+            <p className="empty-note">{t("noCasesMatch")}</p>
           ) : (
             <>
           <div className="pane-heading">

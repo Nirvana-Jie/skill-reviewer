@@ -4366,6 +4366,10 @@ describe("skill_eval_runtime dashboard projection", () => {
             id: plan.run_id,
             status: "awaiting-audit",
             verification_level: "regression-verified",
+            manifest: expect.objectContaining({
+              path: plan.manifest.path,
+              digest: plan.manifest.digest,
+            }),
             evidence_scope: "public-calibration",
             release_eligible: false,
             execution_profile: expect.objectContaining({
@@ -4454,7 +4458,18 @@ describe("skill_eval_runtime dashboard projection", () => {
               status: "passed",
               holdout_visibility: "public",
               arms: expect.arrayContaining([
-                expect.objectContaining({ id: "with_skill", passed: true }),
+                expect.objectContaining({
+                  id: "with_skill",
+                  passed: true,
+                  executions: expect.arrayContaining([
+                    expect.objectContaining({
+                      repeat: 1,
+                      status: "completed",
+                      binding_error_count: 0,
+                      execution_digest: expect.stringMatching(/^[a-f0-9]{64}$/),
+                    }),
+                  ]),
+                }),
                 expect.objectContaining({ id: "old_skill", passed: false }),
               ]),
             }),

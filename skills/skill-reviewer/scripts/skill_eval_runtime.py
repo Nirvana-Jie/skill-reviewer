@@ -5369,6 +5369,7 @@ def project_dashboard(
             arm = raw_arm if isinstance(raw_arm, dict) else {}
             assertion_count = 0
             passed_assertions = 0
+            execution_rows: list[dict[str, Any]] = []
             artifact_paths: set[str] = set(
                 str(value) for value in arm.get("artifacts", []) if isinstance(value, str)
             )
@@ -5376,6 +5377,39 @@ def project_dashboard(
                 if not isinstance(repeat, dict):
                     continue
                 repeat_number = repeat.get("repeat")
+                repeat_assertions = [
+                    assertion
+                    for assertion in repeat.get("assertions", [])
+                    if isinstance(assertion, dict)
+                ]
+                execution_rows.append(
+                    {
+                        "repeat": repeat_number,
+                        "status": repeat.get("status"),
+                        "binding_error_count": len(
+                            repeat.get("binding_errors", [])
+                            if isinstance(repeat.get("binding_errors"), list)
+                            else []
+                        ),
+                        "execution_digest": repeat.get("execution_digest"),
+                        "artifact_count": len(
+                            repeat.get("artifact_digests", {})
+                            if isinstance(repeat.get("artifact_digests"), dict)
+                            else {}
+                        ),
+                        "assertions": {
+                            "passed": sum(
+                                assertion.get("passed") is True
+                                for assertion in repeat_assertions
+                            ),
+                            "total": len(repeat_assertions),
+                        },
+                        "required_pass_rate": repeat.get("required_pass_rate"),
+                        "metrics": repeat.get("metrics", {})
+                        if isinstance(repeat.get("metrics"), dict)
+                        else {},
+                    }
+                )
                 for assertion in repeat.get("assertions", []):
                     if not isinstance(assertion, dict):
                         continue
@@ -5476,6 +5510,7 @@ def project_dashboard(
                         "total": assertion_count,
                     },
                     "artifact_count": len(artifact_paths),
+                    "executions": execution_rows,
                 }
             )
         if isinstance(semantic_assertions, list):
@@ -5681,6 +5716,7 @@ def project_dashboard(
                 else (evidence or {}).get("level", "planned")
             ),
             "verification_level": (evidence or {}).get("level", "not-run"),
+            "manifest": plan.get("manifest"),
             "subject": plan.get("subject"),
             "baseline": plan.get("baseline"),
             "splits": plan.get("splits", []),

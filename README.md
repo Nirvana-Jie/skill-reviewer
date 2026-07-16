@@ -198,6 +198,17 @@ icons for document, data, configuration, language, and test artifacts while
 keeping Git A/M/D status independent. The Dashboard evidence plane remains read-only, and
 `audit-passed` still requires an explicit user release decision.
 
+The Execution Trace view unfolds the same retained `evals.json` run through
+five stages: locked scenario definition, lead-Agent dispatch, per-arm/per-repeat
+executions, deterministic plus supplemental semantic grading, and the scenario
+and release-gate outcome. Each repeat is projected from its status, binding
+errors, execution digest, assertion counts, and retained artifacts; failures use
+shape semantics such as an X in addition to color. The trace is “Fully bound”
+only when the eval manifest, plan lock, execution profile, exact repeat coverage,
+and downstream evidence all bind. Otherwise it names the confidence gaps. This
+surface exposes auditable inputs, dispatch, outputs, checks, and decisions—not
+private model chain-of-thought.
+
 For evolution runs, the Action Center projects the exact state-machine
 `next_action` alongside the three conjunctive selection conditions: all hard
 gates, Pareto non-regression, and material primary-objective improvement. It

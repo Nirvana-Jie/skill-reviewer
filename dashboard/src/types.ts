@@ -11,6 +11,16 @@ export interface DashboardArm {
   metrics: Record<string, number>;
   assertions: { passed: number; total: number };
   artifact_count: number;
+  executions?: Array<{
+    repeat: number;
+    status: string;
+    binding_error_count: number;
+    execution_digest: string | null;
+    artifact_count: number;
+    assertions: { passed: number; total: number };
+    required_pass_rate: number | null;
+    metrics: Record<string, number>;
+  }>;
 }
 
 export interface DashboardCase {
@@ -214,6 +224,7 @@ export interface DashboardData {
     id: string;
     status: EvidenceStatus;
     verification_level: string;
+    manifest?: { path: string; digest: string } | null;
     subject?: { path?: string; digest?: string } | null;
     baseline?: { kind?: string; path?: string | null; digest?: string | null } | null;
     splits: DashboardCase["split"][];

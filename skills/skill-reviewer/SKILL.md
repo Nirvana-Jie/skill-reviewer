@@ -202,6 +202,15 @@ acceptability, deterministic failure attribution, and available action requests
 are projected as well. Read `references/action-center.md` completely before
 serving or acting on the Action Center.
 
+Projection must retain the eval-manifest binding and a bounded summary for each
+configured arm/repeat: repeat number, completion status, binding-error count,
+execution digest, assertion counts, objective metrics, and artifact count. The
+Dashboard Execution Trace may visualize only these observable records, their
+declared inputs, and downstream assertions/gates. It must not expose or invent
+private model reasoning. Claim a fully bound trace only when the manifest, plan
+lock, execution profile, exact per-arm repeat set, valid execution digests, and
+downstream evidence all bind; otherwise show the specific gap as partial.
+
 The Action Center is a separate control-plane handoff. Its buttons may append
 only bounded, digest-chained tasks outside the evidence workspace, owned by the
 lead Agent. They never execute a scenario, authorize audit, confirm release,

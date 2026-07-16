@@ -82,4 +82,19 @@ describe("dashboard view state", () => {
     expect(url.searchParams.get("view")).toBe("action");
     expect(readDashboardViewState(url.search)).toEqual(state);
   });
+
+  it("persists the eval execution trace and its selected scenario", () => {
+    const state = {
+      ...defaultDashboardViewState,
+      runId: "run-execution",
+      canvasView: "execution" as const,
+      evidenceId: "case:quality-check",
+    };
+
+    const url = dashboardViewUrl(state, "https://review.example.test/");
+
+    expect(url.searchParams.get("view")).toBe("execution");
+    expect(url.searchParams.get("node")).toBe("case:quality-check");
+    expect(readDashboardViewState(url.search)).toEqual(state);
+  });
 });

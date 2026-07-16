@@ -388,3 +388,15 @@ constraining release diff size. Reprojection retains content-addressed sidecars
 and the server swaps read-model/route generations only after validating the
 complete replacement; previously issued routes stay readable for in-flight
 clients, and a route digest collision blocks the swap.
+
+The read model also projects `run.manifest` and, for every case arm, an
+`executions` array derived from retained repeat records. Each entry contains the
+repeat number, completion status, binding-error count, execution digest,
+assertion pass/total counts, required pass rate, objective metrics, and artifact
+count. The Dashboard may call an execution trace fully bound only when every arm
+contains exactly repeats `1..N`, every execution is completed without binding
+errors and has a valid SHA-256 digest, the plan and execution profile are locked,
+and downstream assertion or artifact evidence exists. Failed assertions are a
+real outcome and do not by themselves weaken trace binding; missing or malformed
+execution evidence does. The UI must keep that distinction visible and must not
+substitute inferred chain-of-thought for observable records.
