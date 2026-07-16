@@ -45,6 +45,12 @@
   --change-add-surface: #dff0e7;
   --change-remove-ink: #9b3e34;
   --change-remove-surface: #f5e2df;
+  --explorer-folder: #6f8798;
+  --explorer-document: #4c7eaa;
+  --explorer-code: #31819a;
+  --explorer-data: #9a6d2f;
+  --explorer-style: #80649f;
+  --explorer-test: #a86e2b;
   --active-control-line: #bdbde8;
   --active-control-ink: #4444b7;
   --disabled-ink: #b7b7b1;
@@ -99,6 +105,12 @@
   --change-add-surface: #183225;
   --change-remove-ink: #ef9990;
   --change-remove-surface: #38201f;
+  --explorer-folder: #8ca8ba;
+  --explorer-document: #6fa8d4;
+  --explorer-code: #63b6ca;
+  --explorer-data: #d7aa66;
+  --explorer-style: #b69bd1;
+  --explorer-test: #e1a65d;
   --active-control-line: #6262a6;
   --active-control-ink: #c4c3ff;
   --disabled-ink: #575c66;
@@ -1912,7 +1924,7 @@ dd {
   display: grid;
   min-height: 0;
   flex: 1;
-  grid-template-columns: minmax(190px, 230px) minmax(0, 1fr);
+  grid-template-columns: minmax(220px, 270px) minmax(0, 1fr);
   overflow: hidden;
   background: var(--surface);
 }
@@ -1923,21 +1935,23 @@ dd {
   min-height: 0;
   flex-direction: column;
   border-right: 1px solid var(--line);
-  background: var(--row-hover);
+  background: var(--surface);
 }
 
 .diff-sidebar-heading {
   display: flex;
-  min-height: 43px;
+  min-height: 34px;
   align-items: center;
   justify-content: space-between;
-  padding: 0 12px;
+  padding: 0 9px 0 11px;
   border-bottom: 1px solid var(--line);
 }
 
 .diff-sidebar-heading strong {
-  font-size: 10px;
-  font-weight: 650;
+  font-size: 9px;
+  font-weight: 680;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .diff-sidebar-heading span {
@@ -1950,8 +1964,8 @@ dd {
   display: flex;
   align-items: center;
   gap: 7px;
-  margin: 9px 9px 7px;
-  padding: 0 8px;
+  margin: 6px 7px 5px;
+  padding: 0 7px;
   border: 1px solid var(--line);
   border-radius: 5px;
   color: var(--faint);
@@ -1965,7 +1979,7 @@ dd {
 .diff-search input {
   width: 100%;
   min-width: 0;
-  height: 29px;
+  height: 26px;
   padding: 0;
   border: 0;
   outline: 0;
@@ -1982,6 +1996,7 @@ dd {
   min-height: 0;
   flex: 1;
   overflow: auto;
+  padding: 2px 0 8px;
 }
 
 .diff-file-list button {
@@ -1990,7 +2005,6 @@ dd {
   min-width: 0;
   align-items: center;
   border: 0;
-  border-bottom: 1px solid var(--row-line);
   color: var(--ink);
   background: transparent;
   text-align: left;
@@ -2005,6 +2019,29 @@ dd {
   content: "";
 }
 
+.diff-file-list button:not(.diff-tree-root)::after {
+  position: absolute;
+  z-index: 0;
+  top: 0;
+  bottom: 0;
+  left: 7px;
+  width: calc(var(--tree-depth) * 14px);
+  background: repeating-linear-gradient(
+    to right,
+    transparent 0 6px,
+    var(--tree-line) 6px 7px,
+    transparent 7px 14px
+  );
+  content: "";
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.diff-file-list button > * {
+  position: relative;
+  z-index: 1;
+}
+
 .diff-file-list button:hover {
   background: var(--surface-subtle);
 }
@@ -2017,12 +2054,47 @@ dd {
   background: var(--accent);
 }
 
+.diff-file-list button:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--accent) 72%, transparent);
+  outline-offset: -1px;
+}
+
+.diff-tree-root,
 .diff-tree-directory {
   display: grid;
-  min-height: 31px;
+  min-height: 25px;
+  grid-template-columns: 12px 16px minmax(0, 1fr);
+  gap: 4px;
+}
+
+.diff-tree-root {
   grid-template-columns: 12px 16px minmax(0, 1fr) auto;
-  gap: 5px;
-  padding: 6px 9px 6px calc(9px + (var(--tree-depth) * 14px));
+  padding: 0 8px 0 5px;
+  color: var(--ink) !important;
+}
+
+.diff-tree-root strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: 0.035em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-tree-root small {
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 8px;
+}
+
+.diff-root-icon {
+  color: var(--accent);
+}
+
+.diff-tree-directory {
+  padding: 0 8px 0 calc(5px + (var(--tree-depth) * 14px));
   color: var(--muted) !important;
 }
 
@@ -2035,37 +2107,96 @@ dd {
   cursor: default;
 }
 
+.diff-tree-root .diff-tree-chevron,
 .diff-tree-directory .diff-tree-chevron {
   transition: transform 140ms ease;
 }
 
+.diff-tree-root[aria-expanded="true"] .diff-tree-chevron,
 .diff-tree-directory[aria-expanded="true"] .diff-tree-chevron {
   transform: rotate(90deg);
+}
+
+.diff-tree-directory > svg:not(.diff-tree-chevron) {
+  color: var(--explorer-folder);
 }
 
 .diff-tree-directory strong {
   min-width: 0;
   overflow: hidden;
-  font-family: var(--mono);
-  font-size: 9px;
-  font-weight: 620;
+  font-size: 10px;
+  font-weight: 590;
   text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.diff-tree-directory small {
-  color: var(--faint);
-  font-family: var(--mono);
-  font-size: 8px;
   white-space: nowrap;
 }
 
 .diff-tree-file {
   display: grid;
-  min-height: 47px;
-  grid-template-columns: 18px minmax(0, 1fr);
-  gap: 7px;
-  padding: 7px 10px 7px calc(10px + (var(--tree-depth) * 14px));
+  min-height: 25px;
+  grid-template-columns: 12px 16px minmax(0, 1fr) 14px;
+  gap: 4px;
+  padding: 0 8px 0 calc(5px + (var(--tree-depth) * 14px));
+}
+
+.diff-tree-chevron-spacer {
+  width: 12px;
+  height: 1px;
+}
+
+.diff-file-icon {
+  display: inline-grid;
+  width: 16px;
+  height: 18px;
+  place-items: center;
+  color: var(--explorer-document);
+}
+
+.diff-file-icon.icon-code,
+.diff-file-icon.icon-markup,
+.diff-file-icon.icon-shell {
+  color: var(--explorer-code);
+}
+
+.diff-file-icon.icon-data,
+.diff-file-icon.icon-config,
+.diff-file-icon.icon-python {
+  color: var(--explorer-data);
+}
+
+.diff-file-icon.icon-style {
+  color: var(--explorer-style);
+}
+
+.diff-file-icon.icon-test {
+  color: var(--explorer-test);
+}
+
+.diff-tree-label {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 10px;
+  font-weight: 510;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-tree-change {
+  justify-self: end;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 720;
+}
+
+.change-text-modified {
+  color: var(--change-mod-ink);
+}
+
+.change-text-added {
+  color: var(--change-add-ink);
+}
+
+.change-text-removed {
+  color: var(--change-remove-ink);
 }
 
 .change-mark {
@@ -2089,38 +2220,6 @@ dd {
 .change-removed {
   color: var(--change-remove-ink);
   background: var(--change-remove-surface);
-}
-
-.diff-file-copy {
-  min-width: 0;
-}
-
-.diff-file-copy strong,
-.diff-file-copy small,
-.diff-size {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.diff-file-copy strong {
-  font-family: var(--mono);
-  font-size: 9px;
-  font-weight: 600;
-}
-
-.diff-file-copy small,
-.diff-size {
-  margin-top: 3px;
-  color: var(--faint);
-  font-size: 8px;
-}
-
-.diff-size {
-  grid-column: 2;
-  margin-top: 1px;
-  font-family: var(--mono);
 }
 
 .diff-no-results {

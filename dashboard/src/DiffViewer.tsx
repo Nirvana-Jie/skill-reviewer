@@ -1,13 +1,21 @@
 import {
+  Braces,
   ChevronLeft,
   ChevronRight,
   ClipboardCopy,
   Columns2,
+  FileCode2,
+  FileCog,
+  FileText,
+  FlaskConical,
   Folder,
   FolderOpen,
+  FolderRoot,
+  Palette,
   RefreshCw,
   Rows3,
   Search,
+  Terminal,
   WrapText,
 } from "lucide-react";
 import {
@@ -136,6 +144,65 @@ function changeMark(status: DashboardDiff["status"]): string {
   return "M";
 }
 
+type FileIconKind =
+  | "code"
+  | "config"
+  | "data"
+  | "document"
+  | "markup"
+  | "python"
+  | "shell"
+  | "style"
+  | "test";
+
+function fileIconKind(path: string): FileIconKind {
+  const lowerPath = path.toLowerCase();
+  const extension = lowerPath.split(".").pop() ?? "";
+  if (
+    /(^|\/)(tests?|__tests__)(\/|$)/.test(lowerPath) ||
+    /\.(?:test|spec)\.[^.]+$/.test(lowerPath)
+  ) {
+    return "test";
+  }
+  if (["ts", "tsx", "js", "jsx", "mjs", "cjs"].includes(extension)) {
+    return "code";
+  }
+  if (extension === "py") return "python";
+  if (["csv", "json", "jsonc", "jsonl", "tsv"].includes(extension)) {
+    return "data";
+  }
+  if (["html", "xml", "svg"].includes(extension)) return "markup";
+  if (["css", "scss", "sass", "less"].includes(extension)) return "style";
+  if (["sh", "bash", "zsh"].includes(extension)) return "shell";
+  if (["yaml", "yml", "toml", "ini"].includes(extension)) return "config";
+  return "document";
+}
+
+function FileTreeIcon({ path }: { path: string }) {
+  const kind = fileIconKind(path);
+  const icon =
+    kind === "test" ? (
+      <FlaskConical size={14} />
+    ) : kind === "data" ? (
+      <Braces size={14} />
+    ) : kind === "style" ? (
+      <Palette size={14} />
+    ) : kind === "shell" ? (
+      <Terminal size={14} />
+    ) : kind === "config" ? (
+      <FileCog size={14} />
+    ) : kind === "document" ? (
+      <FileText size={14} />
+    ) : (
+      <FileCode2 size={14} />
+    );
+  return (
+    <span className={`diff-file-icon icon-${kind}`} aria-hidden="true">
+      {icon}
+    </span>
+  );
+}
+
 function validatePayload(
   payload: DashboardDiffPayload,
   metadata: DashboardDiff,
@@ -192,6 +259,7 @@ function DiffBrowser({
   const [retryToken, setRetryToken] = useState(0);
   const [diagnosticsStatus, setDiagnosticsStatus] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [rootCollapsed, setRootCollapsed] = useState(false);
   const [collapsedDirectoryIds, setCollapsedDirectoryIds] = useState<Set<string>>(
     new Set(),
   );
@@ -236,6 +304,7 @@ function DiffBrowser({
   }, [diffs, query]);
   const diffTree = useMemo(() => buildDiffTree(visibleDiffs), [visibleDiffs]);
   const searchExpandsDirectories = query.trim().length > 0;
+  const rootExpanded = searchExpandsDirectories || !rootCollapsed;
   const diffTreeRows = useMemo(
     () =>
       flattenDiffTree(
@@ -259,6 +328,7 @@ function DiffBrowser({
 
   useEffect(() => {
     if (!selected) return;
+    setRootCollapsed(false);
     const ancestorIds = directoryAncestorIds(selected.path);
     if (!ancestorIds.length) return;
     setCollapsedDirectoryIds((current) => {
@@ -356,6 +426,15 @@ function DiffBrowser({
     selectId(visibleDiffs[nextIndex].id);
   };
 
+  const toggleDirectory = (id: string, expanded: boolean) => {
+    setCollapsedDirectoryIds((current) => {
+      const next = new Set(current);
+      if (expanded) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
+
   const payload = selectedPayload;
   const selectedPath = selected ? splitPath(selected.path, t("rootDirectory")) : null;
   const lineSummary = payload
@@ -387,7 +466,42 @@ function DiffBrowser({
           aria-label={t("changedRuntimeFileTree")}
           onKeyDown={(event) => handleRovingListKeyDown(event)}
         >
-          {diffTreeRows.map(({ node, depth }, index) => {
+          <button
+            type="button"
+            data-roving-item
+            tabIndex={rootExpanded && selected ? -1 : 0}
+            className="diff-tree-root"
+            aria-expanded={rootExpanded}
+            aria-label={t(
+              rootExpanded ? "collapseChangedFilesRoot" : "expandChangedFilesRoot",
+            )}
+            aria-disabled={searchExpandsDirectories || undefined}
+            onKeyDown={(event) => {
+              if (searchExpandsDirectories) return;
+              if (event.key === "ArrowLeft" && rootExpanded) {
+                event.preventDefault();
+                setRootCollapsed(true);
+              }
+              if (event.key === "ArrowRight" && !rootExpanded) {
+                event.preventDefault();
+                setRootCollapsed(false);
+              }
+            }}
+            onClick={() => {
+              if (!searchExpandsDirectories) setRootCollapsed(rootExpanded);
+            }}
+          >
+            <ChevronRight
+              className="diff-tree-chevron"
+              size={12}
+              aria-hidden="true"
+            />
+            <FolderRoot className="diff-root-icon" size={15} aria-hidden="true" />
+            <strong>{t("changedFilesRoot")}</strong>
+            <small>{visibleDiffs.length}</small>
+          </button>
+          {rootExpanded && diffTreeRows.map(({ node, depth }, index) => {
+            const visualDepth = depth + 1;
             if (node.kind === "directory") {
               const expanded =
                 searchExpandsDirectories ||
@@ -399,7 +513,7 @@ function DiffBrowser({
                   tabIndex={!selected && index === 0 ? 0 : -1}
                   key={node.id}
                   className="diff-tree-directory"
-                  style={{ "--tree-depth": depth } as CSSProperties}
+                  style={{ "--tree-depth": visualDepth } as CSSProperties}
                   aria-expanded={expanded}
                   aria-label={t(
                     expanded ? "collapseDirectory" : "expandDirectory",
@@ -407,14 +521,20 @@ function DiffBrowser({
                   )}
                   aria-disabled={searchExpandsDirectories || undefined}
                   title={node.path}
+                  onKeyDown={(event) => {
+                    if (searchExpandsDirectories) return;
+                    if (event.key === "ArrowLeft" && expanded) {
+                      event.preventDefault();
+                      toggleDirectory(node.id, true);
+                    }
+                    if (event.key === "ArrowRight" && !expanded) {
+                      event.preventDefault();
+                      toggleDirectory(node.id, false);
+                    }
+                  }}
                   onClick={() => {
                     if (searchExpandsDirectories) return;
-                    setCollapsedDirectoryIds((current) => {
-                      const next = new Set(current);
-                      if (expanded) next.add(node.id);
-                      else next.delete(node.id);
-                      return next;
-                    });
+                    toggleDirectory(node.id, expanded);
                   }}
                 >
                   <ChevronRight
@@ -428,9 +548,6 @@ function DiffBrowser({
                     <Folder size={14} aria-hidden="true" />
                   )}
                   <strong>{node.name}</strong>
-                  <small>
-                    {t("directoryFileCount", { count: node.fileCount })}
-                  </small>
                 </button>
               );
             }
@@ -444,25 +561,27 @@ function DiffBrowser({
                 className={`diff-tree-file ${
                   diff.id === selected?.id ? "is-selected" : ""
                 }`}
-                style={{ "--tree-depth": depth } as CSSProperties}
+                style={{ "--tree-depth": visualDepth } as CSSProperties}
                 aria-pressed={diff.id === selected?.id}
                 aria-label={t("openDiff", { path: diff.path })}
-                title={diff.path}
+                title={`${diff.path}\n${localizeValue(locale, diff.status)} · ${formatBytes(diff.old_size)} → ${formatBytes(diff.new_size)}`}
                 onClick={() => selectId(diff.id)}
               >
-                <span className={`change-mark change-${diff.status}`}>
+                <span className="diff-tree-chevron-spacer" aria-hidden="true" />
+                <FileTreeIcon path={diff.path} />
+                <span className="diff-tree-label">
+                  {node.name}
+                </span>
+                <span
+                  className={`diff-tree-change change-text-${diff.status}`}
+                  aria-hidden="true"
+                >
                   {changeMark(diff.status)}
                 </span>
-                <span className="diff-file-copy">
-                  <strong>{node.name}</strong>
-                </span>
-                <small className="diff-size">
-                  {formatBytes(diff.old_size)} → {formatBytes(diff.new_size)}
-                </small>
               </button>
             );
           })}
-          {diffTreeRows.length === 0 && (
+          {rootExpanded && diffTreeRows.length === 0 && (
             <p className="diff-no-results">
               {t("noChangedFilesMatch", { query })}
             </p>

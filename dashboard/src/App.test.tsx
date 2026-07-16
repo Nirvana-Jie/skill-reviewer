@@ -857,23 +857,53 @@ describe("EvidenceDashboard", () => {
       },
     ];
 
-    renderWithPreferences(
+    const view = renderWithPreferences(
       <DiffViewer diffs={nestedDiffs} enableWorkerPool={false} />,
     );
 
-    expect(screen.getByText("Changed file tree")).toBeInTheDocument();
+    expect(screen.getByText("Changed files")).toBeInTheDocument();
+    const root = screen.getByRole("button", {
+      name: "Collapse changed file root",
+    });
+    expect(root).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("SKILL-REVIEWER")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Collapse directory references" }),
-    ).toHaveAttribute("aria-expanded", "true");
+      screen.getByRole("button", { name: "Open diff SKILL.md" }),
+    ).toHaveTextContent("M");
+
+    fireEvent.click(root);
+    expect(root).toHaveAccessibleName("Expand changed file root");
+    expect(
+      screen.queryByRole("button", { name: "Open diff SKILL.md" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(root);
+    const references = screen.getByRole("button", {
+      name: "Collapse directory references",
+    });
+    expect(references).toHaveAttribute("aria-expanded", "true");
+    expect(
+      view.container.querySelector(".diff-file-icon.icon-python"),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("button", {
         name: "Open diff references/evolution/workflow.md",
       }),
     ).toBeInTheDocument();
 
-    fireEvent.click(
-      screen.getByRole("button", { name: "Collapse directory references" }),
-    );
+    fireEvent.keyDown(references, { key: "ArrowLeft" });
+    expect(
+      screen.queryByRole("button", {
+        name: "Open diff references/evolution/workflow.md",
+      }),
+    ).not.toBeInTheDocument();
+    fireEvent.keyDown(references, { key: "ArrowRight" });
+    expect(
+      screen.getByRole("button", {
+        name: "Open diff references/evolution/workflow.md",
+      }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(references);
     expect(
       screen.queryByRole("button", {
         name: "Open diff references/evolution/workflow.md",
