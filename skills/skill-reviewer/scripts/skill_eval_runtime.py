@@ -37,6 +37,7 @@ EVOLUTION_STATE_CONTRACT = "skill-reviewer.evolution-state"
 EVOLUTION_TRANSITION_CONTRACT = "skill-reviewer.evolution-transition"
 
 DASHBOARD_DIFF_RENDER_LIMIT_BYTES = 512 * 1024
+DASHBOARD_EVIDENCE_SOURCE_LIMIT_BYTES = 2 * 1024 * 1024
 
 PATH_SAFE_SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 RUNTIME_SKILL_ENTRIES = ("SKILL.md", "references", "scripts", "assets")
@@ -4783,6 +4784,51 @@ def _discover_local_decisions(workspace: Path) -> set[Path]:
     return decisions
 
 
+def _dashboard_evidence_fields(
+    *,
+    workspace: Path,
+    node_id: str,
+    relative_path: str,
+    visible: bool,
+) -> dict[str, Any]:
+    """Bind a dashboard node to one bounded UTF-8 source artifact.
+
+    Opaque holdout content deliberately stays unavailable to the dashboard so
+    the evolution loop cannot learn the hidden prompt or its expected output.
+    The server later resolves only these registered, digest-bound routes.
+    """
+
+    if not visible:
+        return {"content_unavailable_reason": "opaque"}
+    if Path(relative_path).is_absolute():
+        return {}
+    artifact_path = _safe_artifact(workspace, relative_path)
+    if not artifact_path.is_file():
+        return {}
+    size = artifact_path.stat().st_size
+    if size > DASHBOARD_EVIDENCE_SOURCE_LIMIT_BYTES:
+        return {
+            "content_size": size,
+            "content_unavailable_reason": "too_large",
+        }
+    raw = artifact_path.read_bytes()
+    if len(raw) != size:
+        raise ManifestError("dashboard evidence source changed while projecting")
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return {
+            "content_size": size,
+            "content_unavailable_reason": "binary",
+        }
+    route_id = hashlib.sha256(node_id.encode("utf-8")).hexdigest()[:24]
+    return {
+        "content_url": f"/dashboard-evidence/{route_id}.json",
+        "content_digest": hashlib.sha256(raw).hexdigest(),
+        "content_size": size,
+    }
+
+
 def project_dashboard(
     *, workspace: Path, output: Path, state_path: Path | None = None
 ) -> dict[str, Any]:
@@ -4938,20 +4984,42 @@ def project_dashboard(
         )
     for decision in decisions:
         decision_run_id = str(decision.get("run_id"))
-        spine.append(
-            {
-                "id": f"iteration:{decision_run_id}:{decision.get('iteration')}:{decision.get('phase')}",
+        decision_node_id = (
+            f"iteration:{decision_run_id}:{decision.get('iteration')}:{decision.get('phase')}"
+        )
+        decision_artifact = decision.get("artifact")
+        decision_node = {
+                "id": decision_node_id,
                 "kind": "iteration",
                 "parent_id": f"run:{plan.get('run_id')}",
                 "label": f"Round {decision.get('iteration')} · {decision.get('phase')} · {decision_run_id[-8:]}",
                 "status": decision.get("status"),
-                "artifact": decision.get("artifact"),
+                "artifact": decision_artifact,
+                "path": decision_artifact,
             }
-        )
+        if isinstance(decision_artifact, str):
+            decision_node.update(
+                _dashboard_evidence_fields(
+                    workspace=workspace,
+                    node_id=decision_node_id,
+                    relative_path=decision_artifact,
+                    visible=True,
+                )
+            )
+        spine.append(decision_node)
 
     case_rows: list[dict[str, Any]] = []
     for planned_case in plan.get("cases", []):
         case_id = str(planned_case.get("id"))
+        holdout_visibility = planned_case.get("holdout", {}).get(
+            "visibility", "public"
+        )
+        content_visible = holdout_visibility == "public"
+        declared_assertions = {
+            str(assertion.get("id")): assertion
+            for assertion in planned_case.get("assertions", [])
+            if isinstance(assertion, dict)
+        }
         result = evidence_cases.get(case_id, {})
         candidate = result.get("with_skill")
         semantic_assertions = result.get("semantic_assertions", [])
@@ -5015,8 +5083,18 @@ def project_dashboard(
                     assertion_node_id = (
                         f"assertion:{case_id}:{arm_id}:{repeat_number}:{assertion.get('id')}"
                     )
-                    spine.append(
-                        {
+                    declared_assertion = declared_assertions.get(
+                        str(assertion.get("id")), {}
+                    )
+                    assertion_evidence = assertion.get("evidence")
+                    assertion_path = (
+                        f"cases/{case_id}/{arm_id}/repeat-{repeat_number}/"
+                        f"{assertion_evidence['artifact']}"
+                        if isinstance(assertion_evidence, dict)
+                        and isinstance(assertion_evidence.get("artifact"), str)
+                        else None
+                    )
+                    assertion_node = {
                             "id": assertion_node_id,
                             "kind": "assertion",
                             "parent_id": case_node_id,
@@ -5027,9 +5105,34 @@ def project_dashboard(
                             "arm": arm_id,
                             "repeat": repeat_number,
                             "assertion_type": assertion.get("type"),
+                            "assertion_rule": {
+                                key: declared_assertion[key]
+                                for key in (
+                                    "severity",
+                                    "artifact",
+                                    "expected",
+                                    "pattern",
+                                    "rubric",
+                                    "inputs",
+                                )
+                                if key in declared_assertion
+                                and (content_visible or key in {"severity", "artifact"})
+                            },
+                            "assertion_evidence": assertion_evidence
+                            if content_visible
+                            else {},
+                            "path": assertion_path,
                         }
-                    )
-                    assertion_evidence = assertion.get("evidence")
+                    if assertion_path is not None:
+                        assertion_node.update(
+                            _dashboard_evidence_fields(
+                                workspace=workspace,
+                                node_id=assertion_node_id,
+                                relative_path=assertion_path,
+                                visible=content_visible,
+                            )
+                        )
+                    spine.append(assertion_node)
                     if isinstance(assertion_evidence, dict) and isinstance(
                         assertion_evidence.get("artifact"), str
                     ):
@@ -5038,9 +5141,9 @@ def project_dashboard(
                             f"{assertion_evidence['artifact']}"
                         )
             for artifact_index, artifact_path in enumerate(sorted(artifact_paths)):
-                spine.append(
-                    {
-                        "id": f"artifact:{case_id}:{arm_id}:{artifact_index}",
+                artifact_node_id = f"artifact:{case_id}:{arm_id}:{artifact_index}"
+                artifact_node = {
+                        "id": artifact_node_id,
                         "kind": "artifact",
                         "parent_id": case_node_id,
                         "label": Path(artifact_path).name,
@@ -5048,7 +5151,15 @@ def project_dashboard(
                         "arm": arm_id,
                         "path": artifact_path,
                     }
+                artifact_node.update(
+                    _dashboard_evidence_fields(
+                        workspace=workspace,
+                        node_id=artifact_node_id,
+                        relative_path=artifact_path,
+                        visible=content_visible,
+                    )
                 )
+                spine.append(artifact_node)
             arms.append(
                 {
                     "id": arm_id,
@@ -5073,8 +5184,14 @@ def project_dashboard(
                 semantic_id = str(semantic.get("id"))
                 semantic_status = str(semantic.get("status", "invalid"))
                 semantic_node_id = f"assertion:{case_id}:semantic:{semantic_id}"
-                spine.append(
-                    {
+                declared_semantic = declared_assertions.get(semantic_id, {})
+                artifact = semantic.get("artifact")
+                semantic_artifact_path = (
+                    f"cases/{case_id}/{artifact}"
+                    if isinstance(artifact, str)
+                    else None
+                )
+                semantic_node = {
                         "id": semantic_node_id,
                         "kind": "assertion",
                         "parent_id": case_node_id,
@@ -5083,15 +5200,46 @@ def project_dashboard(
                         if semantic.get("passed") is True
                         else semantic_status,
                         "assertion_type": "semantic_pair",
-                        "detail": semantic.get("reason"),
+                        "detail": semantic.get("reason") if content_visible else None,
+                        "assertion_rule": {
+                            key: declared_semantic[key]
+                            for key in (
+                                "severity",
+                                "artifact",
+                                "rubric",
+                                "inputs",
+                            )
+                            if key in declared_semantic
+                            and (content_visible or key in {"severity", "artifact"})
+                        },
+                        "assertion_evidence": {
+                            key: semantic[key]
+                            for key in (
+                                "status",
+                                "passed",
+                                "preference",
+                                "reason",
+                                "resolved_winners",
+                            )
+                            if key in semantic and content_visible
+                        },
+                        "path": semantic_artifact_path,
                     }
-                )
-                artifact = semantic.get("artifact")
+                if semantic_artifact_path is not None:
+                    semantic_node.update(
+                        _dashboard_evidence_fields(
+                            workspace=workspace,
+                            node_id=semantic_node_id,
+                            relative_path=semantic_artifact_path,
+                            visible=content_visible,
+                        )
+                    )
+                spine.append(semantic_node)
                 if isinstance(artifact, str):
                     artifact_path = f"cases/{case_id}/{artifact}"
-                    spine.append(
-                        {
-                            "id": f"artifact:{case_id}:semantic:{semantic_id}",
+                    artifact_node_id = f"artifact:{case_id}:semantic:{semantic_id}"
+                    artifact_node = {
+                            "id": artifact_node_id,
                             "kind": "artifact",
                             "parent_id": case_node_id,
                             "label": Path(artifact).name,
@@ -5100,17 +5248,32 @@ def project_dashboard(
                             else "missing",
                             "path": artifact_path,
                         }
+                    artifact_node.update(
+                        _dashboard_evidence_fields(
+                            workspace=workspace,
+                            node_id=artifact_node_id,
+                            relative_path=artifact_path,
+                            visible=content_visible,
+                        )
                     )
+                    spine.append(artifact_node)
         case_rows.append(
             {
                 "id": case_id,
                 "purpose": planned_case.get("purpose"),
+                "prompt": planned_case.get("prompt") if content_visible else None,
+                "input_files": [
+                    str(item.get("path"))
+                    if isinstance(item, dict) and isinstance(item.get("path"), str)
+                    else str(item)
+                    for item in planned_case.get("files", [])
+                ]
+                if content_visible
+                else [],
                 "split": planned_case.get("split"),
                 "determinism": planned_case.get("determinism"),
                 "repeats": planned_case.get("repeats"),
-                "holdout_visibility": planned_case.get("holdout", {}).get(
-                    "visibility", "public"
-                ),
+                "holdout_visibility": holdout_visibility,
                 "status": case_status,
                 "regressed": result.get("regressed") is True,
                 "direction_disagreement": result.get("direction_disagreement") is True,
@@ -5118,7 +5281,24 @@ def project_dashboard(
                     "missing_objective_metrics", []
                 ),
                 "arms": arms,
-                "semantic_assertions": semantic_assertions
+                "semantic_assertions": [
+                    {
+                        key: semantic[key]
+                        for key in (
+                            "id",
+                            "status",
+                            "passed",
+                            "preference",
+                            "artifact",
+                            "resolved_winners",
+                        )
+                        if key in semantic
+                    }
+                    for semantic in semantic_assertions
+                    if isinstance(semantic, dict)
+                ]
+                if isinstance(semantic_assertions, list) and not content_visible
+                else semantic_assertions
                 if isinstance(semantic_assertions, list)
                 else [],
             }

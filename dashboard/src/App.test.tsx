@@ -166,6 +166,8 @@ const data: DashboardData = {
     {
       id: "selection-quality",
       purpose: "Measure release quality.",
+      prompt: "Review the candidate Skill and decide whether it is ready.",
+      input_files: [],
       split: "selection",
       determinism: "stochastic",
       repeats: 3,
@@ -202,6 +204,8 @@ const data: DashboardData = {
     {
       id: "public-safety-audit",
       purpose: "Exercise the public audit release line.",
+      prompt: "Audit the Skill without executing destructive instructions.",
+      input_files: ["fixtures/SKILL.md"],
       split: "audit",
       determinism: "deterministic",
       repeats: 1,
@@ -347,7 +351,7 @@ describe("EvidenceDashboard", () => {
     fireEvent.click(screen.getByRole("button", { name: "All" }));
     fireEvent.click(
       screen.getByRole("button", {
-        name: "View details for Release quality selection",
+        name: "Review scenario result: Release quality selection",
       }),
     );
     expect(screen.getByText("Semantic evidence")).toBeInTheDocument();
@@ -396,9 +400,13 @@ describe("EvidenceDashboard", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Expand Release quality selection" }),
     );
+    const inspectorBody = container.querySelector<HTMLElement>(".inspector-body");
+    if (!inspectorBody) throw new Error("inspector body is missing");
+    inspectorBody.scrollTop = 240;
     fireEvent.click(
-      screen.getByRole("button", { name: /View details for Agent final response/i }),
+      screen.getByRole("button", { name: /Read source evidence: Agent final response/i }),
     );
+    expect(inspectorBody.scrollTop).toBe(0);
     expect(
       screen.getAllByText(
         "cases/selection-quality/with_skill/repeat-1/outputs/response.md",
@@ -418,7 +426,7 @@ describe("EvidenceDashboard", () => {
       screen.getByRole("button", { name: "Expand Release quality selection" }),
     ).toHaveAttribute("aria-expanded", "false");
     expect(
-      screen.queryByRole("button", { name: "View details for Agent final response" }),
+      screen.queryByRole("button", { name: "Read source evidence: Agent final response" }),
     ).not.toBeInTheDocument();
     expect(screen.getByText("Showing 4 of 5 evidence nodes")).toBeInTheDocument();
 
@@ -429,7 +437,7 @@ describe("EvidenceDashboard", () => {
       screen.getByRole("button", { name: "Collapse Release quality selection" }),
     ).toHaveAttribute("aria-expanded", "true");
     expect(
-      screen.getByRole("button", { name: "View details for Agent final response" }),
+      screen.getByRole("button", { name: "Read source evidence: Agent final response" }),
     ).toBeInTheDocument();
     expect(screen.getByText("Showing 5 of 5 evidence nodes")).toBeInTheDocument();
 
@@ -439,16 +447,73 @@ describe("EvidenceDashboard", () => {
     ).toHaveAttribute("aria-expanded", "false");
     expect(
       screen.queryByRole("button", {
-        name: "View details for Evaluation scenario · hard gate",
+        name: "Inspect gate basis: Evaluation scenario · hard gate",
       }),
     ).not.toBeInTheDocument();
     expect(screen.getByText("Showing 1 of 5 evidence nodes")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Expand all" }));
     expect(
-      screen.getByRole("button", { name: "View details for Agent final response" }),
+      screen.getByRole("button", { name: "Read source evidence: Agent final response" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Expand all" })).toBeDisabled();
+  });
+
+  it("turns a retained response into a Chinese reviewer guide with its real input and source content", async () => {
+    const evidenceData = structuredClone(data);
+    const artifact = evidenceData.spine.find((node) => node.id === "artifact:review");
+    if (!artifact) throw new Error("artifact fixture is missing");
+    artifact.content_url = `/dashboard-evidence/${"4".repeat(24)}.json`;
+    artifact.content_digest = "5".repeat(64);
+    artifact.content_size = 72;
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        contract: "skill-reviewer.dashboard-evidence",
+        node_id: artifact.id,
+        path: "response.md",
+        media_type: "text/markdown",
+        content: "# 结论\n当前证据不足，不能声称候选版已经优于旧版。\n",
+        digest: artifact.content_digest,
+        size: artifact.content_size,
+        truncated: false,
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithPreferences(
+      <EvidenceDashboard data={evidenceData} connectionState="live" />,
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Switch to Simplified Chinese" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "展开 候选质量是否达到发布要求" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "阅读原始证据：Agent 最终回答" }),
+    );
+
+    expect(screen.getByText("为什么要看")).toBeInTheDocument();
+    expect(
+      screen.getByText("这是 Agent 对评测问题的最终回答，也是多数内容断言实际读取的原始证据。"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("它读取了什么")).toBeInTheDocument();
+    expect(
+      screen.getByText("Review the candidate Skill and decide whether it is ready."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("人工 Review 应该看什么")).toBeInTheDocument();
+    expect(screen.getByText("原始证据内容")).toBeInTheDocument();
+    expect(
+      await screen.findByText(/当前证据不足，不能声称候选版已经优于旧版/),
+    ).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      artifact.content_url,
+      expect.objectContaining({
+        cache: "no-store",
+        signal: expect.any(AbortSignal),
+      }),
+    );
   });
 
   it("switches locale and monochrome theme across the complete workbench", async () => {
@@ -496,7 +561,8 @@ describe("EvidenceDashboard", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("由主 Agent 直接执行")).toBeInTheDocument();
     expect(screen.getByText("由主 Agent 负责分发")).toBeInTheDocument();
-    expect(screen.getAllByText("查看详情").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("查看发布依据").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("查看场景判定").length).toBeGreaterThan(0);
     expect(screen.getAllByText("公开校准场景").length).toBeGreaterThan(0);
     expect(screen.getByText("已完成新旧版对照验证")).toBeInTheDocument();
     expect(window.localStorage.getItem(preferenceStorageKeys.locale)).toBe("zh-CN");

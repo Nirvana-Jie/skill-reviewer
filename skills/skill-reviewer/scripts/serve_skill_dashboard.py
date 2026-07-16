@@ -23,6 +23,8 @@ class DashboardServerError(ValueError):
 DIFF_ID_PATTERN = re.compile(r"[a-f0-9]{24}")
 DIGEST_PATTERN = re.compile(r"[a-f0-9]{64}")
 DASHBOARD_DIFF_RENDER_LIMIT_BYTES = 512 * 1024
+DASHBOARD_EVIDENCE_SOURCE_LIMIT_BYTES = 2 * 1024 * 1024
+DASHBOARD_EVIDENCE_PREVIEW_LIMIT_BYTES = 256 * 1024
 # A single source byte can occupy six bytes when JSON escapes a control
 # character (for example, ``\u0001``). Keep a bounded raw-file guard without
 # rejecting otherwise valid 512 KiB UTF-8 previews after serialization.
@@ -181,6 +183,136 @@ def _validated_diff_routes(
     return routes
 
 
+def _validated_evidence_routes(
+    workspace: Path, data: dict[str, object]
+) -> dict[str, tuple[Path, str, str, int]]:
+    raw_spine = data.get("spine", [])
+    if not isinstance(raw_spine, list):
+        raise DashboardServerError("dashboard spine must be an array")
+    routes: dict[str, tuple[Path, str, str, int]] = {}
+    workspace_root = workspace.resolve()
+    for index, raw_node in enumerate(raw_spine):
+        if not isinstance(raw_node, dict):
+            raise DashboardServerError(f"dashboard spine node {index} must be an object")
+        content_url = raw_node.get("content_url")
+        if content_url is None:
+            continue
+        node_id = raw_node.get("id")
+        relative_path = raw_node.get("path")
+        digest = raw_node.get("content_digest")
+        size = raw_node.get("content_size")
+        if not isinstance(node_id, str) or not node_id:
+            raise DashboardServerError(f"dashboard evidence node {index} id is invalid")
+        route_id = hashlib.sha256(node_id.encode("utf-8")).hexdigest()[:24]
+        expected_url = f"/dashboard-evidence/{route_id}.json"
+        if content_url != expected_url:
+            raise DashboardServerError(
+                f"dashboard evidence node {index} content URL is invalid"
+            )
+        if not isinstance(relative_path, str) or not relative_path:
+            raise DashboardServerError(
+                f"dashboard evidence node {index} path is invalid"
+            )
+        relative = Path(relative_path)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise DashboardServerError(
+                f"dashboard evidence node {index} path leaves the workspace"
+            )
+        candidate = workspace / relative
+        current = workspace
+        for part in relative.parts:
+            current = current / part
+            if current.is_symlink():
+                raise DashboardServerError(
+                    f"dashboard evidence node {index} path contains a symbolic link"
+                )
+        try:
+            candidate.resolve().relative_to(workspace_root)
+        except ValueError as error:
+            raise DashboardServerError(
+                f"dashboard evidence node {index} path leaves the workspace"
+            ) from error
+        if not candidate.is_file():
+            raise DashboardServerError(
+                f"dashboard evidence node {index} source does not exist"
+            )
+        if not isinstance(digest, str) or not DIGEST_PATTERN.fullmatch(digest):
+            raise DashboardServerError(
+                f"dashboard evidence node {index} digest is invalid"
+            )
+        if (
+            type(size) is not int
+            or size < 0
+            or size > DASHBOARD_EVIDENCE_SOURCE_LIMIT_BYTES
+            or candidate.stat().st_size != size
+        ):
+            raise DashboardServerError(
+                f"dashboard evidence node {index} size is invalid"
+            )
+        if _sha256_file(candidate) != digest:
+            raise DashboardServerError(
+                f"dashboard evidence node {index} digest does not match its source"
+            )
+        try:
+            candidate.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as error:
+            raise DashboardServerError(
+                f"dashboard evidence node {index} source is not UTF-8 text"
+            ) from error
+        binding = (candidate, node_id, digest, size)
+        previous = routes.get(expected_url)
+        if previous is not None and previous != binding:
+            raise DashboardServerError("dashboard evidence route collision")
+        routes[expected_url] = binding
+    return routes
+
+
+def _evidence_media_type(path: Path) -> str:
+    if path.suffix.lower() == ".md":
+        return "text/markdown"
+    if path.suffix.lower() in {".json", ".jsonl"}:
+        return "application/json"
+    return mimetypes.guess_type(path.name)[0] or "text/plain"
+
+
+def _render_evidence_payload(
+    binding: tuple[Path, str, str, int]
+) -> bytes:
+    path, node_id, expected_digest, expected_size = binding
+    try:
+        if path.is_symlink() or not path.is_file():
+            raise DashboardServerError("dashboard evidence source changed after validation")
+        raw = path.read_bytes()
+    except OSError as error:
+        raise DashboardServerError("dashboard evidence source is unavailable") from error
+    if len(raw) != expected_size or _sha256_bytes(raw) != expected_digest:
+        raise DashboardServerError("dashboard evidence source changed after validation")
+    try:
+        full_text = raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise DashboardServerError("dashboard evidence source is no longer UTF-8") from error
+    truncated = len(raw) > DASHBOARD_EVIDENCE_PREVIEW_LIMIT_BYTES
+    content = (
+        raw[:DASHBOARD_EVIDENCE_PREVIEW_LIMIT_BYTES].decode("utf-8", errors="ignore")
+        if truncated
+        else full_text
+    )
+    return json.dumps(
+        {
+            "contract": "skill-reviewer.dashboard-evidence",
+            "node_id": node_id,
+            "path": str(path.name),
+            "media_type": _evidence_media_type(path),
+            "content": content,
+            "digest": expected_digest,
+            "size": expected_size,
+            "truncated": truncated,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
 def validate_sources(workspace: Path, static_root: Path) -> dict[str, object]:
     workspace = workspace.resolve()
     static_root = static_root.resolve()
@@ -192,6 +324,7 @@ def validate_sources(workspace: Path, static_root: Path) -> dict[str, object]:
         )
     data = _load_dashboard_data(data_path)
     diff_routes = _validated_diff_routes(workspace, data)
+    evidence_routes = _validated_evidence_routes(workspace, data)
     if not index_path.is_file():
         raise DashboardServerError(
             f"dashboard build is missing: {index_path}; run pnpm dashboard:build"
@@ -205,6 +338,7 @@ def validate_sources(workspace: Path, static_root: Path) -> dict[str, object]:
         if isinstance(data.get("run"), dict)
         else None,
         "lazy_diff_count": len(diff_routes),
+        "evidence_preview_count": len(evidence_routes),
     }
 
 
@@ -214,8 +348,10 @@ def create_handler(workspace: Path, static_root: Path) -> type[BaseHTTPRequestHa
     data_path = workspace / "dashboard-data.json"
     data, snapshot_body = _load_dashboard_snapshot(data_path)
     initial_diff_routes = _validated_diff_routes(workspace, data)
+    initial_evidence_routes = _validated_evidence_routes(workspace, data)
     snapshot_digest = _sha256_bytes(snapshot_body)
     known_diff_routes = dict(initial_diff_routes)
+    known_evidence_routes = dict(initial_evidence_routes)
     snapshot_lock = RLock()
 
     def refresh_snapshot() -> bytes:
@@ -226,6 +362,7 @@ def create_handler(workspace: Path, static_root: Path) -> type[BaseHTTPRequestHa
             if next_digest == snapshot_digest:
                 return snapshot_body
             next_routes = _validated_diff_routes(workspace, next_data)
+            next_evidence_routes = _validated_evidence_routes(workspace, next_data)
             for route, binding in next_routes.items():
                 previous = known_diff_routes.get(route)
                 if previous is not None and previous[1] != binding[1]:
@@ -233,6 +370,13 @@ def create_handler(workspace: Path, static_root: Path) -> type[BaseHTTPRequestHa
                         f"dashboard diff route changed content identity: {route}"
                     )
             known_diff_routes.update(next_routes)
+            for route, binding in next_evidence_routes.items():
+                previous = known_evidence_routes.get(route)
+                if previous is not None and previous[1:] != binding[1:]:
+                    raise DashboardServerError(
+                        f"dashboard evidence route changed content identity: {route}"
+                    )
+            known_evidence_routes.update(next_evidence_routes)
             snapshot_body = next_body
             snapshot_digest = next_digest
             return snapshot_body
@@ -240,6 +384,12 @@ def create_handler(workspace: Path, static_root: Path) -> type[BaseHTTPRequestHa
     def resolve_diff_route(request_path: str) -> tuple[Path, str] | None:
         with snapshot_lock:
             return known_diff_routes.get(request_path)
+
+    def resolve_evidence_route(
+        request_path: str,
+    ) -> tuple[Path, str, str, int] | None:
+        with snapshot_lock:
+            return known_evidence_routes.get(request_path)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "SkillReviewerDashboard"
@@ -267,6 +417,18 @@ def create_handler(workspace: Path, static_root: Path) -> type[BaseHTTPRequestHa
             if request_path.startswith("/dashboard-diffs/"):
                 raise DashboardServerError(
                     "diff payload is not registered by the dashboard read model"
+                )
+            evidence_route = resolve_evidence_route(request_path)
+            if evidence_route is not None:
+                return (
+                    None,
+                    "application/json; charset=utf-8",
+                    None,
+                    _render_evidence_payload(evidence_route),
+                )
+            if request_path.startswith("/dashboard-evidence/"):
+                raise DashboardServerError(
+                    "evidence content is not registered by the dashboard read model"
                 )
             relative = request_path.lstrip("/") or "index.html"
             candidate = (static_root / relative).resolve()
@@ -333,7 +495,7 @@ def create_handler(workspace: Path, static_root: Path) -> type[BaseHTTPRequestHa
             self.send_header(
                 "Cache-Control",
                 "no-store"
-                if path is None or expected_digest is not None
+                if path is None or expected_digest is not None or path.name == "index.html"
                 else "public, max-age=300",
             )
             self.end_headers()

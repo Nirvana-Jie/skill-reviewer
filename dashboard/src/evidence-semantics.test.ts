@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   describeAssertion,
+  describeAssertionDecision,
   describeDashboardCase,
   describeEvidenceNode,
+  describeEvidenceReviewGuide,
   describeLimitation,
   describeReviewStatus,
   localizeLimitation,
@@ -14,6 +16,8 @@ import type { DashboardCase, SpineNode } from "./types";
 const selectionCase: DashboardCase = {
   id: "selection-quality",
   purpose: "Measure release quality.",
+  prompt: "Review this Skill and decide whether it is ready.",
+  input_files: ["fixtures/SKILL.md"],
   split: "selection",
   determinism: "stochastic",
   repeats: 3,
@@ -88,6 +92,67 @@ describe("evidence semantics", () => {
     ).toMatchObject({
       title: "没有在缺少基线时声称退化",
       description: "旧版对照证据缺失或不完整时，不允许把候选版描述为已经退化。",
+    });
+  });
+
+  it("explains what a check reads, why it exists, and what its actual failure means", () => {
+    const assertion = node({
+      id: "assertion:selection-quality:with_skill:1:no-false-regression-claim",
+      kind: "assertion",
+      parent_id: "case:selection-quality",
+      label: "no-false-regression-claim",
+      status: "failed",
+      arm: "with_skill",
+      repeat: 1,
+      assertion_type: "text_not_contains",
+      assertion_rule: {
+        severity: "must_pass",
+        artifact: "outputs/response.md",
+        expected: "regression-verified",
+      },
+      assertion_evidence: {
+        artifact: "outputs/response.md",
+        unexpected: ["regression-verified"],
+      },
+      path: "cases/selection-quality/with_skill/repeat-1/outputs/response.md",
+    });
+
+    expect(
+      describeEvidenceReviewGuide("zh-CN", assertion, selectionCase),
+    ).toMatchObject({
+      purpose: expect.stringContaining("自动检查会读取指定证据"),
+      inputs: expect.arrayContaining([
+        { label: "评测问题", value: selectionCase.prompt },
+        { label: "被测版本", value: "候选版 Skill" },
+        { label: "读取的证据", value: "outputs/response.md" },
+      ]),
+      reviewerChecks: expect.arrayContaining([
+        expect.stringContaining("断言本身过窄、过宽"),
+      ]),
+    });
+    expect(describeAssertionDecision("zh-CN", assertion)).toEqual({
+      rule: "回答不得出现 “regression-verified”，因为现有证据不足以支持该结论。",
+      observed: "实际回答中发现了禁止内容：“regression-verified”。",
+      importance: "发布级必检项：失败会阻塞该场景通过。",
+    });
+  });
+
+  it("does not disclose opaque holdout prompts in reviewer guidance", () => {
+    const opaqueCase = {
+      ...selectionCase,
+      prompt: null,
+      input_files: [],
+      holdout_visibility: "opaque" as const,
+    };
+    expect(
+      describeEvidenceReviewGuide(
+        "zh-CN",
+        node({ kind: "case", id: "case:selection-quality" }),
+        opaqueCase,
+      ).inputs,
+    ).toContainEqual({
+      label: "评测问题",
+      value: "隐藏审计输入（为避免演进过程针对测试集调参，不在此处公开）",
     });
   });
 

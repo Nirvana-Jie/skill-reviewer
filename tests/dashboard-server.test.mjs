@@ -70,6 +70,105 @@ describe("serve_skill_dashboard.py", () => {
     }
   });
 
+  it("serves only digest-bound retained evidence and never caches the app shell", async () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-dashboard-server-"));
+    let child;
+    try {
+      const workspace = join(root, "workspace");
+      const staticRoot = join(root, "dist");
+      const nodeId = "artifact:review:with_skill:1";
+      const sourcePath = "cases/review/with_skill/repeat-1/outputs/response.md";
+      const content = "# Review\nEvidence is insufficient.\n";
+      const digest = sha256Text(content);
+      const routeId = sha256Text(nodeId).slice(0, 24);
+      const contentUrl = `/dashboard-evidence/${routeId}.json`;
+      write(staticRoot, "index.html", "<!doctype html><title>Evidence Lab</title>");
+      write(workspace, sourcePath, content);
+      write(
+        workspace,
+        "dashboard-data.json",
+        JSON.stringify({
+          contract: "skill-reviewer.dashboard-data",
+          run: { id: "run-evidence" },
+          spine: [
+            {
+              id: nodeId,
+              kind: "artifact",
+              path: sourcePath,
+              content_url: contentUrl,
+              content_digest: digest,
+              content_size: Buffer.byteLength(content),
+            },
+          ],
+        }),
+      );
+      child = spawn(
+        python,
+        [
+          server,
+          "--workspace",
+          workspace,
+          "--static-root",
+          staticRoot,
+          "--port",
+          "0",
+        ],
+        { cwd: repoRoot, stdio: ["ignore", "pipe", "pipe"] },
+      );
+      let stdout = "";
+      let stderr = "";
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      const report = await new Promise((resolveReport, rejectReport) => {
+        child.stdout.setEncoding("utf8");
+        child.stdout.on("data", (chunk) => {
+          stdout += chunk;
+          const newline = stdout.indexOf("\n");
+          if (newline < 0) return;
+          try {
+            resolveReport(JSON.parse(stdout.slice(0, newline)));
+          } catch (error) {
+            rejectReport(error);
+          }
+        });
+        child.once("exit", (code) => {
+          rejectReport(new Error(`dashboard server exited early (${code}): ${stderr}`));
+        });
+      });
+
+      expect(report.evidence_preview_count).toBe(1);
+      const indexResponse = await fetch(report.url);
+      expect(indexResponse.headers.get("cache-control")).toBe("no-store");
+      const response = await fetch(`${report.url}${contentUrl}`);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(await response.json()).toEqual({
+        contract: "skill-reviewer.dashboard-evidence",
+        node_id: nodeId,
+        path: "response.md",
+        media_type: "text/markdown",
+        content,
+        digest,
+        size: Buffer.byteLength(content),
+        truncated: false,
+      });
+      write(workspace, sourcePath, "tampered\n");
+      expect((await fetch(`${report.url}${contentUrl}`)).status).toBe(400);
+      expect(
+        (await fetch(`${report.url}/dashboard-evidence/${"b".repeat(24)}.json`))
+          .status,
+      ).toBe(400);
+    } finally {
+      if (child && child.exitCode === null) {
+        child.kill("SIGTERM");
+        await once(child, "exit");
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 10_000);
+
   it("serves only registered bounded diff sidecars", async () => {
     const root = mkdtempSync(join(tmpdir(), "skill-reviewer-dashboard-server-"));
     let child;

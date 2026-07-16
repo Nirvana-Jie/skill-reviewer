@@ -2575,6 +2575,47 @@ describe("skill_eval_runtime decide", () => {
       );
       expect(assignment).not.toHaveProperty("assertions");
       expect(assignment).not.toHaveProperty("objectives");
+
+      const projected = runtimeCommand([
+        "project-dashboard",
+        "--workspace",
+        workspace,
+        "--output",
+        join(workspace, "dashboard-data.json"),
+      ]);
+      expect(projected.status, projected.stderr).toBe(0);
+      const dashboard = JSON.parse(
+        readFileSync(join(workspace, "dashboard-data.json"), "utf8"),
+      );
+      expect(dashboard.cases[0]).toEqual(
+        expect.objectContaining({
+          prompt: null,
+          input_files: [],
+          holdout_visibility: "opaque",
+        }),
+      );
+      expect(JSON.stringify(dashboard)).not.toContain("PRIVATE_PROMPT");
+      expect(JSON.stringify(dashboard)).not.toContain(
+        "PRIVATE_EXPECTED_MARKER",
+      );
+      expect(dashboard.spine).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: "artifact",
+            content_unavailable_reason: "opaque",
+          }),
+          expect.objectContaining({
+            kind: "assertion",
+            assertion_evidence: {},
+            content_unavailable_reason: "opaque",
+          }),
+        ]),
+      );
+      expect(
+        dashboard.spine
+          .filter((node) => node.kind === "artifact" || node.kind === "assertion")
+          .some((node) => Object.hasOwn(node, "content_url")),
+      ).toBe(false);
     });
   });
 
@@ -4329,6 +4370,8 @@ describe("skill_eval_runtime dashboard projection", () => {
           cases: [
             expect.objectContaining({
               id: "dashboard-case",
+              prompt: "Write the review.",
+              input_files: [],
               status: "passed",
               holdout_visibility: "public",
               arms: expect.arrayContaining([
@@ -4370,6 +4413,31 @@ describe("skill_eval_runtime dashboard projection", () => {
       );
       expect(data.spine.map((node) => node.kind)).toEqual(
         expect.arrayContaining(["run", "gate", "iteration", "case", "assertion", "artifact"]),
+      );
+      expect(data.spine).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "assertion:dashboard-case:with_skill:1:review-exists",
+            path: "cases/dashboard-case/with_skill/repeat-1/outputs/review.md",
+            assertion_rule: expect.objectContaining({
+              severity: "must_pass",
+              artifact: "outputs/review.md",
+            }),
+            assertion_evidence: expect.objectContaining({ exists: true }),
+            content_url: expect.stringMatching(
+              /^\/dashboard-evidence\/[a-f0-9]{24}\.json$/,
+            ),
+            content_digest: expect.stringMatching(/^[a-f0-9]{64}$/),
+            content_size: 9,
+          }),
+          expect.objectContaining({
+            kind: "artifact",
+            label: "review.md",
+            content_url: expect.stringMatching(
+              /^\/dashboard-evidence\/[a-f0-9]{24}\.json$/,
+            ),
+          }),
+        ]),
       );
     });
   });

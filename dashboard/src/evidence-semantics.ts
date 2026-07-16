@@ -7,6 +7,23 @@ export interface SemanticCopy {
   technicalLabel: string;
 }
 
+export interface EvidenceGuideInput {
+  label: string;
+  value: string;
+}
+
+export interface EvidenceReviewGuide {
+  purpose: string;
+  inputs: EvidenceGuideInput[];
+  reviewerChecks: string[];
+}
+
+export interface AssertionDecisionCopy {
+  rule: string;
+  observed: string;
+  importance: string;
+}
+
 interface BilingualCopy {
   en: Omit<SemanticCopy, "technicalLabel">;
   "zh-CN": Omit<SemanticCopy, "technicalLabel">;
@@ -566,6 +583,260 @@ export function repeatFromEvidenceNode(node: SpineNode): number | null {
   if (typeof node.repeat === "number") return node.repeat;
   const match = /(?:^|\/)repeat-(\d+)(?:\/|$)/.exec(node.path ?? "");
   return match ? Number(match[1]) : null;
+}
+
+function localizedArm(locale: Locale, arm?: string): string {
+  if (!arm) return locale === "zh-CN" ? "本次运行" : "this run";
+  if (arm === "with_skill") return locale === "zh-CN" ? "候选版 Skill" : "candidate Skill";
+  if (arm === "old_skill") return locale === "zh-CN" ? "旧版 Skill（对照组）" : "old Skill (baseline)";
+  if (arm === "without_skill") return locale === "zh-CN" ? "不加载 Skill（对照组）" : "without Skill (baseline)";
+  return arm;
+}
+
+function quotedValues(value: string | string[] | undefined): string | null {
+  if (typeof value === "string") return `“${value}”`;
+  if (Array.isArray(value) && value.length > 0) {
+    return value.map((item) => `“${item}”`).join("、");
+  }
+  return null;
+}
+
+export function describeAssertionDecision(
+  locale: Locale,
+  node: SpineNode,
+): AssertionDecisionCopy | null {
+  if (node.kind !== "assertion") return null;
+  const rule = node.assertion_rule;
+  const evidence = node.assertion_evidence;
+  const expected = quotedValues(rule?.expected);
+  let ruleCopy: string;
+  if (node.assertion_type === "file_exists") {
+    ruleCopy = locale === "zh-CN" ? "必须生成并保留目标证据文件。" : "The required evidence file must exist and be retained.";
+  } else if (node.assertion_type === "text_contains") {
+    ruleCopy = locale === "zh-CN"
+      ? expected ? `回答必须包含 ${expected}。` : "回答必须包含清单要求的全部关键信息。"
+      : expected ? `The response must contain ${expected}.` : "The response must contain every required item.";
+  } else if (node.assertion_type === "text_not_contains") {
+    ruleCopy = locale === "zh-CN"
+      ? expected ? `回答不得出现 ${expected}，因为现有证据不足以支持该结论。` : "回答不得出现证据无法支持的结论。"
+      : expected ? `The response must not contain ${expected}, because the evidence cannot support that claim.` : "The response must avoid unsupported claims.";
+  } else if (node.assertion_type === "text_matches") {
+    ruleCopy = locale === "zh-CN"
+      ? rule?.pattern ? `回答必须表达预期含义；自动检查使用表达模式 ${rule.pattern}。` : "回答必须以允许的形式表达预期含义。"
+      : rule?.pattern ? `The response must express the expected meaning; the automated matcher uses ${rule.pattern}.` : "The response must express the expected meaning in an accepted form.";
+  } else if (node.assertion_type === "semantic_pair") {
+    ruleCopy = locale === "zh-CN"
+      ? "匿名评审会分别比较候选版与旧版回答，并检查多次判断方向是否一致。"
+      : "Blinded judges compare candidate and baseline responses and check whether repeated judgments agree.";
+  } else {
+    ruleCopy = locale === "zh-CN" ? "按照评测清单中声明的规则检查保留证据。" : "Evaluate the retained evidence against the declared rule.";
+  }
+
+  let observed: string;
+  if (evidence?.exists === true) {
+    observed = locale === "zh-CN" ? "目标文件已生成并被保留。" : "The target file was produced and retained.";
+  } else if (evidence?.exists === false) {
+    observed = locale === "zh-CN" ? "目标文件没有生成。" : "The target file was not produced.";
+  } else if (Array.isArray(evidence?.unexpected) && evidence.unexpected.length > 0) {
+    const values = evidence.unexpected.map((item) => `“${item}”`).join("、");
+    observed = locale === "zh-CN" ? `实际回答中发现了禁止内容：${values}。` : `The response contains prohibited content: ${values}.`;
+  } else if (Array.isArray(evidence?.missing) && evidence.missing.length > 0) {
+    const values = evidence.missing.map((item) => `“${item}”`).join("、");
+    observed = locale === "zh-CN" ? `实际回答仍缺少：${values}。` : `The response is still missing: ${values}.`;
+  } else if (Array.isArray(evidence?.missing)) {
+    observed = locale === "zh-CN" ? "要求的内容均已在回答中找到。" : "Every required item was found in the response.";
+  } else if (evidence?.matched === true) {
+    observed = locale === "zh-CN" ? "实际回答符合预期表达。" : "The response matched the expected expression.";
+  } else if (evidence?.matched === false) {
+    observed = locale === "zh-CN" ? "实际回答没有表达出预期含义。" : "The response did not express the expected meaning.";
+  } else {
+    observed = locale === "zh-CN"
+      ? node.status === "passed" ? "自动检查已通过。" : "自动检查未通过；请结合原始证据人工确认。"
+      : node.status === "passed" ? "The automated check passed." : "The automated check failed; verify it against the source evidence.";
+  }
+
+  const importance = rule?.severity === "supplemental"
+    ? locale === "zh-CN" ? "补充判断：用于增强质量判断，不单独决定发布。" : "Supplemental: informs quality but does not block release alone."
+    : locale === "zh-CN" ? "发布级必检项：失败会阻塞该场景通过。" : "Required gate: failure blocks this scenario.";
+  return { rule: ruleCopy, observed, importance };
+}
+
+function casePrompt(locale: Locale, item: DashboardCase | null): string {
+  if (item?.holdout_visibility === "opaque") {
+    return locale === "zh-CN"
+      ? "隐藏审计输入（为避免演进过程针对测试集调参，不在此处公开）"
+      : "Hidden audit input (withheld to prevent tuning against the test set)";
+  }
+  if (item?.prompt) return item.prompt;
+  return locale === "zh-CN" ? "本次记录未公开具体评测问题" : "The concrete evaluation prompt is not exposed in this record";
+}
+
+function guideInputs(
+  locale: Locale,
+  node: SpineNode,
+  item: DashboardCase | null,
+): EvidenceGuideInput[] {
+  const inputs: EvidenceGuideInput[] = [];
+  if (item) {
+    inputs.push({
+      label: locale === "zh-CN" ? "评测问题" : "Evaluation prompt",
+      value: casePrompt(locale, item),
+    });
+  }
+  if (node.arm) {
+    inputs.push({
+      label: locale === "zh-CN" ? "被测版本" : "Evaluated version",
+      value: localizedArm(locale, node.arm),
+    });
+  }
+  const repeat = repeatFromEvidenceNode(node);
+  if (repeat) {
+    inputs.push({
+      label: locale === "zh-CN" ? "执行轮次" : "Execution repeat",
+      value: locale === "zh-CN" ? `第 ${repeat} 次真实执行` : `Real execution ${repeat}`,
+    });
+  }
+  const source = node.assertion_rule?.artifact ?? node.path;
+  if (source) {
+    inputs.push({
+      label: locale === "zh-CN" ? "读取的证据" : "Evidence read",
+      value: source,
+    });
+  }
+  if ((item?.input_files?.length ?? 0) > 0) {
+    inputs.push({
+      label: locale === "zh-CN" ? "随附输入文件" : "Attached inputs",
+      value: item!.input_files!.join("、"),
+    });
+  }
+  return inputs;
+}
+
+export function describeEvidenceReviewGuide(
+  locale: Locale,
+  node: SpineNode,
+  item: DashboardCase | null,
+): EvidenceReviewGuide {
+  const inputs = guideInputs(locale, node, item);
+  const lowerLabel = node.label.toLowerCase();
+  if (node.kind === "run") {
+    return locale === "zh-CN"
+      ? {
+          purpose: "把被审 Skill、旧版基线、评测计划、场景结果和发布门禁绑定为一次可追溯的发布判断。",
+          inputs: [{ label: "汇总范围", value: "被审 Skill、旧版基线、锁定评测计划与全部保留证据" }],
+          reviewerChecks: ["先确认上方是否允许发布。", "若被阻塞，优先打开失败门禁和失败场景。", "最后核对限制项是否会削弱结论可信度。"],
+        }
+      : {
+          purpose: "Binds the reviewed Skill, baseline, locked plan, scenario results, and release gates into one traceable decision.",
+          inputs: [{ label: "Scope", value: "Reviewed Skill, baseline, locked evaluation plan, and all retained evidence" }],
+          reviewerChecks: ["Confirm the release decision first.", "Open failed gates and scenarios next.", "Check whether limitations weaken the conclusion."],
+        };
+  }
+  if (node.kind === "gate") {
+    return locale === "zh-CN"
+      ? {
+          purpose: "这是发布门禁：它把场景中的关键证据汇总成一个不可绕过的发布条件。",
+          inputs,
+          reviewerChecks: ["确认门禁对应的是候选证据、基线完整性还是执行安全。", "门禁失败时，继续查看同一场景下的失败检查项。", "只有下游证据充分时才接受门禁结论。"],
+        }
+      : {
+          purpose: "This release gate aggregates critical scenario evidence into a condition that cannot be bypassed.",
+          inputs,
+          reviewerChecks: ["Identify whether it covers candidate evidence, baseline completeness, or execution safety.", "When it fails, inspect failed checks in the same scenario.", "Accept the gate only when downstream evidence supports it."],
+        };
+  }
+  if (node.kind === "case") {
+    return locale === "zh-CN"
+      ? {
+          purpose: "用一个可复现的真实问题验证 Skill 是否表现出声明的行为，并在需要时与旧版成对比较。",
+          inputs,
+          reviewerChecks: ["确认评测问题确实覆盖要验证的能力。", "比较候选版与旧版是否使用相同输入和执行条件。", "查看失败检查，以及多轮结果是否方向一致。"],
+        }
+      : {
+          purpose: "Uses a reproducible real prompt to verify the declared behavior and, when required, compare it with the baseline.",
+          inputs,
+          reviewerChecks: ["Confirm the prompt covers the intended capability.", "Verify candidate and baseline use equivalent inputs and execution conditions.", "Inspect failed checks and repeat consistency."],
+        };
+  }
+  if (node.kind === "assertion") {
+    return locale === "zh-CN"
+      ? {
+          purpose: "自动检查会读取指定证据并验证一个明确条件；它把‘看起来不错’变成可复核的通过或失败。",
+          inputs,
+          reviewerChecks: ["阅读下方原始证据，确认自动检查读取的是正确文件。", "确认命中词或表达确实代表预期语义，而不是偶然出现。", "失败时判断是 Agent 输出有问题，还是断言本身过窄、过宽。"],
+        }
+      : {
+          purpose: "Reads declared evidence and verifies one explicit condition, turning a subjective impression into a reviewable pass or failure.",
+          inputs,
+          reviewerChecks: ["Read the source evidence and confirm the checker used the right file.", "Verify that a match actually represents the intended meaning.", "On failure, distinguish an Agent defect from a brittle assertion."],
+        };
+  }
+  if (node.kind === "artifact" && lowerLabel === "response.md") {
+    return locale === "zh-CN"
+      ? {
+          purpose: "这是 Agent 对评测问题的最终回答，也是多数内容断言实际读取的原始证据。",
+          inputs,
+          reviewerChecks: ["回答是否直接回应了评测问题。", "结论是否与文中列出的证据一致。", "是否出现超出证据范围的通过、退化或发布主张。"],
+        }
+      : {
+          purpose: "This is the Agent's final answer to the evaluation prompt and the source read by most content assertions.",
+          inputs,
+          reviewerChecks: ["Does it answer the evaluation prompt directly?", "Does the conclusion match the evidence it cites?", "Does it make unsupported pass, regression, or release claims?"],
+        };
+  }
+  if (node.kind === "artifact" && lowerLabel === "execution.json") {
+    return locale === "zh-CN"
+      ? {
+          purpose: "这是执行绑定记录，用于证明回答来自指定版本、指定输入和本轮真实执行，而不是手工拼接的结果。",
+          inputs,
+          reviewerChecks: ["执行状态是否完成。", "是否记录了禁止操作、外部副作用或输入绑定错误。", "回答文件摘要是否与本轮执行记录一致。"],
+        }
+      : {
+          purpose: "This execution binding proves the answer came from the declared version, input, and repeat rather than a hand-assembled result.",
+          inputs,
+          reviewerChecks: ["Did execution complete?", "Were prohibited actions, side effects, or binding errors recorded?", "Does the response digest match this execution?"],
+        };
+  }
+  if (node.kind === "artifact") {
+    return locale === "zh-CN"
+      ? {
+          purpose: lowerLabel.includes("semantic") || lowerLabel.includes("blind")
+            ? "这是匿名语义评审的原始判断，用于补充确定性断言无法覆盖的质量差异。"
+            : "这是本次结论引用的原始保留文件，可用于复现或审计。",
+          inputs,
+          reviewerChecks: ["确认文件属于当前场景和版本。", "核对内容是否支持上层检查结论。", "确认没有缺页、截断或跨轮次混用。"],
+        }
+      : {
+          purpose: lowerLabel.includes("semantic") || lowerLabel.includes("blind")
+            ? "This is the raw blinded semantic judgment used where deterministic assertions cannot capture quality differences."
+            : "This retained source file is cited by the decision and can be used for reproduction or audit.",
+          inputs,
+          reviewerChecks: ["Confirm it belongs to the current scenario and version.", "Check that it supports the parent conclusion.", "Verify it is complete and not mixed across repeats."],
+        };
+  }
+  return locale === "zh-CN"
+    ? {
+        purpose: "记录本轮候选的接受或拒绝决定，并关联作出决定时使用的门禁和目标指标。",
+        inputs: [{ label: "决策输入", value: "本轮场景结果、发布门禁与 Pareto 目标" }],
+        reviewerChecks: ["候选是否通过全部硬门禁。", "接受决定是否满足 Pareto 改进。", "拒绝理由是否与保留证据一致。"],
+      }
+    : {
+        purpose: "Records the candidate acceptance or rejection decision and binds it to gates and objective metrics.",
+        inputs: [{ label: "Decision inputs", value: "Scenario results, release gates, and Pareto objectives" }],
+        reviewerChecks: ["Did the candidate clear every hard gate?", "Does acceptance satisfy Pareto improvement?", "Does the rejection reason match retained evidence?"],
+      };
+}
+
+export function evidenceActionLabel(locale: Locale, node: SpineNode): string {
+  const labels: Record<SpineNode["kind"], { en: string; "zh-CN": string }> = {
+    run: { en: "Review release basis", "zh-CN": "查看发布依据" },
+    gate: { en: "Inspect gate basis", "zh-CN": "查看门禁依据" },
+    iteration: { en: "Review evolution decision", "zh-CN": "查看演进决定" },
+    case: { en: "Review scenario result", "zh-CN": "查看场景判定" },
+    assertion: { en: "Inspect check evidence", "zh-CN": "查看检查依据" },
+    artifact: { en: "Read source evidence", "zh-CN": "阅读原始证据" },
+  };
+  return labels[node.kind][locale];
 }
 
 const statusCopies: Record<string, BilingualCopy> = {

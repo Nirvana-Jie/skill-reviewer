@@ -36,6 +36,7 @@ import {
 
 import { CommandPalette, type DashboardCommand } from "./CommandPalette";
 import { copyText, downloadDashboardData } from "./dashboard-actions";
+import { EvidenceReader } from "./EvidenceReader";
 import {
   dashboardViewUrl,
   readDashboardViewState,
@@ -48,10 +49,13 @@ import {
 } from "./dashboard-view-state";
 import {
   describeAssertion,
+  describeAssertionDecision,
   describeDashboardCase,
   describeEvidenceNode,
+  describeEvidenceReviewGuide,
   describeLimitation,
   describeReviewStatus,
+  evidenceActionLabel,
   repeatFromEvidenceNode,
 } from "./evidence-semantics";
 import { handleRovingListKeyDown } from "./keyboard-navigation";
@@ -218,6 +222,29 @@ function isDescendantOf(
   nodesById: Map<string, SpineNode>,
 ): boolean {
   return nodeAncestorIds(nodeId, nodesById).includes(ancestorId);
+}
+
+function caseForEvidenceNode(
+  node: SpineNode | undefined,
+  nodesById: Map<string, SpineNode>,
+  cases: DashboardCase[],
+): DashboardCase | null {
+  if (!node) return null;
+  if (node.kind === "case") {
+    return cases.find((item) => `case:${item.id}` === node.id) ?? null;
+  }
+  for (const ancestorId of nodeAncestorIds(node.id, nodesById)) {
+    const ancestor = nodesById.get(ancestorId);
+    if (ancestor?.kind === "case") {
+      return cases.find((item) => `case:${item.id}` === ancestor.id) ?? null;
+    }
+  }
+  if (node.kind === "gate") {
+    return (
+      cases.find((item) => node.label.startsWith(`${item.id}:`)) ?? null
+    );
+  }
+  return null;
 }
 
 function useDashboardData() {
@@ -497,6 +524,7 @@ export function EvidenceDashboard({
   const [commandsOpen, setCommandsOpen] = useState(false);
   const [notification, setNotification] = useState<string | null>(null);
   const caseSearchRef = useRef<HTMLInputElement>(null);
+  const inspectorBodyRef = useRef<HTMLDivElement>(null);
   const notificationTimerRef = useRef<number | undefined>(undefined);
   const previousViewRef = useRef<DashboardViewState | null>(null);
   const restoringHistoryRef = useRef(false);
@@ -847,10 +875,7 @@ export function EvidenceDashboard({
 
   const selected =
     data.spine.find((node) => node.id === selectedId) ?? visibleNodes[0];
-  const selectedCase =
-    selected?.kind === "case"
-      ? data.cases.find((item) => `case:${item.id}` === selected.id)
-      : null;
+  const selectedCase = caseForEvidenceNode(selected, nodesById, data.cases);
   const selectedSemantic = selected
     ? nodeSemanticsById.get(selected.id) ??
       describeEvidenceNode(locale, selected, data.cases)
@@ -859,6 +884,15 @@ export function EvidenceDashboard({
   const selectedFinding = selected
     ? describeReviewStatus(locale, selected.status)
     : null;
+  const selectedGuide = selected
+    ? describeEvidenceReviewGuide(locale, selected, selectedCase)
+    : null;
+  const selectedAssertionDecision = selected
+    ? describeAssertionDecision(locale, selected)
+    : null;
+  useEffect(() => {
+    if (inspectorBodyRef.current) inspectorBodyRef.current.scrollTop = 0;
+  }, [selected?.id]);
   const failedGateCount = Math.max(
     0,
     data.summary.hard_gates_total - data.summary.hard_gates_passed,
@@ -1434,6 +1468,7 @@ export function EvidenceDashboard({
                   <p>{t("evidenceChainDescription")}</p>
                 </div>
                 <div className="stage-guide">
+                  <span className="first-review-guide">{t("firstReviewGuide")}</span>
                   <div
                     className="evidence-tree-actions"
                     role="group"
@@ -1521,9 +1556,9 @@ export function EvidenceDashboard({
                             : -1
                         }
                         aria-current={selectedId === node.id ? "true" : undefined}
-                        aria-label={t("viewEvidenceDetails", {
-                          label: semantic.title,
-                        })}
+                        aria-label={`${evidenceActionLabel(locale, node)}${
+                          locale === "zh-CN" ? "：" : ": "
+                        }${semantic.title}`}
                         onClick={() => setSelectedId(node.id)}
                       >
                         <span className="node-copy">
@@ -1545,7 +1580,7 @@ export function EvidenceDashboard({
                         <StatusChip status={node.status} />
                         <span className="evidence-detail-action" aria-hidden="true">
                           <PanelRightOpen size={13} />
-                          <span>{t("viewDetails")}</span>
+                          <span>{evidenceActionLabel(locale, node)}</span>
                         </span>
                       </button>
                     </div>
@@ -1593,7 +1628,7 @@ export function EvidenceDashboard({
           </div>
 
           {selected ? (
-            <div className="inspector-body">
+            <div className="inspector-body" ref={inspectorBodyRef}>
               <div className="inspector-title">
                 <div className="inspector-title-actions">
                   <StatusChip status={selected.status} />
@@ -1624,6 +1659,58 @@ export function EvidenceDashboard({
                 </div>
               )}
 
+              {selectedGuide && (
+                <section className="review-guide-card">
+                  <div className="review-guide-section">
+                    <div className="section-label">{t("whyItMatters")}</div>
+                    <p>{selectedGuide.purpose}</p>
+                  </div>
+                  {selectedGuide.inputs.length > 0 && (
+                    <div className="review-guide-section">
+                      <div className="section-label">{t("evidenceInputs")}</div>
+                      <dl className="review-input-list">
+                        {selectedGuide.inputs.map((input) => (
+                          <div key={`${input.label}:${input.value}`}>
+                            <dt>{input.label}</dt>
+                            <dd>{input.value}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    </div>
+                  )}
+                  <div className="review-guide-section">
+                    <div className="section-label">{t("reviewerChecklist")}</div>
+                    <ol className="review-checklist">
+                      {selectedGuide.reviewerChecks.map((check) => (
+                        <li key={check}>{check}</li>
+                      ))}
+                    </ol>
+                  </div>
+                </section>
+              )}
+
+              {selectedAssertionDecision && (
+                <section className="assertion-decision-card">
+                  <div className="section-label">
+                    <FileCheck2 size={13} /> {t("automatedDecision")}
+                  </div>
+                  <dl>
+                    <div>
+                      <dt>{t("checkRule")}</dt>
+                      <dd>{selectedAssertionDecision.rule}</dd>
+                    </div>
+                    <div>
+                      <dt>{t("observedResult")}</dt>
+                      <dd>{selectedAssertionDecision.observed}</dd>
+                    </div>
+                    <div>
+                      <dt>{t("importance")}</dt>
+                      <dd>{selectedAssertionDecision.importance}</dd>
+                    </div>
+                  </dl>
+                </section>
+              )}
+
               {(selected.arm || selectedRepeat || selected.assertion_type) && (
                 <dl className="fact-list human-fact-list">
                   {selected.arm && (
@@ -1646,6 +1733,8 @@ export function EvidenceDashboard({
                   )}
                 </dl>
               )}
+
+              <EvidenceReader node={selected} />
 
               <details className="technical-facts">
                 <summary>
@@ -1730,7 +1819,7 @@ export function EvidenceDashboard({
                 </dl>
               </details>
 
-              {selectedCase && (
+              {selected.kind === "case" && selectedCase && (
                 <div className="arm-matrix">
                   <div className="section-label">
                     <GitCompareArrows size={13} /> {t("pairedArms")}
@@ -1779,7 +1868,9 @@ export function EvidenceDashboard({
                 </div>
               )}
 
-              {selectedCase && selectedCase.semantic_assertions.length > 0 && (
+              {selected.kind === "case" &&
+                selectedCase &&
+                selectedCase.semantic_assertions.length > 0 && (
                 <div className="arm-matrix semantic-matrix">
                   <div className="section-label">
                     <Beaker size={13} /> {t("semanticEvidence")}

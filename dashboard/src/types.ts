@@ -16,6 +16,8 @@ export interface DashboardArm {
 export interface DashboardCase {
   id: string;
   purpose?: string | null;
+  prompt?: string | null;
+  input_files?: string[];
   split: "development" | "selection" | "audit";
   determinism: "deterministic" | "stochastic";
   repeats: number;
@@ -36,6 +38,25 @@ export interface DashboardCase {
   }>;
 }
 
+export interface DashboardAssertionRule {
+  severity?: string;
+  artifact?: string;
+  expected?: string | string[];
+  pattern?: string;
+  rubric?: string;
+  inputs?: string[];
+}
+
+export interface DashboardAssertionEvidence {
+  artifact?: string;
+  exists?: boolean;
+  missing?: string[];
+  unexpected?: string[];
+  pattern?: string;
+  matched?: boolean;
+  [key: string]: unknown;
+}
+
 export interface SpineNode {
   id: string;
   kind: "run" | "gate" | "iteration" | "case" | "assertion" | "artifact";
@@ -47,8 +68,25 @@ export interface SpineNode {
   arm?: string;
   repeat?: number;
   assertion_type?: string;
+  assertion_rule?: DashboardAssertionRule;
+  assertion_evidence?: DashboardAssertionEvidence;
   path?: string;
   artifact?: string;
+  content_url?: string;
+  content_digest?: string;
+  content_size?: number;
+  content_unavailable_reason?: "opaque" | "binary" | "too_large";
+}
+
+export interface DashboardEvidenceContent {
+  contract: "skill-reviewer.dashboard-evidence";
+  node_id: string;
+  path: string;
+  media_type: string;
+  content: string;
+  digest: string;
+  size: number;
+  truncated: boolean;
 }
 
 export interface AcceptanceDecision {
