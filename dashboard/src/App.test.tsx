@@ -14,6 +14,7 @@ import {
   UiPreferencesProvider,
   useUiPreferences,
 } from "./ui-preferences";
+import { workspaceLayoutStorageKey } from "./workspace-layout";
 
 const {
   workerProviderSpy,
@@ -949,6 +950,105 @@ describe("EvidenceDashboard", () => {
     expect(
       screen.getByRole("button", { name: "切换到浅色主题" }),
     ).toBeInTheDocument();
+  });
+
+  it("resizes, bounds, localizes, and persists both desktop side panes", async () => {
+    const originalInnerWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 1600,
+    });
+
+    try {
+      const { container } = renderWithPreferences(
+        <EvidenceDashboard data={data} connectionState="live" />,
+      );
+      const workspace = container.querySelector<HTMLElement>(".workspace-grid");
+      expect(workspace).toHaveAttribute("data-layout-mode", "three");
+      expect(workspace?.style.getPropertyValue("--rail-width")).toBe("270px");
+      expect(workspace?.style.getPropertyValue("--inspector-width")).toBe(
+        "390px",
+      );
+
+      const railHandle = screen.getByRole("separator", {
+        name: "Resize evaluation scenarios",
+      });
+      const inspectorHandle = screen.getByRole("separator", {
+        name: "Resize evidence inspector",
+      });
+
+      fireEvent.keyDown(railHandle, { key: "ArrowRight" });
+      expect(workspace?.style.getPropertyValue("--rail-width")).toBe("286px");
+      fireEvent.keyDown(inspectorHandle, { key: "ArrowLeft" });
+      expect(workspace?.style.getPropertyValue("--inspector-width")).toBe(
+        "406px",
+      );
+
+      fireEvent.keyDown(railHandle, { key: "Home" });
+      expect(workspace?.style.getPropertyValue("--rail-width")).toBe("220px");
+      fireEvent.keyDown(inspectorHandle, { key: "End" });
+      expect(workspace?.style.getPropertyValue("--inspector-width")).toBe(
+        "560px",
+      );
+
+      await waitFor(() => {
+        expect(
+          JSON.parse(
+            window.localStorage.getItem(workspaceLayoutStorageKey) ?? "{}",
+          ),
+        ).toEqual({ rail: 220, inspector: 560 });
+      });
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "Switch to Simplified Chinese" }),
+      );
+      expect(
+        screen.getByRole("separator", { name: "调整评测场景栏宽度" }),
+      ).toHaveAttribute("title", "拖动调整宽度 · 方向键微调 · 按 Enter 恢复默认");
+      expect(
+        screen.getByRole("separator", { name: "调整证据说明栏宽度" }),
+      ).toBeInTheDocument();
+
+      fireEvent.keyDown(
+        screen.getByRole("separator", { name: "调整评测场景栏宽度" }),
+        { key: "Enter" },
+      );
+      expect(workspace?.style.getPropertyValue("--rail-width")).toBe("270px");
+    } finally {
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        value: originalInnerWidth,
+      });
+      window.dispatchEvent(new Event("resize"));
+    }
+  });
+
+  it("stacks an expanded canvas before either pane can violate its minimum", () => {
+    const originalInnerWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 849,
+    });
+    window.history.replaceState({}, "", "/?view=action");
+
+    try {
+      const { container } = renderWithPreferences(
+        <EvidenceDashboard data={data} connectionState="live" />,
+      );
+      expect(container.querySelector(".workspace-grid")).toHaveAttribute(
+        "data-layout-mode",
+        "stacked",
+      );
+      expect(container.querySelector(".app-shell")).toHaveClass(
+        "is-stacked-workspace",
+      );
+    } finally {
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        value: originalInnerWidth,
+      });
+      window.dispatchEvent(new Event("resize"));
+    }
   });
 
   it("keeps reviewer meaning visible and raw identifiers in a collapsed trace", () => {

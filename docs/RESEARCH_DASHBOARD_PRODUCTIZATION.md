@@ -355,9 +355,9 @@ WCAG 明确要求 keyboard、focus order、focus visible/not obscured 与 status
 | S3 | 部分完成 | footer 已展示 contract、generation/load/attempt/connection，sidecar failure 可复制绑定诊断；独立 read-model diagnostics inspector 仍待建设。 |
 | S4 | 等待 M7 | 是否虚拟化 case/spine 必须由大型 fixture 和实际交互预算决定。 |
 | S5 | 已完成 | pause/resume、visibility refresh、AbortController 与 last-good preservation 已交付。 |
-| S6 | 待完成 | pane resize、density 和 reset layout 尚未建设，优先级低于 M7 与 diagnostics。 |
+| S6 | 基本完成 | 左右 pane 已支持指针拖拽、键盘微调、双击/Enter/命令面板恢复默认和 localStorage 偏好；算法保留证据区硬最小宽度，空间不足时按比例收缩侧栏、降为双栏并在移动端纵向排列。density 仍保留为独立后续项。 |
 | A0 | 已完成 | Action Center 展示硬门禁、Pareto、实质提升，五类失败归因、语义化 `next_action`、五种状态约束任务和外部任务审计记录；中英文、明暗主题和 `view=action` 深链接均已接入。 |
 | A1 | 待后端契约 | 本地账本当前只记录 `requested`；跨设备身份、任务领取/完成/取消、主 Agent 消费回执和外部 append-only 锚点需要独立受权服务，不能由前端伪造。 |
 | L1–L7 | 契约待办 | generation identity、run history、全文索引、可信 evidence bundle、跨 run 比较、远程授权分享和批注 overlay 均未在前端伪造。 |
 
-对应实现集中在 `dashboard/src/dashboard-view-state.ts`、`dashboard/src/CommandPalette.tsx`、`dashboard/src/App.tsx`、`dashboard/src/DiffViewer.tsx` 与 `dashboard/src/dashboard-actions.ts`。Vitest 覆盖 URL round-trip/非法值、history replay、run guard、筛选、键盘命令面板、copy、freshness controls、sidecar retry 与 integrity diagnostics；生产构建和真实浏览器中英文、明暗主题、桌面/390px 窄屏检查也纳入本轮交付验证。
+对应实现集中在 `dashboard/src/dashboard-view-state.ts`、`dashboard/src/CommandPalette.tsx`、`dashboard/src/App.tsx`、`dashboard/src/DiffViewer.tsx`、`dashboard/src/workspace-layout.ts` 与 `dashboard/src/dashboard-actions.ts`。Vitest 覆盖 URL round-trip/非法值、history replay、run guard、筛选、键盘命令面板、pane 边界/持久化、copy、freshness controls、sidecar retry 与 integrity diagnostics；生产构建和真实浏览器中英文、明暗主题、桌面/390px 窄屏检查也纳入本轮交付验证。

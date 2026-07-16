@@ -48,6 +48,7 @@ import {
 } from "./EvalExecutionTrace";
 import { EvidenceNodeIcon } from "./EvidenceNodeIcon";
 import { EvidenceReader } from "./EvidenceReader";
+import { WorkspacePaneResizeHandle } from "./WorkspacePaneResizeHandle";
 import {
   dashboardViewUrl,
   readDashboardViewState,
@@ -73,6 +74,7 @@ import {
 import { buildEvalExecutionTrace } from "./eval-execution-trace";
 import { handleRovingListKeyDown } from "./keyboard-navigation";
 import type { DashboardCase, DashboardData, SpineNode } from "./types";
+import { useWorkspaceLayout } from "./use-workspace-layout";
 import {
   localizeStatus,
   localizeValue,
@@ -569,6 +571,7 @@ export function EvidenceDashboard({
   const [canvasView, setCanvasView] = useState<CanvasView>(
     initialView.canvasView,
   );
+  const workspaceLayout = useWorkspaceLayout(canvasView);
   const [focusMode, setFocusMode] = useState(initialView.focusMode);
   const [commandsOpen, setCommandsOpen] = useState(false);
   const [notification, setNotification] = useState<string | null>(null);
@@ -1126,6 +1129,16 @@ export function EvidenceDashboard({
       label: locale === "en" ? t("useChinese") : t("useEnglish"),
       run: () => setLocale(locale === "en" ? "zh-CN" : "en"),
     },
+    {
+      id: "action-reset-pane-widths",
+      group: t("actionGroup"),
+      label: t("resetPaneWidths"),
+      detail: t("resetPaneWidthsDescription"),
+      run: () => {
+        workspaceLayout.resetAll();
+        notify(t("paneWidthsReset"));
+      },
+    },
     ...(refreshControls
       ? [
           {
@@ -1218,8 +1231,10 @@ export function EvidenceDashboard({
     <main
       className={`app-shell ${focusMode ? "is-focus-mode" : ""} ${
         refreshControls?.error ? "has-transport-warning" : ""
-      } ${canvasView === "action" ? "is-action-mode" : ""} ${
-        canvasView === "execution" ? "is-execution-mode" : ""
+      } ${
+        workspaceLayout.layout.mode === "stacked"
+          ? "is-stacked-workspace"
+          : ""
       }`}
     >
       <a className="skip-link" href="#evidence-workspace">
@@ -1319,8 +1334,13 @@ export function EvidenceDashboard({
         </div>
       </section>
 
-      <div className="workspace-grid">
-        <aside className="rail pane" aria-label={t("runOverview")}>
+      <div
+        ref={workspaceLayout.containerRef}
+        className={`workspace-grid layout-${workspaceLayout.layout.mode}`}
+        data-layout-mode={workspaceLayout.layout.mode}
+        style={workspaceLayout.style}
+      >
+        <aside id="case-rail" className="rail pane" aria-label={t("runOverview")}>
           <div className="pane-heading">
             <div>
               <span className="pane-kicker">{t("evaluationSuite")}</span>
@@ -1502,6 +1522,17 @@ export function EvidenceDashboard({
             </div>
           </div>
         </aside>
+
+        <WorkspacePaneResizeHandle
+          pane="rail"
+          value={workspaceLayout.layout.railWidth}
+          range={workspaceLayout.layout.railRange}
+          label={t("resizeCasePane")}
+          hint={t("resizePaneHint")}
+          controls="case-rail evidence-workspace"
+          onChange={(width) => workspaceLayout.resizePane("rail", width)}
+          onReset={() => workspaceLayout.resetPane("rail")}
+        />
 
         <section
           id="evidence-workspace"
@@ -1808,7 +1839,19 @@ export function EvidenceDashboard({
           </div>
         </section>
 
+        <WorkspacePaneResizeHandle
+          pane="inspector"
+          value={workspaceLayout.layout.inspectorWidth}
+          range={workspaceLayout.layout.inspectorRange}
+          label={t("resizeInspectorPane")}
+          hint={t("resizePaneHint")}
+          controls="evidence-workspace evidence-inspector"
+          onChange={(width) => workspaceLayout.resizePane("inspector", width)}
+          onReset={() => workspaceLayout.resetPane("inspector")}
+        />
+
         <aside
+          id="evidence-inspector"
           className="inspector pane"
           aria-label={
             canvasView === "action"

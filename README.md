@@ -229,6 +229,16 @@ current change set are initialized, digest cache keys reuse rendered syntax
 trees, and a bounded worker cache prevents an extended review from retaining
 every visited document.
 
+On desktop, both side panes have visible draggable separators. The scenario
+rail is bounded to 220–480 px and the evidence inspector to 280–560 px; the
+center evidence canvas keeps a view-specific minimum width. When space is
+tight, side panes shrink proportionally before the inspector is removed, and
+at mobile width the workbench stacks vertically with resizing disabled. Arrow
+keys adjust the focused separator, Shift+Arrow makes a larger adjustment,
+Home/End selects the active limit, and Enter or double-click restores the
+default. Width preferences are local presentation state and can also be reset
+from the command palette; they never enter or mutate retained evidence.
+
 The workbench can switch between English and Simplified Chinese and between
 light and dark monochrome themes from the persistent top-bar controls. On a
 first visit it follows the browser language and operating-system color scheme;

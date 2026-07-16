@@ -678,11 +678,65 @@ kbd {
 }
 
 .workspace-grid {
+  --pane-divider-width: 10px;
+  --rail-width: 270px;
+  --inspector-width: 390px;
   display: grid;
   min-height: 0;
-  grid-template-columns: minmax(240px, 270px) minmax(520px, 1fr) minmax(330px, 390px);
+  grid-template-columns:
+    var(--rail-width)
+    var(--pane-divider-width)
+    minmax(0, 1fr)
+    var(--pane-divider-width)
+    var(--inspector-width);
   overflow: hidden;
   background: var(--surface);
+}
+
+.workspace-grid.layout-two {
+  grid-template-columns:
+    var(--rail-width)
+    var(--pane-divider-width)
+    minmax(0, 1fr);
+}
+
+.workspace-grid.layout-two > .pane-resize-handle.is-inspector,
+.workspace-grid.layout-two > .inspector {
+  display: none;
+}
+
+.workspace-grid.layout-stacked {
+  display: flex;
+  flex-direction: column;
+  overflow: visible;
+}
+
+.workspace-grid.layout-stacked > .pane-resize-handle {
+  display: none;
+}
+
+.app-shell.is-stacked-workspace {
+  height: auto;
+  min-height: 100vh;
+  grid-template-rows: auto auto auto auto;
+  overflow: visible;
+}
+
+.app-shell.is-stacked-workspace.has-transport-warning {
+  grid-template-rows: auto auto auto auto auto;
+}
+
+.workspace-grid.layout-stacked > .rail,
+.workspace-grid.layout-stacked > .evidence-canvas,
+.workspace-grid.layout-stacked > .inspector {
+  display: flex;
+  min-height: 430px;
+  border-right: 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.workspace-grid.layout-stacked .case-list {
+  max-height: 320px;
 }
 
 .pane {
@@ -693,14 +747,78 @@ kbd {
 }
 
 .rail,
-.evidence-canvas {
-  border-right: 1px solid var(--line);
-}
-
-.rail,
 .inspector {
   display: flex;
   flex-direction: column;
+}
+
+.pane-resize-handle {
+  position: relative;
+  z-index: 4;
+  display: flex;
+  width: var(--pane-divider-width);
+  min-width: var(--pane-divider-width);
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  color: var(--faint);
+  background: var(--surface);
+  cursor: col-resize;
+  outline: none;
+  touch-action: none;
+}
+
+.pane-resize-handle::before {
+  position: absolute;
+  inset: 0 auto;
+  width: 1px;
+  background: var(--line);
+  content: "";
+  transition: width 120ms ease, background-color 120ms ease;
+}
+
+.pane-resize-handle > svg {
+  position: relative;
+  z-index: 1;
+  width: 8px;
+  height: 20px;
+  border-radius: 3px;
+  color: var(--faint);
+  background: var(--surface-raised);
+  opacity: 0.72;
+  transition: color 120ms ease, opacity 120ms ease;
+}
+
+.pane-resize-handle:hover,
+.pane-resize-handle:focus-visible,
+.pane-resize-handle.is-dragging {
+  color: var(--active-control-ink);
+  background: var(--row-hover);
+}
+
+.pane-resize-handle:hover::before,
+.pane-resize-handle:focus-visible::before,
+.pane-resize-handle.is-dragging::before {
+  width: 2px;
+  background: var(--accent);
+}
+
+.pane-resize-handle:hover > svg,
+.pane-resize-handle:focus-visible > svg,
+.pane-resize-handle.is-dragging > svg {
+  color: var(--active-control-ink);
+  opacity: 1;
+}
+
+.pane-resize-handle:focus-visible {
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 72%, transparent);
+}
+
+body.is-resizing-pane,
+body.is-resizing-pane * {
+  cursor: col-resize !important;
+  user-select: none !important;
 }
 
 .pane-heading {
@@ -3006,10 +3124,6 @@ dd {
 }
 
 /* Action center: a control-plane handoff, visually distinct from evidence. */
-.is-action-mode .workspace-grid {
-  grid-template-columns: minmax(220px, 250px) minmax(660px, 1fr) minmax(300px, 350px);
-}
-
 .action-center {
   min-height: 0;
   flex: 1;
@@ -3622,10 +3736,6 @@ dd {
 }
 
 /* Observable eval execution: a compact audit trail, not a model reasoning view. */
-.is-execution-mode .workspace-grid {
-  grid-template-columns: minmax(220px, 250px) minmax(660px, 1fr) minmax(300px, 350px);
-}
-
 .eval-execution-stage {
   min-height: 0;
   flex: 1;
@@ -4437,6 +4547,7 @@ dd {
 }
 
 .is-focus-mode .rail,
+.is-focus-mode .pane-resize-handle,
 .is-focus-mode .inspector {
   display: none;
 }
@@ -4467,23 +4578,19 @@ dd {
   }
 
   .workspace-grid {
-    grid-template-columns: minmax(230px, 260px) minmax(480px, 1fr);
+    grid-template-columns:
+      var(--rail-width)
+      var(--pane-divider-width)
+      minmax(0, 1fr);
   }
 
+  .pane-resize-handle.is-inspector,
   .inspector {
     display: none;
   }
 
   .evidence-canvas {
     border-right: 0;
-  }
-
-  .is-action-mode .workspace-grid {
-    grid-template-columns: minmax(220px, 245px) minmax(620px, 1fr);
-  }
-
-  .is-execution-mode .workspace-grid {
-    grid-template-columns: minmax(220px, 245px) minmax(620px, 1fr);
   }
 
   .action-hero {
@@ -4574,6 +4681,10 @@ dd {
     display: flex;
     flex-direction: column;
     overflow: visible;
+  }
+
+  .pane-resize-handle {
+    display: none;
   }
 
   .rail,
