@@ -8,9 +8,7 @@
 [![tests](https://img.shields.io/github/actions/workflow/status/Nirvana-Jie/skill-reviewer/static-checks.yml?branch=main&label=checks)](https://github.com/Nirvana-Jie/skill-reviewer/actions/workflows/static-checks.yml)
 [![stars](https://img.shields.io/github/stars/Nirvana-Jie/skill-reviewer?style=flat&label=star)](https://github.com/Nirvana-Jie/skill-reviewer)
 
-[简体中文](README.zh-CN.md) · [Rubric](./skills/skill-reviewer/references/review-rubric.md) ·
-[Executable Evals](./skills/skill-reviewer/references/executable-evals.md) ·
-[Dashboard](./skills/skill-reviewer/references/action-center.md)
+[简体中文](README.zh-CN.md)
 
 ![Skill Reviewer: paired execution, retained evidence, release gates, and human confirmation](./assets/readme/skill-reviewer-evidence-loop.jpg)
 

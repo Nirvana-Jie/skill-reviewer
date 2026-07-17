@@ -7,9 +7,7 @@
 [![tests](https://img.shields.io/github/actions/workflow/status/Nirvana-Jie/skill-reviewer/static-checks.yml?branch=main&label=checks)](https://github.com/Nirvana-Jie/skill-reviewer/actions/workflows/static-checks.yml)
 [![stars](https://img.shields.io/github/stars/Nirvana-Jie/skill-reviewer?style=flat&label=star)](https://github.com/Nirvana-Jie/skill-reviewer)
 
-[English](README.md) · [评审规则](./skills/skill-reviewer/references/review-rubric.md) ·
-[可执行 Eval](./skills/skill-reviewer/references/executable-evals.md) ·
-[Dashboard](./skills/skill-reviewer/references/action-center.md)
+[English](README.md)
 
 ![Skill Reviewer：成对执行、证据留存、发布门禁与人工确认](./assets/readme/skill-reviewer-evidence-loop.jpg)
 
