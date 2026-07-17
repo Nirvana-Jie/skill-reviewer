@@ -1,5 +1,6 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import {
   chmodSync,
   existsSync,
@@ -27,6 +28,13 @@ const runtime = join(
   "skill-reviewer",
   "scripts",
   "skill_eval_runtime.py",
+);
+const dashboardLauncher = join(
+  repoRoot,
+  "skills",
+  "skill-reviewer",
+  "scripts",
+  "start_skill_dashboard.py",
 );
 const python = process.env.PYTHON ?? "python3";
 
@@ -88,6 +96,84 @@ function writeExecution({
     const artifactPath = join(repeatRoot, artifact);
     if (existsSync(artifactPath)) artifactDigests[artifact] = sha256(artifactPath);
   }
+  const startedAt = "2026-07-16T00:00:00.000Z";
+  const traceEvents = [
+    {
+      contract: "skill-reviewer.agent-trace-event",
+      event_id: `event-0001-${arm}-${repeat}-start`,
+      run_id: plan.run_id,
+      case_id: caseId,
+      arm,
+      repeat,
+      sequence: 1,
+      occurred_at: startedAt,
+      elapsed_ms: 0,
+      kind: "execution_started",
+      status: "running",
+      summary: "Agent execution started",
+      details: { capture_source: "harness_native" },
+      artifact_refs: [],
+    },
+  ];
+  for (const [artifact, digest] of Object.entries(artifactDigests)) {
+    const artifactPath = join(repeatRoot, artifact);
+    traceEvents.push({
+      contract: "skill-reviewer.agent-trace-event",
+      event_id: `event-${String(traceEvents.length + 1).padStart(4, "0")}-${arm}-${repeat}-artifact`,
+      run_id: plan.run_id,
+      case_id: caseId,
+      arm,
+      repeat,
+      sequence: traceEvents.length + 1,
+      occurred_at: "2026-07-16T00:00:00.010Z",
+      elapsed_ms: 10,
+      kind: "artifact_written",
+      status: "completed",
+      summary: `Retained output artifact: ${artifact}`,
+      details: { path: artifact, digest, size: statSync(artifactPath).size },
+      artifact_refs: [artifact],
+    });
+  }
+  if (traceEvents.length === 1) {
+    traceEvents.push({
+      contract: "skill-reviewer.agent-trace-event",
+      event_id: `event-0002-${arm}-${repeat}-message`,
+      run_id: plan.run_id,
+      case_id: caseId,
+      arm,
+      repeat,
+      sequence: 2,
+      occurred_at: "2026-07-16T00:00:00.010Z",
+      elapsed_ms: 10,
+      kind: "agent_message",
+      status: "completed",
+      summary: "Agent returned an observable completion status",
+      details: { role: "assistant", content: "Execution completed without output artifacts." },
+      artifact_refs: [],
+    });
+  }
+  const finishedAt = "2026-07-16T00:00:00.020Z";
+  traceEvents.push({
+    contract: "skill-reviewer.agent-trace-event",
+    event_id: `event-${String(traceEvents.length + 1).padStart(4, "0")}-${arm}-${repeat}-finish`,
+    run_id: plan.run_id,
+    case_id: caseId,
+    arm,
+    repeat,
+    sequence: traceEvents.length + 1,
+    occurred_at: finishedAt,
+    elapsed_ms: 20,
+    kind: "execution_finished",
+    status,
+    summary: `Agent execution finished with status: ${status}`,
+    details: {},
+    artifact_refs: [],
+  });
+  const tracePath = write(
+    repeatRoot,
+    "agent-trace.jsonl",
+    `${traceEvents.map((event) => JSON.stringify(event)).join("\n")}\n`,
+  );
   return write(
     repeatRoot,
     "execution.json",
@@ -104,6 +190,16 @@ function writeExecution({
       side_effects: sideEffects,
       metrics,
       artifact_digests: artifactDigests,
+      trace: {
+        artifact: "agent-trace.jsonl",
+        digest: sha256(tracePath),
+        capture_source: "harness_native",
+        complete: true,
+        event_count: traceEvents.length,
+        started_at: startedAt,
+        finished_at: finishedAt,
+        duration_ms: 20,
+      },
     }),
   );
 }
@@ -117,6 +213,21 @@ function semanticBinding({ plan, workspace, caseId, assertionId }) {
     artifacts[arm] = Array.from({ length: testCase.repeats }, (_, index) => {
       const repeat = index + 1;
       const digests = {};
+      const tracePath = join(
+        workspace,
+        "cases",
+        caseId,
+        arm,
+        `repeat-${repeat}`,
+        "agent-trace.jsonl",
+      );
+      const traceEvents = existsSync(tracePath)
+        ? readFileSync(tracePath, "utf8")
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => JSON.parse(line))
+        : [];
+      const traceEventIds = {};
       for (const input of assertion.inputs) {
         const artifactPath = join(
           workspace,
@@ -127,8 +238,15 @@ function semanticBinding({ plan, workspace, caseId, assertionId }) {
           input,
         );
         digests[input] = existsSync(artifactPath) ? sha256(artifactPath) : null;
+        traceEventIds[input] = traceEvents
+          .filter(
+            (event) =>
+              event.kind === "artifact_written" &&
+              event.artifact_refs?.includes(input),
+          )
+          .map((event) => event.event_id);
       }
-      return { repeat, digests };
+      return { repeat, digests, trace_event_ids: traceEventIds };
     });
   }
   return {
@@ -452,6 +570,102 @@ function executeBoundRun({
 }
 
 describe("skill_eval_runtime compile", () => {
+  it("opens a compiled run before execution and reprojects new Agent evidence", async () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-live-dashboard-"));
+    let child;
+    try {
+      const { plan, workspace } = compiledPlanFixture(root, [minimalCase()]);
+      const ui = join(root, "ui");
+      write(ui, "index.html", "<!doctype html><title>local test UI</title>");
+      child = spawn(
+        python,
+        [
+          dashboardLauncher,
+          "--workspace",
+          workspace,
+          "--ui-dir",
+          ui,
+          "--user-approved-control-plane",
+          "--port",
+          "0",
+          "--refresh-seconds",
+          "0.1",
+        ],
+        { cwd: repoRoot, stdio: ["ignore", "pipe", "pipe"] },
+      );
+      let stdout = "";
+      let stderr = "";
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      const report = await new Promise((resolveReport, rejectReport) => {
+        child.stdout.setEncoding("utf8");
+        child.stdout.on("data", (chunk) => {
+          stdout += chunk;
+          const newline = stdout.indexOf("\n");
+          if (newline < 0) return;
+          try {
+            resolveReport(JSON.parse(stdout.slice(0, newline)));
+          } catch (error) {
+            rejectReport(error);
+          }
+        });
+        child.once("exit", (code) => {
+          rejectReport(new Error(`dashboard launcher exited early (${code}): ${stderr}`));
+        });
+      });
+      expect(report).toEqual(
+        expect.objectContaining({
+          projected: true,
+          projection_mode: "watching",
+          refresh_seconds: 0.1,
+          run_id: plan.run_id,
+        }),
+      );
+      const session = new URLSearchParams(new URL(report.url).hash.slice(1)).get(
+        "session",
+      );
+      expect(session).toMatch(/^[A-Za-z0-9_-]{32,256}$/);
+      const requestHeaders = { "X-Skill-Reviewer-Session": session };
+      const initial = await fetch(`${report.base_url}/dashboard-data.json`, {
+        headers: requestHeaders,
+      }).then((response) => response.json());
+      expect(
+        initial.cases[0].arms.find((arm) => arm.id === "with_skill"),
+      ).toEqual(expect.objectContaining({ complete: false, executions: [] }));
+
+      write(
+        workspace,
+        "cases/safe-case/with_skill/repeat-1/outputs/response.md",
+        "done\n",
+      );
+      writeExecution({ workspace, plan, caseId: "safe-case", arm: "with_skill" });
+
+      let updated;
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        updated = await fetch(`${report.base_url}/dashboard-data.json`, {
+          cache: "no-store",
+          headers: requestHeaders,
+        }).then((response) => response.json());
+        const candidate = updated.cases[0].arms.find((arm) => arm.id === "with_skill");
+        if (candidate?.complete === true) break;
+        await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+      }
+      expect(
+        updated.cases[0].arms.find((arm) => arm.id === "with_skill"),
+      ).toEqual(expect.objectContaining({ complete: true, passed: true }));
+      expect(stderr).toContain('"event": "dashboard_projection_updated"');
+    } finally {
+      if (child && child.exitCode === null) {
+        child.kill("SIGTERM");
+        await once(child, "exit");
+      }
+      makeWritable(root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 10_000);
+
   it("binds an agent-independent execution cell into the plan and assignments", () => {
     fixture((root) => {
       const { manifest, subject } = writeMinimalPackage(root);
@@ -485,6 +699,7 @@ describe("skill_eval_runtime compile", () => {
       expect(assignment.execution_profile_digest).toBe(
         plan.execution_profile.digest,
       );
+      expect(assignment.trace_artifact).toBe("agent-trace.jsonl");
     });
   });
 
@@ -1330,6 +1545,122 @@ description: Review demo inputs when asked.
 });
 
 describe("skill_eval_runtime grade", () => {
+  it("records observable Agent events and binds checks to their source event ids", () => {
+    fixture((root) => {
+      const { plan, planPath, workspace } = compiledPlanFixture(root, [minimalCase()]);
+      for (const arm of plan.cases[0].arms) {
+        write(
+          workspace,
+          `cases/safe-case/${arm}/repeat-1/outputs/response.md`,
+          `completed by ${arm}\n`,
+        );
+        const assignment = join(
+          workspace,
+          "assignments",
+          "safe-case",
+          arm,
+          "repeat-1.json",
+        );
+        const observed = runtimeCommand([
+          "trace-event",
+          "--workspace",
+          workspace,
+          "--assignment",
+          assignment,
+          "--kind",
+          "file_read",
+          "--summary",
+          "Read the bound Skill instructions",
+          "--details-json",
+          JSON.stringify({ path: "SKILL.md", digest: "a".repeat(64) }),
+          "--capture-source",
+          "harness_native",
+        ]);
+        expect(observed.status, observed.stderr).toBe(0);
+        const command = runtimeCommand([
+          "trace-event",
+          "--workspace",
+          workspace,
+          "--assignment",
+          assignment,
+          "--kind",
+          "command",
+          "--summary",
+          "Validated the generated response",
+          "--details-json",
+          JSON.stringify({ argv: ["test", "-s", "outputs/response.md"], exit_code: 0 }),
+          "--capture-source",
+          "harness_native",
+        ]);
+        expect(command.status, command.stderr).toBe(0);
+        const finalized = runtimeCommand([
+          "finalize-execution",
+          "--workspace",
+          workspace,
+          "--assignment",
+          assignment,
+          "--status",
+          "completed",
+          "--capture-source",
+          "harness_native",
+        ]);
+        expect(finalized.status, finalized.stderr).toBe(0);
+      }
+
+      const result = grade({ plan: planPath, workspace });
+
+      expect(result.status, result.stderr).toBe(0);
+      const evidence = JSON.parse(result.stdout);
+      const repeat = evidence.cases[0].with_skill.repeats[0];
+      expect(repeat.trace).toEqual(
+        expect.objectContaining({
+          valid: true,
+          capture_source: "harness_native",
+          event_count: 5,
+        }),
+      );
+      expect(repeat.trace.events.map((event) => event.kind)).toEqual([
+        "execution_started",
+        "file_read",
+        "command",
+        "artifact_written",
+        "execution_finished",
+      ]);
+      expect(repeat.assertions[0].evidence.source_event_ids).toEqual([
+        expect.stringMatching(/^event-0004-/),
+      ]);
+    });
+  });
+
+  it("rejects private reasoning fields from an Agent trace event", () => {
+    fixture((root) => {
+      const { workspace } = compiledPlanFixture(root, [minimalCase()]);
+      const assignment = join(
+        workspace,
+        "assignments/safe-case/with_skill/repeat-1.json",
+      );
+
+      const result = runtimeCommand([
+        "trace-event",
+        "--workspace",
+        workspace,
+        "--assignment",
+        assignment,
+        "--kind",
+        "agent_message",
+        "--summary",
+        "Visible response",
+        "--details-json",
+        JSON.stringify({ chain_of_thought: "must never be retained" }),
+      ]);
+
+      expect(result.status).toBe(2);
+      expect(JSON.parse(result.stdout).error).toContain(
+        "must not contain private-reasoning fields",
+      );
+    });
+  });
+
   it("fails closed when an executor does not echo the locked execution cell", () => {
     fixture((root) => {
       const { plan, planPath, workspace } = compiledPlanFixture(root, [
@@ -1972,6 +2303,10 @@ describe("skill_eval_runtime grade", () => {
           id: "blind-quality",
           status: "disagreement",
           passed: false,
+          source_event_ids: [
+            "event-0002-old_skill-1-artifact",
+            "event-0002-with_skill-1-artifact",
+          ],
         }),
       ]);
       expect(evidence.limitations).toContain(
@@ -3276,7 +3611,7 @@ describe("skill_eval_runtime evolution", () => {
       expect(JSON.parse(selected.stdout)).toEqual(
         expect.objectContaining({
           status: "awaiting-audit",
-          next_action: "authorize_audit",
+          next_action: "prepare_audit",
           terminal: false,
         }),
       );
@@ -3915,6 +4250,11 @@ describe("skill_eval_runtime dashboard projection", () => {
         expect.objectContaining({
           next_action: "propose_candidate",
           owner: "lead_agent",
+          continuation: {
+            mode: "automatic",
+            owner: "lead_agent",
+            reason: "within_locked_authority",
+          },
           actions: expect.arrayContaining([
             expect.objectContaining({
               id: "generate_candidate",
@@ -3937,6 +4277,25 @@ describe("skill_eval_runtime dashboard projection", () => {
               }),
             ]),
           }),
+        }),
+      );
+      expect(data.review).toEqual(
+        expect.objectContaining({
+          decision: expect.objectContaining({
+            status: "blocked",
+            reason: "candidate_acceptance_failed",
+          }),
+          blockers: [
+            expect.objectContaining({
+              id: "blocker:criterion:material_improvement",
+              kind: "criterion",
+              case_id: null,
+              status: "failed",
+              criterion_ids: ["material_improvement"],
+            }),
+          ],
+          next_action: "propose_candidate",
+          attribution: "skill",
         }),
       );
     });
@@ -4186,6 +4545,29 @@ describe("skill_eval_runtime dashboard projection", () => {
         readFileSync(join(workspace, "dashboard-data.json"), "utf8"),
       );
       expect(data.cases[0].status).toBe("failed");
+      expect(data.review).toEqual(
+        expect.objectContaining({
+          contract: "skill-reviewer.dashboard-review",
+          decision: expect.objectContaining({
+            status: "blocked",
+            reason: "scenario_failed",
+            blocking_scenario_count: 1,
+          }),
+          blockers: [
+            expect.objectContaining({
+              id: "blocker:semantic-dashboard",
+              case_id: "semantic-dashboard",
+              status: "failed",
+              failed_check_ids: [
+                "assertion:semantic-dashboard:semantic:blind-quality",
+              ],
+              source_evidence_ids: [
+                "artifact:semantic-dashboard:semantic:blind-quality",
+              ],
+            }),
+          ],
+        }),
+      );
       expect(data.spine).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -4400,8 +4782,13 @@ describe("skill_eval_runtime dashboard projection", () => {
             ],
           }),
           action_center: {
-            next_action: "authorize_audit",
+            next_action: "prepare_audit",
             owner: "lead_agent",
+            continuation: {
+              mode: "automatic",
+              owner: "lead_agent",
+              reason: "within_locked_authority",
+            },
             acceptance: expect.objectContaining({
               status: "accepted",
               accepted: true,
@@ -4421,22 +4808,24 @@ describe("skill_eval_runtime dashboard projection", () => {
               ],
             }),
             attribution: expect.objectContaining({
-              primary: "human",
+              primary: null,
               items: expect.arrayContaining([
                 expect.objectContaining({
                   id: "human",
-                  status: "waiting",
-                  signals: ["audit_authorization_required"],
+                  status: "clear",
+                  signals: [],
                 }),
               ]),
             }),
             actions: expect.arrayContaining([
               expect.objectContaining({
-                id: "authorize_audit",
+                id: "prepare_audit",
                 available: true,
                 recommended: true,
                 owner: "lead_agent",
-                human_confirmation_required: true,
+                execution_mode: "automatic",
+                requestable: false,
+                human_confirmation_required: false,
               }),
               expect.objectContaining({
                 id: "generate_candidate",
@@ -4448,8 +4837,30 @@ describe("skill_eval_runtime dashboard projection", () => {
               audit_endpoint: "/dashboard-action-requests.json",
               evidence_mutation: false,
               eval_mutation: false,
+              handoff_mode: "durable_local_ledger",
+              can_wake_agent_session: false,
+              persists_after_agent_session_end: true,
             },
           },
+          review: expect.objectContaining({
+            contract: "skill-reviewer.dashboard-review",
+            decision: expect.objectContaining({
+              status: "inconclusive",
+              reason: "audit_required",
+              release_eligible: false,
+              blocking_scenario_count: 0,
+              blocking_gate_count: 0,
+            }),
+            blockers: [],
+            scenarios: [
+              expect.objectContaining({
+                case_id: "dashboard-case",
+                status: "passed",
+              }),
+            ],
+            next_action: "prepare_audit",
+            attribution: null,
+          }),
           cases: [
             expect.objectContaining({
               id: "dashboard-case",
@@ -4467,6 +4878,18 @@ describe("skill_eval_runtime dashboard projection", () => {
                       status: "completed",
                       binding_error_count: 0,
                       execution_digest: expect.stringMatching(/^[a-f0-9]{64}$/),
+                      trace: expect.objectContaining({
+                        artifact: "agent-trace.jsonl",
+                        valid: true,
+                        complete: true,
+                        events: expect.arrayContaining([
+                          expect.objectContaining({
+                            event_id: "event-0002-with_skill-1-artifact",
+                            kind: "artifact_written",
+                            artifact_refs: ["outputs/review.md"],
+                          }),
+                        ]),
+                      }),
                     }),
                   ]),
                 }),
@@ -4508,6 +4931,18 @@ describe("skill_eval_runtime dashboard projection", () => {
       expect(data.spine.map((node) => node.kind)).toEqual(
         expect.arrayContaining(["run", "gate", "iteration", "case", "assertion", "artifact"]),
       );
+      const caseNodeIndex = data.spine.findIndex(
+        (node) => node.id === "case:dashboard-case",
+      );
+      const scopedGates = data.spine.filter(
+        (node) => node.kind === "gate" && node.case_id === "dashboard-case",
+      );
+      expect(caseNodeIndex).toBeGreaterThan(-1);
+      expect(scopedGates.length).toBeGreaterThan(0);
+      for (const gate of scopedGates) {
+        expect(gate.parent_id).toBe("case:dashboard-case");
+        expect(data.spine.indexOf(gate)).toBeGreaterThan(caseNodeIndex);
+      }
       expect(data.spine).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -4517,7 +4952,10 @@ describe("skill_eval_runtime dashboard projection", () => {
               severity: "must_pass",
               artifact: "outputs/review.md",
             }),
-            assertion_evidence: expect.objectContaining({ exists: true }),
+            assertion_evidence: expect.objectContaining({
+              exists: true,
+              source_event_ids: ["event-0002-with_skill-1-artifact"],
+            }),
             content_url: expect.stringMatching(
               /^\/dashboard-evidence\/[a-f0-9]{24}\.json$/,
             ),

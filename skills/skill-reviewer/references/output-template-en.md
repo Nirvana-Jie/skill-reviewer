@@ -39,7 +39,7 @@ scope.
 <Per-file verdict for SKILL.md / references/ / scripts/ / assets/ / evals/.>
 
 ## Verification Evidence
-- Level: `not-run` | `inconclusive` | `behavior-verified` | `regression-verified`
+- Level: <write exactly one verification-level identifier defined by SKILL.md; use it once in the response and do not emit any alternative level identifier>
 - Subject: <path and digest, or "not recorded">
 - Static checks: <command/result/artifact or "not run">
 - Runs: <cases/configurations or "none">

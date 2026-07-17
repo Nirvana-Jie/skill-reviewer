@@ -2,7 +2,14 @@
 
 import "@testing-library/jest-dom/vitest";
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -70,6 +77,63 @@ function renderWithPreferences(node: ReactNode) {
   );
 }
 
+function traceFixture(arm: string, repeat: number) {
+  const base = {
+    contract: "skill-reviewer.agent-trace-event" as const,
+    run_id: "run-a324c00268e0228b50e3",
+    case_id: "selection-quality",
+    arm,
+    repeat,
+    artifact_refs: [] as string[],
+  };
+  return {
+    artifact: "agent-trace.jsonl",
+    digest: String(repeat || 1).repeat(64),
+    capture_source: "harness_native" as const,
+    complete: true,
+    valid: true,
+    event_count: 3,
+    started_at: "2026-07-16T00:00:00.000Z",
+    finished_at: "2026-07-16T00:00:00.020Z",
+    duration_ms: 20,
+    events: [
+      {
+        ...base,
+        event_id: `${arm}-${repeat}-start`,
+        sequence: 1,
+        occurred_at: "2026-07-16T00:00:00.000Z",
+        elapsed_ms: 0,
+        kind: "execution_started" as const,
+        status: "running",
+        summary: "Agent execution started",
+        details: { capture_source: "harness_native" },
+      },
+      {
+        ...base,
+        event_id: `${arm}-${repeat}-tool`,
+        sequence: 2,
+        occurred_at: "2026-07-16T00:00:00.010Z",
+        elapsed_ms: 10,
+        kind: "tool_call" as const,
+        status: "completed",
+        summary: "Read the Skill instructions",
+        details: { tool: "read", path: "SKILL.md" },
+      },
+      {
+        ...base,
+        event_id: `${arm}-${repeat}-finish`,
+        sequence: 3,
+        occurred_at: "2026-07-16T00:00:00.020Z",
+        elapsed_ms: 20,
+        kind: "execution_finished" as const,
+        status: "completed",
+        summary: "Agent execution finished",
+        details: {},
+      },
+    ],
+  };
+}
+
 function WorkerPoolThemeHarness() {
   const { setTheme } = useUiPreferences();
   return (
@@ -82,13 +146,30 @@ function WorkerPoolThemeHarness() {
   );
 }
 
+const localSession = "session_token_abcdefghijklmnopqrstuvwxyz123456";
+const actionHandoff = {
+  contract: "skill-reviewer.dashboard-agent-handoff",
+  mode: "durable_local_ledger",
+  agent_session_state: "unbound",
+  can_wake_agent_session: false,
+  persists_after_agent_session_end: true,
+  task_root: "/tmp/skill-reviewer-actions",
+};
+
 beforeEach(() => {
-  window.history.replaceState({}, "", "/");
+  window.history.replaceState(
+    {},
+    "",
+    `/skill-reviewer/#session=${localSession}`,
+  );
   window.localStorage.clear();
   document.title = "";
   document.documentElement.removeAttribute("data-theme");
+  document.documentElement.removeAttribute("data-font-scale");
   document.documentElement.removeAttribute("lang");
   document.documentElement.style.removeProperty("color-scheme");
+  document.documentElement.style.removeProperty("--ui-scale");
+  document.documentElement.style.removeProperty("--ui-scale-inverse");
 });
 
 afterEach(() => {
@@ -101,8 +182,11 @@ afterEach(() => {
   window.localStorage.clear();
   document.title = "";
   document.documentElement.removeAttribute("data-theme");
+  document.documentElement.removeAttribute("data-font-scale");
   document.documentElement.removeAttribute("lang");
   document.documentElement.style.removeProperty("color-scheme");
+  document.documentElement.style.removeProperty("--ui-scale");
+  document.documentElement.style.removeProperty("--ui-scale-inverse");
   window.history.replaceState({}, "", "/");
 });
 
@@ -165,8 +249,13 @@ const data: DashboardData = {
     rejected_candidates: [{ round: 1, status: "no-change" }],
   },
   action_center: {
-    next_action: "authorize_audit",
+    next_action: "prepare_audit",
     owner: "lead_agent",
+    continuation: {
+      mode: "automatic",
+      owner: "lead_agent",
+      reason: "within_locked_authority",
+    },
     acceptance: {
       status: "accepted",
       accepted: true,
@@ -196,7 +285,7 @@ const data: DashboardData = {
       ],
     },
     attribution: {
-      primary: "human",
+      primary: null,
       items: [
         { id: "skill", status: "clear", signals: [], evidence_ids: [] },
         { id: "eval", status: "clear", signals: [], evidence_ids: [] },
@@ -209,8 +298,8 @@ const data: DashboardData = {
         { id: "evidence", status: "clear", signals: [], evidence_ids: [] },
         {
           id: "human",
-          status: "waiting",
-          signals: ["audit_authorization_required"],
+          status: "clear",
+          signals: [],
           evidence_ids: [],
         },
       ],
@@ -221,14 +310,28 @@ const data: DashboardData = {
         available: false,
         recommended: false,
         owner: "lead_agent",
+        execution_mode: "automatic",
+        requestable: false,
         human_confirmation_required: false,
         evidence_ids: [],
+      },
+      {
+        id: "prepare_audit",
+        available: true,
+        recommended: true,
+        owner: "lead_agent",
+        execution_mode: "automatic",
+        requestable: false,
+        human_confirmation_required: false,
+        evidence_ids: ["gate:safety", "case:selection-quality"],
       },
       {
         id: "rerun_execution",
         available: false,
         recommended: false,
         owner: "lead_agent",
+        execution_mode: "automatic",
+        requestable: false,
         human_confirmation_required: false,
         evidence_ids: [],
       },
@@ -237,22 +340,18 @@ const data: DashboardData = {
         available: false,
         recommended: false,
         owner: "lead_agent",
+        execution_mode: "request",
+        requestable: true,
         human_confirmation_required: true,
         evidence_ids: [],
-      },
-      {
-        id: "authorize_audit",
-        available: true,
-        recommended: true,
-        owner: "lead_agent",
-        human_confirmation_required: true,
-        evidence_ids: ["gate:safety", "case:selection-quality"],
       },
       {
         id: "request_release_confirmation",
         available: false,
         recommended: false,
         owner: "lead_agent",
+        execution_mode: "request",
+        requestable: true,
         human_confirmation_required: true,
         evidence_ids: [],
       },
@@ -262,7 +361,58 @@ const data: DashboardData = {
       audit_endpoint: "/dashboard-action-requests.json",
       evidence_mutation: false,
       eval_mutation: false,
+      handoff_mode: "durable_local_ledger",
+      can_wake_agent_session: false,
+      persists_after_agent_session_end: true,
     },
+  },
+  review: {
+    contract: "skill-reviewer.dashboard-review",
+    decision: {
+      status: "blocked",
+      reason: "scenario_failed",
+      release_eligible: false,
+      blocking_scenario_count: 1,
+      blocking_gate_count: 0,
+    },
+    blockers: [
+      {
+        id: "blocker:public-safety-audit",
+        kind: "scenario",
+        case_id: "public-safety-audit",
+        status: "failed",
+        gate_ids: [],
+        failed_check_ids: [],
+        missing_artifact_ids: [],
+        source_evidence_ids: [],
+        criterion_ids: [],
+        evidence_ids: ["case:public-safety-audit"],
+        attribution: null,
+        next_action: "prepare_audit",
+      },
+    ],
+    safeguards: {
+      passed_gate_ids: ["gate:safety"],
+      passed_case_ids: ["case:selection-quality"],
+    },
+    scenarios: [
+      {
+        case_id: "selection-quality",
+        status: "passed",
+        gate_ids: [],
+        check_ids: [],
+        artifact_ids: ["artifact:review"],
+      },
+      {
+        case_id: "public-safety-audit",
+        status: "failed",
+        gate_ids: [],
+        check_ids: [],
+        artifact_ids: [],
+      },
+    ],
+    next_action: "prepare_audit",
+    attribution: null,
   },
   cases: [
     {
@@ -299,6 +449,30 @@ const data: DashboardData = {
             assertions: { passed: 1, total: 1 },
             required_pass_rate: 1,
             metrics: {},
+            trace: traceFixture("with_skill", repeat),
+          })),
+        },
+        {
+          id: "old_skill",
+          complete: true,
+          passed: true,
+          required_pass_rate: 1,
+          forbidden_actions: [],
+          side_effects: [],
+          binding_errors: [],
+          metrics: {},
+          assertions: { passed: 3, total: 3 },
+          artifact_count: 2,
+          executions: [1, 2, 3].map((repeat) => ({
+            repeat,
+            status: "completed",
+            binding_error_count: 0,
+            execution_digest: String(repeat + 3).repeat(64),
+            artifact_count: repeat === 1 ? 2 : 0,
+            assertions: { passed: 1, total: 1 },
+            required_pass_rate: 1,
+            metrics: {},
+            trace: traceFixture("old_skill", repeat),
           })),
         },
       ],
@@ -310,6 +484,7 @@ const data: DashboardData = {
           preference: "candidate",
           artifact: "semantic/blind-quality.json",
           resolved_winners: ["with_skill", "with_skill"],
+          source_event_ids: ["with_skill-1-tool", "missing-semantic-event"],
         },
       ],
     },
@@ -405,27 +580,138 @@ describe("EvidenceDashboard", () => {
       .fn()
       .mockResolvedValueOnce({
         ok: true,
+        json: async () => ({
+          contract: "skill-reviewer.dashboard-session",
+          run_id: "run-product-test",
+          session_transport: "fragment-to-header",
+          session_header: "X-Skill-Reviewer-Session",
+          evidence_read_only: true,
+          eval_mutation: false,
+          action_requests_enabled: true,
+          data_endpoint: "/dashboard-data.json",
+          action_request_endpoint: "/dashboard-action-requests",
+          action_audit_endpoint: "/dashboard-action-requests.json",
+          agent_handoff: {
+            contract: "skill-reviewer.dashboard-agent-handoff",
+            mode: "durable_local_ledger",
+            agent_session_state: "unbound",
+            can_wake_agent_session: false,
+            persists_after_agent_session_end: true,
+            task_root: "/tmp/skill-reviewer-actions",
+          },
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
         json: async () => data,
       })
+      .mockResolvedValueOnce({ ok: false, status: 503 })
       .mockResolvedValueOnce({ ok: false, status: 503 });
     vi.stubGlobal("fetch", fetchMock);
 
     renderWithPreferences(<App />);
 
-    expect(await screen.findByText("Evidence chain")).toBeInTheDocument();
+    expect(
+      (await screen.findAllByText("Independent issues to address: 1")).length,
+    ).toBeGreaterThan(0);
     fireEvent.click(
       screen.getByRole("button", { name: "Refresh dashboard now" }),
     );
     expect(await screen.findByText("Last refresh failed")).toBeInTheDocument();
-    expect(screen.getByText("Evidence chain")).toBeInTheDocument();
+    expect(
+      screen.getAllByText("Independent issues to address: 1").length,
+    ).toBeGreaterThan(0);
     expect(screen.getByText("Stale")).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls[1]?.[1]).toEqual(
+    fireEvent.click(
+      screen.getByRole("button", { name: "Refresh dashboard now" }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+    expect(screen.getByText("Stale")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Next steps" }));
+    expect(
+      screen.getAllByText("The local Dashboard session has ended").length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.queryByText("Action gateway is read-only"),
+    ).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls[2]?.[1]).toEqual(
       expect.objectContaining({
         cache: "no-store",
         signal: expect.any(AbortSignal),
       }),
     );
+  });
+
+  it("shows a failed candidate criterion as its own actionable blocker", () => {
+    const criterionData = structuredClone(data);
+    criterionData.action_center.next_action = "propose_candidate";
+    criterionData.action_center.acceptance.accepted = false;
+    criterionData.action_center.acceptance.status = "rejected";
+    criterionData.action_center.acceptance.criteria = [
+      {
+        id: "hard_gates",
+        status: "satisfied",
+        passed: 4,
+        total: 4,
+        evidence_ids: ["gate:safety"],
+      },
+      {
+        id: "pareto",
+        status: "satisfied",
+        passed: 1,
+        total: 1,
+        evidence_ids: ["case:selection-quality"],
+      },
+      {
+        id: "material_improvement",
+        status: "failed",
+        passed: 0,
+        total: 1,
+        evidence_ids: ["case:selection-quality"],
+      },
+    ];
+    criterionData.review = {
+      ...criterionData.review,
+      decision: {
+        ...criterionData.review.decision,
+        reason: "candidate_acceptance_failed",
+        blocking_scenario_count: 0,
+        blocking_gate_count: 0,
+      },
+      blockers: [
+        {
+          id: "blocker:criterion:material_improvement",
+          kind: "criterion",
+          case_id: null,
+          status: "failed",
+          gate_ids: [],
+          failed_check_ids: [],
+          missing_artifact_ids: [],
+          source_evidence_ids: [],
+          criterion_ids: ["material_improvement"],
+          evidence_ids: ["case:selection-quality"],
+          attribution: "skill",
+          next_action: "propose_candidate",
+        },
+      ],
+      next_action: "propose_candidate",
+      attribution: "skill",
+    };
+
+    renderWithPreferences(
+      <EvidenceDashboard data={criterionData} connectionState="live" />,
+    );
+
+    expect(screen.getAllByText("Material improvement").length).toBeGreaterThan(0);
+    expect(
+      screen.getByText("0/1 checks satisfied; this condition failed."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Review the evidence for this problem" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("blocker:criterion:material_improvement"),
+    ).not.toBeInTheDocument();
   });
 
   it("exposes live release evidence without direct execution controls", async () => {
@@ -454,7 +740,35 @@ describe("EvidenceDashboard", () => {
     expect(screen.getByText(/continuity epoch 1/)).toBeInTheDocument();
     expect(screen.getAllByText("Release quality selection").length).toBeGreaterThan(0);
     expect(screen.queryByText("selection-quality")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("group", { name: "Evaluation lifecycle" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", {
+        name: "All evaluation stages; 2 cases",
+      }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(
+      screen.getByText(
+        "This combines development validation, candidate selection, and release audit for browsing. All cases is a view, not a fourth stage.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", {
+        name: "What the Agent does automatically",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        "The dashboard does not run an Agent by itself. It creates a bound request that the lead Agent can safely consume.",
+      ),
+    ).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /execute|approve|run eval/i })).not.toBeInTheDocument();
+    expect(screen.getAllByText("Why this failed").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("What to do next").length).toBeGreaterThan(0);
+    fireEvent.click(
+      screen.getByRole("button", { name: /Complete audit record/ }),
+    );
     const failedCaseRow = screen
       .getByRole("button", {
         name: "Review scenario result: Public safety audit",
@@ -462,26 +776,65 @@ describe("EvidenceDashboard", () => {
       .closest(".evidence-row");
     expect(failedCaseRow?.querySelector('[data-evidence-icon="circle-x"]')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("tab", { name: "Execution trace" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Agent trace" }));
     expect(
-      screen.getByRole("heading", { name: "Real eval execution trace" }),
+      screen.getByRole("heading", { name: "Agent execution records" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Eval case run index" }),
     ).toBeInTheDocument();
     fireEvent.click(
-      screen.getByRole("tab", { name: "Release quality selection" }),
+      screen.getByRole("button", { name: "Release quality selection" }),
     );
     expect(screen.getAllByText("Fully bound").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("3 / 3").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("6 / 6").length).toBeGreaterThan(0);
+    expect(
+      screen.getByRole("heading", { name: "Execution matrix" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Native subagent")).toBeInTheDocument();
+    expect(
+      screen.getByText("Lead Agent dispatches; the Eval worker executes"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", {
+        name: /Candidate under review · Repeat 2 · completed/,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", {
+        name: /Accepted comparison baseline · Repeat 2 · completed/,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(
+        screen.getByRole("region", { name: "Blind semantic judge" }),
+      ).getByText(/1 linked Trace events/),
+    ).toBeInTheDocument();
     expect(screen.getByText("Observable execution, not private chain-of-thought")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "Evidence" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Review overview" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "Audit" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Release audit; 1 cases" }),
+    );
+    expect(
+      screen.getByText(
+        "Check generalization once without teaching the optimizer",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "This run uses public calibration evidence. It tests audit behavior but cannot authorize release by itself.",
+      ),
+    ).toBeInTheDocument();
     expect(screen.getAllByText("Public safety audit").length).toBeGreaterThan(0);
     expect(screen.queryByText("selection-quality")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "All" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "All evaluation stages; 2 cases" }),
+    );
     fireEvent.click(
       screen.getByRole("button", {
-        name: "Review scenario result: Release quality selection",
+        name: "Release quality selection · passed",
       }),
     );
     expect(screen.getByText("Semantic evidence")).toBeInTheDocument();
@@ -497,7 +850,10 @@ describe("EvidenceDashboard", () => {
       "true",
     );
     expect(fetchMock).toHaveBeenCalledWith(
-      `/dashboard-diffs/${"1".repeat(24)}.json`,
+      new URL(
+        `/dashboard-diffs/${"1".repeat(24)}.json`,
+        window.location.origin,
+      ).href,
       expect.objectContaining({
         cache: "no-store",
         signal: expect.any(AbortSignal),
@@ -525,8 +881,11 @@ describe("EvidenceDashboard", () => {
       screen.getByRole("button", { name: "Exit diff focus mode" }),
     ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("tab", { name: "Evidence" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Review overview" }));
     expect(container.querySelector(".app-shell")).not.toHaveClass("is-focus-mode");
+    fireEvent.click(
+      screen.getByRole("button", { name: /Expand audit record/i }),
+    );
     fireEvent.click(
       screen.getByRole("button", { name: "Expand Release quality selection" }),
     );
@@ -544,28 +903,10 @@ describe("EvidenceDashboard", () => {
     ).toBeGreaterThan(0);
   });
 
-  it("projects the next action and creates only an audited lead-Agent task", async () => {
-    const task = {
-      contract: "skill-reviewer.dashboard-action-task" as const,
-      id: "task-audit-0001",
-      sequence: 1,
-      created_at: "2026-07-16T06:30:00+00:00",
-      previous_digest: null,
-      run_id: data.run.id,
-      dashboard_digest: "7".repeat(64),
-      expected_next_action: "authorize_audit",
-      action_id: "authorize_audit" as const,
-      owner: "lead_agent" as const,
-      requested_by: "human_reviewer" as const,
-      status: "requested" as const,
-      human_confirmation_required: true,
-      evidence_ids: ["gate:safety", "case:selection-quality"],
-      idempotency_key: "authorize-audit-test",
-      digest: "8".repeat(64),
-    };
+  it("shows the locked audit transition as automatic and never creates a browser task", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "/dashboard-action-requests.json") {
+      if (url === new URL("/dashboard-action-requests.json", window.location.origin).href) {
         return {
           ok: true,
           status: 200,
@@ -575,11 +916,121 @@ describe("EvidenceDashboard", () => {
             owner: "lead_agent",
             evidence_mutation: false,
             eval_mutation: false,
+            current_dashboard_digest: "6".repeat(64),
+            handoff: actionHandoff,
             tasks: [],
           }),
         };
       }
-      if (url === "/dashboard-action-requests" && init?.method === "POST") {
+      expect(init?.method).not.toBe("POST");
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithPreferences(<EvidenceDashboard data={data} connectionState="live" />);
+    fireEvent.click(screen.getByRole("tab", { name: "Next steps" }));
+
+    expect(
+      screen.getByRole("heading", { name: "What to do next" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Release requirements")).toBeInTheDocument();
+    expect(screen.getAllByText("Hard gates").length).toBeGreaterThan(0);
+    expect(screen.getByText("Pareto admissibility")).toBeInTheDocument();
+    expect(screen.getByText("Material improvement")).toBeInTheDocument();
+    expect(screen.getByText("Who owns the blocker?")).toBeInTheDocument();
+    expect(screen.getAllByText("Prepare and bind the release audit").length).toBeGreaterThan(0);
+    expect(screen.getByText("No human decision required")).toBeInTheDocument();
+    expect(
+      screen.getAllByText("The dashboard neither schedules it", {
+        exact: false,
+      }).length,
+    ).toBeGreaterThan(0);
+    expect(screen.getByText("Automation and human boundaries")).toBeInTheDocument();
+    await screen.findByText("No local Agent handoff has been saved for this run.");
+    expect(
+      screen.queryByRole("button", { name: "Save local handoff" }),
+    ).not.toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(([, init]) => init?.method === "POST"),
+    ).toBe(false);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Switch to Simplified Chinese" }),
+    );
+    expect(screen.getByText("发布条件检查")).toBeInTheDocument();
+    expect(screen.getAllByText("当前建议").length).toBeGreaterThan(0);
+    expect(screen.getByText("由主 Agent 处理")).toBeInTheDocument();
+    expect(screen.getByText("无需人工决定")).toBeInTheDocument();
+    expect(screen.getByText("自动执行与人工介入边界")).toBeInTheDocument();
+    expect(
+      screen.getByText("这项建议来自本次评测已经验证的运行结果。"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("evals.json 保持不可变")).toBeInTheDocument();
+  });
+
+  it("explains automatic continuation when the completed stage has no blockers", () => {
+    const automaticData: DashboardData = structuredClone(data);
+    automaticData.review.decision = {
+      status: "inconclusive",
+      reason: "audit_required",
+      release_eligible: false,
+      blocking_scenario_count: 0,
+      blocking_gate_count: 0,
+    };
+    automaticData.review.blockers = [];
+
+    renderWithPreferences(
+      <EvidenceDashboard data={automaticData} connectionState="live" />,
+    );
+
+    expect(
+      screen.getByText(
+        "No blocker remains in this stage. The lead Agent continues to the next locked evaluation stage automatically.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("creates an audited task only after the state reaches a human release boundary", async () => {
+    const releaseData: DashboardData = structuredClone(data);
+    releaseData.action_center.next_action = "request_user_release";
+    releaseData.action_center.continuation = {
+      mode: "human_required",
+      owner: "human",
+      reason: "release_confirmation",
+    };
+    releaseData.review.next_action = "request_user_release";
+    releaseData.review.attribution = "human";
+    releaseData.action_center.attribution.primary = "human";
+    const humanAttribution = releaseData.action_center.attribution.items.find(
+      (item) => item.id === "human",
+    );
+    if (!humanAttribution) throw new Error("human attribution fixture is missing");
+    humanAttribution.status = "waiting";
+    humanAttribution.signals = ["release_confirmation_required"];
+    for (const action of releaseData.action_center.actions) {
+      action.available = action.id === "request_release_confirmation";
+      action.recommended = action.id === "request_release_confirmation";
+    }
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/dashboard-action-requests.json")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            contract: "skill-reviewer.dashboard-action-task-log",
+            run_id: releaseData.run.id,
+            owner: "lead_agent",
+            evidence_mutation: false,
+            eval_mutation: false,
+            current_dashboard_digest: "7".repeat(64),
+            handoff: actionHandoff,
+            tasks: [],
+          }),
+        };
+      }
+      if (url.endsWith("/dashboard-action-requests") && init?.method === "POST") {
         const request = JSON.parse(String(init.body));
         return {
           ok: true,
@@ -588,12 +1039,26 @@ describe("EvidenceDashboard", () => {
             contract: "skill-reviewer.dashboard-action-task-response",
             created: true,
             task: {
-              ...task,
+              contract: "skill-reviewer.dashboard-action-task",
+              id: "task-release-0001",
+              sequence: 1,
+              created_at: "2026-07-16T06:30:00+00:00",
+              previous_digest: null,
+              run_id: releaseData.run.id,
+              dashboard_digest: "7".repeat(64),
               expected_next_action: request.expected_next_action,
               action_id: request.action_id,
+              owner: "lead_agent",
+              requested_by: "human_reviewer",
+              status: "awaiting_agent",
+              delivery_mode: "durable_local_ledger",
+              agent_session_id: null,
+              human_confirmation_required: true,
               evidence_ids: request.evidence_ids,
               idempotency_key: request.idempotency_key,
+              digest: "8".repeat(64),
             },
+            handoff: actionHandoff,
           }),
         };
       }
@@ -601,61 +1066,118 @@ describe("EvidenceDashboard", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    renderWithPreferences(<EvidenceDashboard data={data} connectionState="live" />);
-    fireEvent.click(screen.getByRole("tab", { name: "Action center" }));
+    renderWithPreferences(
+      <EvidenceDashboard data={releaseData} connectionState="live" />,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Next steps" }));
 
     expect(
-      screen.getByRole("heading", { name: "Can this candidate be accepted?" }),
-    ).toBeInTheDocument();
-    expect(screen.getAllByText("Hard gates").length).toBeGreaterThan(0);
-    expect(screen.getByText("Pareto admissibility")).toBeInTheDocument();
-    expect(screen.getByText("Material improvement")).toBeInTheDocument();
-    expect(screen.getByText("Primary attribution: Human decision")).toBeInTheDocument();
-    expect(screen.getAllByText("Request audit authorization").length).toBeGreaterThan(0);
-    expect(
-      screen.getByText("Buttons create tasks; they do not execute work or change evidence.", {
-        exact: false,
-      }),
-    ).toBeInTheDocument();
-    await screen.findByText("No action task has been requested for this run.");
-
+      screen.getAllByText("Request release confirmation").length,
+    ).toBeGreaterThan(0);
+    expect(screen.getByText("Human decision")).toBeInTheDocument();
+    const clipboardWrite = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText: clipboardWrite } });
     const createButton = screen.getByRole("button", {
-      name: "Create lead-Agent task",
+      name: "Save local handoff",
     });
     fireEvent.click(createButton);
-
-    expect(await screen.findByText("Requested")).toBeInTheDocument();
-    const postCall = fetchMock.mock.calls.find(
-      ([url, init]) =>
-        String(url) === "/dashboard-action-requests" && init?.method === "POST",
+    expect(
+      await screen.findByText("Handoff saved locally — not delivered"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Awaiting Agent")).toBeInTheDocument();
+    expect(
+      screen.getAllByText("No Agent session is connected or wakeable").length,
+    ).toBeGreaterThan(0);
+    fireEvent.click(
+      screen.getAllByRole("button", {
+        name: "Copy Agent recovery instructions",
+      })[0]!,
     );
-    expect(postCall).toBeTruthy();
-    const body = JSON.parse(String(postCall?.[1]?.body));
-    expect(body).toEqual(
+    await waitFor(() => expect(clipboardWrite).toHaveBeenCalledTimes(1));
+    expect(clipboardWrite.mock.calls[0]?.[0]).toContain(
+      "the Dashboard did not send a prompt to any Agent session",
+    );
+    const postCall = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
+    expect(JSON.parse(String(postCall?.[1]?.body))).toEqual(
       expect.objectContaining({
-        contract: "skill-reviewer.dashboard-action-request",
-        run_id: data.run.id,
-        action_id: "authorize_audit",
-        expected_next_action: "authorize_audit",
-        evidence_ids: ["gate:safety", "case:selection-quality"],
-        idempotency_key: expect.any(String),
+        action_id: "request_release_confirmation",
+        expected_next_action: "request_user_release",
       }),
     );
-    expect(body).not.toHaveProperty("eval");
-    expect(body).not.toHaveProperty("evidence");
+  });
 
-    fireEvent.click(
-      screen.getByRole("button", { name: "Switch to Simplified Chinese" }),
+  it("keeps actions read-only when the local task gateway is unavailable", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    window.history.replaceState(
+      {},
+      "",
+      `/skill-reviewer/#session=${localSession}&view=action`,
     );
-    expect(screen.getByText("这个候选可以接受吗？")).toBeInTheDocument();
-    expect(screen.getAllByText("状态机下一步").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("由主 Agent 负责执行").length).toBeGreaterThan(0);
-    expect(screen.getByText("evals.json 保持不可变")).toBeInTheDocument();
+
+    renderWithPreferences(
+      <EvidenceDashboard
+        data={data}
+        connectionState="live"
+        actionsEnabled={false}
+      />,
+    );
+
+    expect(screen.getByText("Action gateway is read-only")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Save local handoff" }),
+    ).not.toBeInTheDocument();
+    await waitFor(() => expect(fetchMock).not.toHaveBeenCalled());
+  });
+
+  it("explains recovery instead of pretending to deliver when the local session ended", async () => {
+    const staleData: DashboardData = structuredClone(data);
+    staleData.action_center.next_action = "request_user_release";
+    staleData.action_center.continuation = {
+      mode: "human_required",
+      owner: "human",
+      reason: "release_confirmation",
+    };
+    for (const action of staleData.action_center.actions) {
+      action.available = action.id === "request_release_confirmation";
+      action.recommended = action.id === "request_release_confirmation";
+    }
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithPreferences(
+      <EvidenceDashboard
+        data={staleData}
+        connectionState="stale"
+        actionsEnabled={false}
+      />,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Next steps" }));
+
+    expect(
+      screen.getAllByText("The local Dashboard session has ended").length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText(
+        /Previously recorded handoffs remain in their local task directory/,
+      ).length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.queryByRole("button", { name: "Save local handoff" }),
+    ).not.toBeInTheDocument();
+    await waitFor(() => expect(fetchMock).not.toHaveBeenCalled());
   });
 
   it("separates evidence hierarchy disclosure from opening inspector details", () => {
     renderWithPreferences(
       <EvidenceDashboard data={data} connectionState="live" />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Collapse Immutable evaluation run" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: /Complete audit record/ }),
     );
 
     expect(
@@ -698,6 +1220,79 @@ describe("EvidenceDashboard", () => {
     expect(screen.getByRole("button", { name: "Expand all" })).toBeDisabled();
   });
 
+  it("aligns candidate and baseline evidence side by side by check identity", () => {
+    const comparisonData = structuredClone(data);
+    comparisonData.spine.push(
+      {
+        id: "assertion:selection-quality:with_skill:1:release-verdict",
+        kind: "assertion",
+        parent_id: "case:selection-quality",
+        label: "release-verdict",
+        status: "passed",
+        arm: "with_skill",
+        repeat: 1,
+        assertion_type: "text_contains",
+      },
+      {
+        id: "assertion:selection-quality:old_skill:1:release-verdict",
+        kind: "assertion",
+        parent_id: "case:selection-quality",
+        label: "release-verdict",
+        status: "failed",
+        arm: "old_skill",
+        repeat: 1,
+        assertion_type: "text_contains",
+      },
+      {
+        id: "artifact:selection-quality:with_skill:0",
+        kind: "artifact",
+        parent_id: "case:selection-quality",
+        label: "execution.json",
+        status: "retained",
+        arm: "with_skill",
+        path: "cases/selection-quality/with_skill/repeat-1/execution.json",
+      },
+      {
+        id: "artifact:selection-quality:old_skill:0",
+        kind: "artifact",
+        parent_id: "case:selection-quality",
+        label: "execution.json",
+        status: "retained",
+        arm: "old_skill",
+        path: "cases/selection-quality/old_skill/repeat-1/execution.json",
+      },
+    );
+
+    renderWithPreferences(
+      <EvidenceDashboard data={comparisonData} connectionState="live" />,
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Switch to Simplified Chinese" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /完整审计记录/ }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "展开 候选质量是否达到发布要求" }),
+    );
+
+    const comparison = screen.getByRole("region", {
+      name: "候选版与旧版配对证据",
+    });
+    expect(within(comparison).getAllByText("待评候选版本").length).toBeGreaterThan(0);
+    expect(
+      within(comparison).getAllByText("已接受的对照版本").length,
+    ).toBeGreaterThan(0);
+    expect(within(comparison).getAllByText("结果不同").length).toBeGreaterThan(0);
+    expect(within(comparison).getAllByText("结果一致").length).toBeGreaterThan(0);
+    expect(
+      comparison.querySelectorAll(".evidence-comparison-pair").length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(
+      comparison.querySelectorAll(".evidence-comparison-cell.is-candidate").length,
+    ).toBe(
+      comparison.querySelectorAll(".evidence-comparison-cell.is-baseline").length,
+    );
+  });
+
   it("turns a retained response into a Chinese reviewer guide with its real input and source content", async () => {
     const evidenceData = structuredClone(data);
     const artifact = evidenceData.spine.find((node) => node.id === "artifact:review");
@@ -727,6 +1322,9 @@ describe("EvidenceDashboard", () => {
       screen.getByRole("button", { name: "Switch to Simplified Chinese" }),
     );
     fireEvent.click(
+      screen.getByRole("button", { name: /完整审计记录/ }),
+    );
+    fireEvent.click(
       screen.getByRole("button", { name: "展开 候选质量是否达到发布要求" }),
     );
     fireEvent.click(
@@ -747,7 +1345,7 @@ describe("EvidenceDashboard", () => {
       await screen.findByText(/当前证据不足，不能声称候选版已经优于旧版/),
     ).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(
-      artifact.content_url,
+      new URL(artifact.content_url, window.location.origin).href,
       expect.objectContaining({
         cache: "no-store",
         signal: expect.any(AbortSignal),
@@ -819,6 +1417,9 @@ describe("EvidenceDashboard", () => {
       screen.getByRole("button", { name: "Switch to Simplified Chinese" }),
     );
     fireEvent.click(
+      screen.getByRole("button", { name: /完整审计记录/ }),
+    );
+    fireEvent.click(
       screen.getByRole("button", {
         name: "查看门禁依据：候选质量是否达到发布要求｜候选结果检查",
       }),
@@ -865,6 +1466,7 @@ describe("EvidenceDashboard", () => {
 
     expect(document.documentElement).toHaveAttribute("lang", "en");
     expect(document.documentElement).toHaveAttribute("data-theme", "light");
+    expect(document.documentElement).toHaveAttribute("data-font-scale", "100");
     expect(document.title).toBe("Skill Reviewer · Evidence Workbench");
 
     fireEvent.click(
@@ -873,19 +1475,16 @@ describe("EvidenceDashboard", () => {
 
     expect(document.documentElement).toHaveAttribute("lang", "zh-CN");
     expect(document.title).toBe("Skill Reviewer · 证据工作台");
-    expect(screen.getByText("评测证据")).toBeInTheDocument();
-    expect(screen.getByText("暂不可发布")).toBeInTheDocument();
+    expect(screen.getAllByText("评审总览").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("暂不可发布").length).toBeGreaterThan(0);
     expect(
-      screen.getByText("1 个场景、1 项发布门禁尚未通过。"),
-    ).toBeInTheDocument();
+      screen.getAllByText("1 个评测场景尚未得到可接受的结果。").length,
+    ).toBeGreaterThan(0);
     expect(
-      screen.getByText("当前阻塞：1 个需处理场景 → 1 项未通过发布门禁"),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        "发布门禁由场景证据汇总；同一个阻塞问题可能作为“场景结论”和“门禁结论”各显示一次，但场景数只计一次。",
-      ),
-    ).toBeInTheDocument();
+      screen.getAllByText("需要处理的独立问题：1").length,
+    ).toBeGreaterThan(0);
+    expect(screen.getAllByText("为什么没有通过").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("应该怎么处理").length).toBeGreaterThan(0);
     expect(
       screen.getByRole("button", {
         name: "需处理场景；匹配场景数：1",
@@ -897,22 +1496,16 @@ describe("EvidenceDashboard", () => {
       ),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "收起 本次评测运行" }),
-    ).toHaveAttribute("aria-expanded", "true");
-    expect(
       screen.getAllByText("候选质量是否达到发布要求").length,
     ).toBeGreaterThan(0);
-    expect(screen.getByText("安全审计尚未通过")).toBeInTheDocument();
-    expect(
-      screen.getByText("发布仍被审计结果阻塞；请先处理审计场景中的失败项。"),
-    ).toBeInTheDocument();
-    expect(screen.getByText("由主 Agent 直接执行")).toBeInTheDocument();
-    expect(screen.getByText("由主 Agent 负责分发")).toBeInTheDocument();
-    expect(screen.getAllByText("查看发布依据").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("查看场景判定").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("准备并绑定发布审计").length).toBeGreaterThan(0);
+    expect(screen.getByText("查看下一步")).toBeInTheDocument();
     expect(screen.getAllByText("公开校准场景").length).toBeGreaterThan(0);
     expect(screen.getByText("已完成新旧版对照验证")).toBeInTheDocument();
     expect(window.localStorage.getItem(preferenceStorageKeys.locale)).toBe("zh-CN");
+    expect(
+      screen.getByRole("button", { name: "放大文字" }),
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: "文件差异 (1)" }));
     expect(await screen.findByText("Rendered diff SKILL.md")).toBeInTheDocument();
@@ -936,9 +1529,57 @@ describe("EvidenceDashboard", () => {
     });
   });
 
-  it("restores persisted locale and theme preferences", () => {
+  it("scales the complete workbench, persists the preference, and keeps bounded controls", () => {
+    renderWithPreferences(
+      <EvidenceDashboard data={data} connectionState="live" />,
+    );
+
+    const increase = screen.getByRole("button", {
+      name: "Increase text size",
+    });
+    const decrease = screen.getByRole("button", {
+      name: "Decrease text size",
+    });
+
+    expect(decrease).not.toBeDisabled();
+    expect(document.documentElement.style.getPropertyValue("--ui-scale")).toBe(
+      "1",
+    );
+    expect(
+      document.documentElement.style.getPropertyValue("--ui-scale-inverse"),
+    ).toBe("1.000000");
+
+    fireEvent.click(increase);
+    fireEvent.click(increase);
+    fireEvent.click(increase);
+    fireEvent.click(increase);
+
+    expect(increase).toBeDisabled();
+    expect(document.documentElement).toHaveAttribute("data-font-scale", "160");
+    expect(document.documentElement.style.getPropertyValue("--ui-scale")).toBe(
+      "1.6",
+    );
+    expect(
+      document.documentElement.style.getPropertyValue("--ui-scale-inverse"),
+    ).toBe("0.625000");
+    expect(window.localStorage.getItem(preferenceStorageKeys.fontScale)).toBe(
+      "1.6",
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Text size 160%. Reset text size to 100%",
+      }),
+    );
+
+    expect(document.documentElement).toHaveAttribute("data-font-scale", "100");
+    expect(increase).not.toBeDisabled();
+  });
+
+  it("restores persisted locale, theme, and text-size preferences", () => {
     window.localStorage.setItem(preferenceStorageKeys.locale, "zh-CN");
     window.localStorage.setItem(preferenceStorageKeys.theme, "dark");
+    window.localStorage.setItem(preferenceStorageKeys.fontScale, "1.25");
 
     renderWithPreferences(
       <EvidenceDashboard data={data} connectionState="live" />,
@@ -946,10 +1587,19 @@ describe("EvidenceDashboard", () => {
 
     expect(document.documentElement).toHaveAttribute("lang", "zh-CN");
     expect(document.documentElement).toHaveAttribute("data-theme", "dark");
-    expect(screen.getByText("评测证据")).toBeInTheDocument();
+    expect(document.documentElement).toHaveAttribute("data-font-scale", "125");
+    expect(document.documentElement.style.getPropertyValue("--ui-scale")).toBe(
+      "1.25",
+    );
+    expect(screen.getAllByText("评审总览").length).toBeGreaterThan(0);
     expect(
       screen.getByRole("button", { name: "切换到浅色主题" }),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", {
+        name: "文字大小 125%. 将文字大小恢复为 100%",
+      }),
+    ).toHaveTextContent("125%");
   });
 
   it("resizes, bounds, localizes, and persists both desktop side panes", async () => {
@@ -1029,7 +1679,11 @@ describe("EvidenceDashboard", () => {
       configurable: true,
       value: 849,
     });
-    window.history.replaceState({}, "", "/?view=action");
+    window.history.replaceState(
+      {},
+      "",
+      `/skill-reviewer/#session=${localSession}&view=action`,
+    );
 
     try {
       const { container } = renderWithPreferences(
@@ -1082,12 +1736,12 @@ describe("EvidenceDashboard", () => {
     expect(trace?.open).toBe(true);
   });
 
-  it("restores a guarded diff permalink and keeps review controls in the URL", async () => {
+  it("restores a diff permalink and keeps review controls in the fragment", async () => {
     const diffId = "1".repeat(24);
     window.history.replaceState(
       {},
       "",
-      `/?run=run-product-test&split=audit&caseStatus=attention&view=diff&diff=${diffId}&layout=unified&wrap=1&focus=1`,
+      `/skill-reviewer/#session=${localSession}&split=audit&caseStatus=attention&view=diff&diff=${diffId}&layout=unified&wrap=1&focus=1`,
     );
     vi.stubGlobal(
       "fetch",
@@ -1109,7 +1763,9 @@ describe("EvidenceDashboard", () => {
       <EvidenceDashboard data={data} connectionState="live" />,
     );
 
-    expect(screen.getByRole("button", { name: "Audit" })).toHaveAttribute(
+    expect(
+      screen.getByRole("button", { name: "Release audit; 1 cases" }),
+    ).toHaveAttribute(
       "aria-pressed",
       "true",
     );
@@ -1132,8 +1788,8 @@ describe("EvidenceDashboard", () => {
       "true",
     );
     expect(container.querySelector(".app-shell")).toHaveClass("is-focus-mode");
-    expect(window.location.search).toContain("run=run-product-test");
-    expect(window.location.search).toContain("focus=1");
+    expect(window.location.hash).not.toContain("run=");
+    expect(window.location.hash).toContain("focus=1");
   });
 
   it("locates evidence from the keyboard palette and supports roving case focus", async () => {
@@ -1156,10 +1812,15 @@ describe("EvidenceDashboard", () => {
     expect(
       container.querySelector(".case-row.is-selected .case-copy strong"),
     ).toHaveTextContent("Public safety audit");
-    expect(window.location.search).toContain("split=audit");
+    expect(window.location.hash).toContain("split=audit");
   });
 
   it("filters attention cases, exposes freshness controls, and copies portable references", async () => {
+    window.history.replaceState(
+      {},
+      "",
+      `/skill-reviewer/#session=${localSession}`,
+    );
     const clipboardWrite = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("navigator", {
       platform: "MacIntel",
@@ -1202,9 +1863,13 @@ describe("EvidenceDashboard", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Copy view link" }));
     await waitFor(() => expect(clipboardWrite).toHaveBeenCalled());
-    expect(clipboardWrite.mock.calls[0]?.[0]).toContain("run=run-product-test");
+    expect(clipboardWrite.mock.calls[0]?.[0]).not.toContain("run=run-product-test");
+    expect(clipboardWrite.mock.calls[0]?.[0]).not.toContain("session=");
     expect(clipboardWrite.mock.calls[0]?.[0]).toContain("caseStatus=attention");
 
+    fireEvent.click(
+      screen.getByRole("button", { name: /Complete audit record/ }),
+    );
     fireEvent.click(
       screen.getByRole("button", { name: "Copy evidence reference" }),
     );
@@ -1214,42 +1879,43 @@ describe("EvidenceDashboard", () => {
     );
     expect(clipboardWrite.mock.calls[1]?.[0]).toContain("run-product-test");
     expect(clipboardWrite.mock.calls[1]?.[0]).toContain("Permalink:");
+    expect(clipboardWrite.mock.calls[1]?.[0]).not.toContain("session=");
   });
 
-  it("blocks a stale run permalink until the reviewer chooses the current run", async () => {
-    window.history.replaceState({}, "", "/?run=run-from-another-server");
+  it("ignores a legacy run query because run identity comes from the local session", async () => {
+    window.history.replaceState(
+      {},
+      "",
+      `/skill-reviewer/?run=run-from-another-server#session=${localSession}`,
+    );
     renderWithPreferences(
       <EvidenceDashboard data={data} connectionState="live" />,
     );
 
     expect(
-      screen.getByRole("heading", { name: "This link targets a different run" }),
-    ).toBeInTheDocument();
-    expect(screen.queryByText("Evidence chain")).not.toBeInTheDocument();
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "Open the current run" }),
-    );
-    expect(await screen.findByText("Evidence chain")).toBeInTheDocument();
-    await waitFor(() =>
-      expect(window.location.search).toContain("run=run-product-test"),
-    );
+      (await screen.findAllByText("Independent issues to address: 1")).length,
+    ).toBeGreaterThan(0);
+    expect(window.location.hash).not.toContain("run=");
   });
 
-  it("replays browser history and guards a newly presented run", async () => {
+  it("replays fragment history without persisting a run identity", async () => {
     const view = renderWithPreferences(
       <EvidenceDashboard data={data} connectionState="live" />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Audit" }));
-    await waitFor(() => expect(window.location.search).toContain("split=audit"));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Release audit; 1 cases" }),
+    );
+    await waitFor(() => expect(window.location.hash).toContain("split=audit"));
 
     window.history.pushState(
       {},
       "",
-      "/?run=run-product-test&split=selection&node=case%3Aselection-quality",
+      `/skill-reviewer/#session=${localSession}&split=selection&node=case%3Aselection-quality`,
     );
     fireEvent.popState(window);
-    expect(screen.getByRole("button", { name: "Selection" })).toHaveAttribute(
+    expect(
+      screen.getByRole("button", { name: "Candidate selection; 1 cases" }),
+    ).toHaveAttribute(
       "aria-pressed",
       "true",
     );
@@ -1266,10 +1932,8 @@ describe("EvidenceDashboard", () => {
         <EvidenceDashboard data={nextRun} connectionState="live" />
       </UiPreferencesProvider>,
     );
-    expect(
-      screen.getByRole("heading", { name: "This link targets a different run" }),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/Requested run-product-test/)).toBeInTheDocument();
+    expect(screen.getByText("run-newly-presented")).toBeInTheDocument();
+    expect(window.location.hash).not.toContain("run=");
   });
 
   it("groups changed files into a collapsible directory tree and expands search results", () => {
@@ -1482,5 +2146,128 @@ describe("EvidenceDashboard", () => {
       );
     });
     expect(screen.getByTestId("worker-pool")).toBeInTheDocument();
+  });
+
+  it("separates candidate and baseline observations inside one paired check", () => {
+    const pairedData = structuredClone(data);
+    const selectedCase = pairedData.cases[0]!;
+    selectedCase.determinism = "deterministic";
+    selectedCase.repeats = 1;
+    selectedCase.status = "failed";
+    selectedCase.arms[0] = {
+      ...selectedCase.arms[0]!,
+      passed: false,
+      assertions: { passed: 0, total: 1 },
+      executions: [
+        {
+          repeat: 1,
+          status: "completed",
+          binding_error_count: 0,
+          execution_digest: "4".repeat(64),
+          artifact_count: 1,
+          assertions: { passed: 0, total: 1 },
+          required_pass_rate: 0,
+          metrics: {},
+          trace: traceFixture("with_skill", 1),
+        },
+      ],
+    };
+    selectedCase.arms = selectedCase.arms.filter((arm) => arm.id !== "old_skill");
+    selectedCase.arms.push({
+      id: "old_skill",
+      complete: true,
+      passed: false,
+      required_pass_rate: 0,
+      metrics: {},
+      assertions: { passed: 0, total: 1 },
+      artifact_count: 1,
+      executions: [
+        {
+          repeat: 1,
+          status: "completed",
+          binding_error_count: 0,
+          execution_digest: "5".repeat(64),
+          artifact_count: 1,
+          assertions: { passed: 0, total: 1 },
+          required_pass_rate: 0,
+          metrics: {},
+          trace: traceFixture("old_skill", 1),
+        },
+      ],
+    });
+    pairedData.spine.push(
+      {
+        id: "assertion:selection-quality:with_skill:1:no-false-regression-claim",
+        kind: "assertion",
+        parent_id: "case:selection-quality",
+        label: "no-false-regression-claim",
+        status: "failed",
+        arm: "with_skill",
+        repeat: 1,
+        assertion_type: "text_not_contains",
+        assertion_rule: { artifact: "outputs/response.md" },
+        assertion_evidence: { source_event_ids: ["with_skill-1-tool"] },
+      },
+      {
+        id: "assertion:selection-quality:old_skill:1:no-false-regression-claim",
+        kind: "assertion",
+        parent_id: "case:selection-quality",
+        label: "no-false-regression-claim",
+        status: "failed",
+        arm: "old_skill",
+        repeat: 1,
+        assertion_type: "text_not_contains",
+        assertion_rule: { artifact: "outputs/response.md" },
+        assertion_evidence: { source_event_ids: ["old_skill-1-tool"] },
+      },
+    );
+
+    renderWithPreferences(
+      <EvidenceDashboard data={pairedData} connectionState="live" />,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Agent trace" }));
+
+    expect(screen.getAllByText("Candidate under review").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Accepted comparison baseline").length).toBeGreaterThan(0);
+    expect(screen.getByText("Both arms fail")).toBeInTheDocument();
+    expect(
+      screen.getAllByText("No unsupported regression claim"),
+    ).toHaveLength(1);
+    expect(screen.getByText("Observable event timeline")).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: "Locate Trace" })[0]!);
+    expect(
+      screen.getByRole("button", { name: /Read the Skill instructions/ }),
+    ).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("tab", { name: "Agent trace" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getAllByRole("button", { name: "Locate Trace" })).toHaveLength(3);
+  });
+
+  it("keeps an invalid Agent Trace visibly missing instead of rendering its events", () => {
+    const invalidTraceData = structuredClone(data);
+    invalidTraceData.cases[0]!.arms[0]!.executions![0]!.trace!.valid = false;
+
+    renderWithPreferences(
+      <EvidenceDashboard data={invalidTraceData} connectionState="live" />,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Agent trace" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Release quality selection" }),
+    );
+
+    expect(screen.getAllByText("5 / 6")).not.toHaveLength(0);
+    expect(
+      screen.getByText("No real Agent trace was captured"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Agent execution started/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", {
+        name: /Candidate under review · Repeat 1 · completed/,
+      }),
+    ).toHaveTextContent("Trace missing");
   });
 });

@@ -47,7 +47,7 @@ Most "skill reviews" in the wild are vibes. `skill-reviewer` encodes the review 
 - **executable eval runtime** → `scripts/skill_eval_runtime.py` (compile, lock,
   grade, decide, evolve, project)
 - **evidence product** → React/Vite/Vitest `dashboard/` with a read-only
-  evidence plane and an external audited lead-Agent task gateway
+  evidence plane and an external audited local Agent-handoff gateway
 
 Change the rubric, re-run the fixtures and local snapshots, ship. No re-reading 300 lines of prose to check whether your "make it stricter" tweak quietly broke the positive cases.
 
@@ -66,8 +66,8 @@ Change the rubric, re-run the fixtures and local snapshots, ship. No re-reading 
 | Local eval snapshots        | Structured fixture contracts + deterministic runner / validator scripts |
 | Subagent effect verification | Paired `with_skill` / baseline runs with digests, retained evidence, and explicit verification levels |
 | Executable eval contract | Strict `skill-reviewer.evals` contract; an invalid present manifest blocks release instead of being skipped |
-| Bounded evolution | Development / selection / one-shot opaque audit, max 3 rounds, hard gates + Pareto improvement, query authorization and candidate lineage |
-| Evidence Dashboard | React + TypeScript + Vite evidence workbench; projects `next_action` and creates external lead-Agent tasks without execute/approve/eval-mutation authority |
+| Bounded evolution | Development / selection / one-shot opaque audit, max 3 rounds, hard gates + Pareto improvement, exact query binding and candidate lineage |
+| Evidence Dashboard | React + TypeScript + Vite evidence workbench; projects `next_action` plus automatic/human boundaries, observing automatic phases and saving recoverable local Agent handoffs only for human decisions; it never claims to wake a host session |
 | Full vs focused review      | Same 11-section shape; unrelated sections collapse to `N/A — focused review of <artifact>` |
 | Paste-ready rewrites        | `Suggested Rewrites` outputs runnable YAML / Markdown |
 | i18n                        | Branch-selected templates + English-normalized snapshot extraction |
@@ -155,15 +155,38 @@ python3 skills/skill-reviewer/scripts/skill_eval_runtime.py compile \
   --split selection \
   --workspace /tmp/skill-reviewer-run
 
+python3 skills/skill-reviewer/scripts/run_codex_eval_executor.py \
+  --workspace /tmp/skill-reviewer-run \
+  --assignment /tmp/skill-reviewer-run/assignments/<case>/with_skill/repeat-1.json \
+  --full-access
+
+python3 skills/skill-reviewer/scripts/run_codex_eval_executor.py \
+  --workspace /tmp/skill-reviewer-run \
+  --assignment /tmp/skill-reviewer-run/assignments/<case>/old_skill/repeat-1.json \
+  --full-access
+
 python3 skills/skill-reviewer/scripts/skill_eval_runtime.py grade \
   --plan /tmp/skill-reviewer-run/execution-plan.json \
   --workspace /tmp/skill-reviewer-run
 ```
 
+The local Codex profile uses `target: "codex-cli"`,
+`harness: "codex-exec-jsonl"`, `isolation: "local-unattested"`, and the
+`jsonl-agent-events` capability; `--full-access` additionally requires the
+locked `danger-full-access` capability. The lead Agent fans out candidate and
+baseline assignments, while the adapter executes exactly one arm. Before
+launch it disables all model-visible ambient Skills so an installed same-name
+package cannot contaminate `old_skill` or `without_skill`. It maps visible
+messages, commands, exit codes, usage, errors, and artifacts into
+`agent-trace.jsonl`, redacting private reasoning before source-event retention.
+Full access provides realistic behavioral provenance, not proof of network or
+OS-level isolation; the Dashboard displays that limitation explicitly.
+
 An accepted evolution candidate must pass every hard gate, avoid regression on
 every declared objective, and materially improve at least one primary
 objective. Each later selection query and the one-shot audit must first be
-authorized with `evolution-authorize`; every candidate is bound to the accepted
+mechanically bound with `evolution-authorize` (this is not a human approval
+step); every candidate is bound to the accepted
 baseline as parent, and the state retains candidate
 lineage, continuity epoch, trace IDs, and query budget. Authoritative
 selection/audit evals and graders are immutable during the run; the development
@@ -171,18 +194,63 @@ surrogate may evolve under its own digest. Changing an authoritative eval needs
 user confirmation and a fresh lock. Full protocol:
 [`references/evolution-workflow.md`](./skills/skill-reviewer/references/evolution-workflow.md).
 
-Project and serve the evidence product locally:
+The Dashboard is an optional human-review control plane, not a prerequisite for
+Eval execution. After compile, the lead Agent asks once whether the user wants
+the temporary local Dashboard. Only an explicit yes authorizes the UI download
+and local server. Evidence remains read-only and action requests use a separate
+task directory:
 
 ```bash
-python3 skills/skill-reviewer/scripts/skill_eval_runtime.py project-dashboard \
+python3 skills/skill-reviewer/scripts/start_skill_dashboard.py \
   --workspace /tmp/skill-reviewer-run \
   --state /tmp/skill-reviewer-control/evolution-state.json \
-  --output /tmp/skill-reviewer-run/dashboard-data.json
-pnpm dashboard:build
-pnpm dashboard:serve -- \
-  --workspace /tmp/skill-reviewer-run \
-  --task-root /tmp/skill-reviewer-action-tasks
+  --task-root /tmp/skill-reviewer-action-tasks \
+  --user-approved-control-plane \
+  --open
 ```
+
+The launcher is the only user-facing control-plane entry point after
+installation. It anonymously downloads the content-addressed GitHub Release
+archive pinned by `references/dashboard-ui-bundle.json`, verifies the archive
+SHA-256, safely extracts it, and verifies the complete tree SHA-256. The UI is
+placed in the operating system's private temporary directory and removed on a
+normal interrupt or process termination. The download sends no GitHub token,
+cookie, run id, prompt, Trace, or Eval artifact, and the browser never connects
+to GitHub Pages.
+
+`--user-approved-control-plane` is a hard launcher gate and may be passed only
+after the lead Agent asks and receives an explicit yes. Without it, the launcher
+exits before downloading UI. Silence, timeout, or decline means do not open it.
+
+One loopback-only same-origin server provides both UI and evidence APIs. It
+requires matching Host, Origin, Fetch Metadata, and process-lifetime capability
+headers, and marks both UI and evidence `no-store`. The launcher reprojects
+retained evidence every 3 seconds, tries 8765–8767 without killing another
+process, and prints a local `skill-reviewer.dashboard-session` record. One run
+has one lead-Agent-owned control plane; cases, arms, and repeats are evidence
+cells under it, so Eval workers must not start their own servers. Use `--port 0`
+for a dynamic port, `--refresh-seconds 0` for a static view, and
+`--prepare-only` to validate the projection without downloading UI. A trusted
+offline/development build may be supplied explicitly with
+`--ui-dir <dashboard-dist>`; it is neither downloaded nor deleted. The
+installed Skill contains only a small digest manifest and launcher modules, not
+Dashboard JavaScript or frontend dependencies. If the user declines the
+control plane or its download fails, the locked Eval can continue, but the lead
+must report that live visualization is unavailable.
+
+The trust anchor is the digest manifest in the already-installed Skill, not the
+download host. Replacing a Release asset fails before JavaScript execution when
+either its archive or extracted-tree digest differs, and runtime code never
+reads `GITHUB_TOKEN`. The session capability exists only in a local URL
+fragment—which HTTP requests do not transmit—and is promoted by the page into a
+local API request header. The page then removes it from the address bar, and
+copied view or evidence references never contain it. Two residual boundaries remain: an attacker able to
+change both the Skill manifest and publishing repository has already
+compromised the Skill, and a malicious process under the same operating-system
+account may observe local processes or files. Do not run the control plane in
+an untrusted shared account, and stop the launcher after review. A hard crash
+may leave evidence-free UI assets until OS temporary-file cleanup; normal exit
+removes them immediately.
 
 The Dashboard renders the candidate/baseline runtime-surface diff from locked
 snapshots with React and `@pierre/diffs`. The read model contains only file
@@ -198,30 +266,39 @@ icons for document, data, configuration, language, and test artifacts while
 keeping Git A/M/D status independent. The Dashboard evidence plane remains read-only, and
 `audit-passed` still requires an explicit user release decision.
 
-The Execution Trace view unfolds the same retained `evals.json` run through
-five stages: locked scenario definition, lead-Agent dispatch, per-arm/per-repeat
-executions, deterministic plus supplemental semantic grading, and the scenario
-and release-gate outcome. Each repeat is projected from its status, binding
-errors, execution digest, assertion counts, and retained artifacts; failures use
-shape semantics such as an X in addition to color. The trace is “Fully bound”
-only when the eval manifest, plan lock, execution profile, exact repeat coverage,
-and downstream evidence all bind. Otherwise it names the confidence gaps. This
-surface exposes auditable inputs, dispatch, outputs, checks, and decisions—not
-private model chain-of-thought.
+The **Agent trace** view reads the literal `agent-trace.jsonl` captured while an
+Agent executes one `evals.json` case. Navigation is Eval case → candidate or
+baseline → repeat → observable event. It shows the files read, tool calls,
+commands and exit codes, visible Agent messages, errors, timing, and produced
+artifacts without inventing intermediate stages from status summaries.
+Deterministic checks and semantic Judge results cite the concrete event IDs they
+used, and **Locate Trace** opens that source event in place. A Trace is fully
+bound only when the manifest, plan lock, execution profile, exact repeat
+coverage, execution/Trace digests, contiguous events, and artifact provenance
+all bind; otherwise the missing Trace is a blocking evidence gap. This surface
+never records or exposes private model chain-of-thought.
+Local Codex runs identify their capture source as `codex_cli_jsonl`; an
+execution profile marked `local-unattested` also renders a visible boundary
+note so traceability is not confused with sandbox assurance.
 
-For evolution runs, the Action Center projects the exact state-machine
-`next_action` alongside the three conjunctive selection conditions: all hard
+For evolution runs, the **Next steps** view turns the validated `next_action`
+into a plain recommendation alongside the three conjunctive selection conditions: all hard
 gates, Pareto non-regression, and material primary-objective improvement. It
 routes retained failure signals to Skill, Eval, execution environment, missing
-evidence, or a human decision, then exposes only actions valid in the current
-state. A click appends a digest-chained task for the lead Agent under
-`--task-root`; it does not execute work, advance state, authorize audit,
-confirm release, or change `evals.json`. Eval actions are proposals and still
-require explicit user confirmation plus a new lock. See
+evidence, or a human decision, then explicitly distinguishes **Agent continues
+automatically** from **human decision required**. Candidate generation, locked
+Eval execution, grading, and preparation/execution of the one-shot release
+audit run automatically while inputs and authority stay unchanged. A person is
+asked only to change Eval/baseline/thresholds, widen network/secret/permission/
+dependency/scope authority, resolve ambiguity the frozen contract cannot, or
+confirm final publish/deploy/external effects. Human-boundary clicks append a
+digest-chained task for the lead Agent under `--task-root`; they do not execute
+work, advance state, confirm release, or change `evals.json`. Eval actions are
+proposals and still require explicit user confirmation plus a new lock. See
 [`references/action-center.md`](./skills/skill-reviewer/references/action-center.md).
 
 The UI is a compact three-pane workbench rather than a card dashboard: case
-navigation on the left, the evidence, document diff, or Action Center in the center, and a
+navigation on the left, the review, execution, document diff, or Next steps view in the center, and a
 fact inspector on the right. The diff surface supports changed-file search,
 file navigation, split/unified layouts, line wrapping, and a distraction-free
 focus mode. Only the selected sidecar is fetched, only languages present in the
@@ -242,14 +319,18 @@ from the command palette; they never enter or mutate retained evidence.
 The workbench can switch between English and Simplified Chinese and between
 light and dark monochrome themes from the persistent top-bar controls. On a
 first visit it follows the browser language and operating-system color scheme;
-after that it restores the user's choices locally. Interface chrome is
+the same control group offers 90%, 100%, 110%, 125%, 140%, and 160% text-size
+presets, with the percentage button resetting to 100%. The full workbench
+scales and reflows together so large-screen readability does not introduce
+clipped labels or preserve an unsuitable desktop layout at narrow widths.
+After that it restores the user's choices locally. Interface chrome is
 translated while run identifiers, file paths, evidence payloads, and recorded
 limitations remain verbatim so localization cannot rewrite review evidence.
 The document renderer changes its syntax theme with the surrounding workbench.
 
 Review context is shareable without turning the URL into evidence storage. The
 Dashboard records the run guard, split/status filters, bounded query, selected
-evidence, diff, or Action Center view, diff layout, wrapping, and focus mode as URL presentation
+evidence, diff, or Next steps view, diff layout, wrapping, and focus mode as URL presentation
 state. A permalink that names another run is blocked instead of silently
 showing the server's current run, and browser Back/Forward replays review
 navigation. `Mod+K` opens a read-only evidence locator across cases, projected
@@ -264,9 +345,9 @@ download the current read model explicitly labeled as projection JSON; none of
 these presentation actions mutate evals, evidence, or release state. Lazy diff
 transport failures can be retried, while metadata/payload binding failures are
 shown as integrity errors and expose copyable diagnostics without rendering
-unbound content. The productization research and remaining measured/backend
-work are tracked in
-[`docs/RESEARCH_DASHBOARD_PRODUCTIZATION.md`](./docs/RESEARCH_DASHBOARD_PRODUCTIZATION.md).
+unbound content. The maintained Dashboard and execution contracts live in
+[`action-center.md`](./skills/skill-reviewer/references/action-center.md) and
+[`executable-evals.md`](./skills/skill-reviewer/references/executable-evals.md).
 
 Live reprojection switches generations only after the replacement read model
 and all of its sidecars validate together. Sidecars are content-addressed and
@@ -353,7 +434,7 @@ pnpm test
 
 ## GitHub checks and Codex Cloud review
 
-The repository includes `.github/workflows/static-checks.yml` for deterministic checks on pull requests and trusted `main` pushes. It does not call Codex, use an OpenAI API key, or upload generated model artifacts.
+The repository includes `.github/workflows/static-checks.yml` for deterministic checks on pull requests and trusted `main` pushes. It does not call Codex, use an OpenAI API key, or upload generated model artifacts. `.github/workflows/publish-dashboard-bundle.yml` builds and verifies a content-addressed UI archive in an isolated read-only job, then gives only a separate publish job minimal `contents: write` permission to add a non-overwriting GitHub Release asset. Pages is not used. Neither `dashboard/dist` nor the archive is committed or copied by `skills add`, and runtime downloads use no GitHub token.
 
 The static workflow runs:
 
@@ -364,7 +445,7 @@ python3 skills/skill-reviewer/scripts/lint_skill_package.py skills/skill-reviewe
 python3 -m json.tool skills/skill-reviewer/evals/evals.json > /dev/null
 python3 skills/skill-reviewer/scripts/validate_local_snapshot.py skills/skill-reviewer/evals/local-skill-review-snapshot.json
 pnpm dashboard:build
-python3 -m py_compile skills/skill-reviewer/scripts/lint_skill_package.py skills/skill-reviewer/scripts/run_codex_skill_evals.py skills/skill-reviewer/scripts/skill_eval_runtime.py skills/skill-reviewer/scripts/serve_skill_dashboard.py skills/skill-reviewer/scripts/validate_local_snapshot.py tests/test_run_codex_skill_evals.py
+python3 -m py_compile skills/skill-reviewer/scripts/dashboard_bundle.py skills/skill-reviewer/scripts/lint_skill_package.py skills/skill-reviewer/scripts/run_codex_eval_executor.py skills/skill-reviewer/scripts/run_codex_skill_evals.py skills/skill-reviewer/scripts/skill_eval_runtime.py skills/skill-reviewer/scripts/serve_skill_dashboard.py skills/skill-reviewer/scripts/start_skill_dashboard.py skills/skill-reviewer/scripts/validate_local_snapshot.py tests/test_run_codex_skill_evals.py
 ```
 
 For model-assisted review without storing an API key in GitHub Actions, use Codex Cloud on the pull request:
@@ -423,12 +504,9 @@ Explicitly does **not** fire for: creating a new skill (use `skill-creator`), ru
 │       ├── SKILL.md               # entry point, frontmatter + workflow
 │       ├── references/            # rubric, contracts, templates, protocols
 │       ├── scripts/               # linter, eval runtime, validator, server
-│       ├── evals/                 # executable manifest, snapshots, fixtures
-│       └── dashboard/dist/        # install-ready React production bundle
-├── docs/
-│   └── QUALITY_ARCHITECTURE.md    # design rationale + quality gates
+│       └── evals/                 # executable manifest, snapshots, fixtures
 ├── tests/                         # Python unit tests + Vitest system tests
-├── dashboard/                     # React + TypeScript + Vite source
+├── dashboard/                     # React + TypeScript + Vite source; dist ignored
 ├── package.json                   # Vitest, typecheck, and Dashboard commands
 └── pnpm-lock.yaml                 # pinned pnpm test dependencies
 ```

@@ -537,10 +537,10 @@ function iterationCopy(locale: Locale, node: SpineNode): SemanticCopy {
   const localizedPhase =
     locale === "zh-CN"
       ? phase === "audit"
-        ? "安全审计"
+        ? "发布审计"
         : phase === "development"
           ? "开发验证"
-          : "发布选拔"
+          : "候选选拔"
       : phase;
   return locale === "en"
     ? {
@@ -1531,22 +1531,22 @@ const statusCopies: Record<string, BilingualCopy> = {
   },
   "audit-passed": {
     en: {
-      title: "Safety audit passed",
-      description: "All release-blocking safety checks passed with retained evidence.",
+      title: "Release audit passed",
+      description: "All release-blocking audit checks passed with retained evidence.",
     },
     "zh-CN": {
-      title: "安全审计通过",
-      description: "所有会阻塞发布的安全检查均已通过，并保留了对应证据。",
+      title: "发布审计通过",
+      description: "所有会阻塞发布的审计检查均已通过，并保留了对应证据。",
     },
   },
   "audit-failed": {
     en: {
-      title: "Safety audit failed",
-      description: "At least one release-blocking safety check failed.",
+      title: "Release audit failed",
+      description: "At least one release-blocking audit check failed.",
     },
     "zh-CN": {
-      title: "安全审计未通过",
-      description: "至少一项发布级安全检查未通过，当前必须阻塞发布。",
+      title: "发布审计未通过",
+      description: "至少一项发布级审计检查未通过，当前必须阻塞发布。",
     },
   },
   "behavior-verified": {
@@ -1651,12 +1651,12 @@ const statusCopies: Record<string, BilingualCopy> = {
   },
   "awaiting-audit": {
     en: {
-      title: "Safety audit pending",
-      description: "Selection evidence exists, but the required safety audit has not passed yet.",
+      title: "Release audit pending",
+      description: "Candidate-selection evidence exists, but the required release audit has not passed yet.",
     },
     "zh-CN": {
-      title: "等待安全审计",
-      description: "质量选拔已有结果，但必需的安全审计尚未通过，因此当前不能发布。",
+      title: "等待发布审计",
+      description: "候选选拔已有结果，但必需的发布审计尚未通过，因此当前不能发布。",
     },
   },
   inconclusive: {
@@ -1781,11 +1781,11 @@ export function describeReviewStatus(locale: Locale, status: string): SemanticCo
 const limitationCopies: Record<string, BilingualCopy> = {
   "Audit has not passed.": {
     en: {
-      title: "Safety audit has not passed",
+      title: "Release audit has not passed",
       description: "Release remains blocked until the failed audit checks are resolved.",
     },
     "zh-CN": {
-      title: "安全审计尚未通过",
+      title: "发布审计尚未通过",
       description: "发布仍被审计结果阻塞；请先处理审计场景中的失败项。",
     },
   },

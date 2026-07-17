@@ -36,6 +36,8 @@ part of the immutable evaluation authority recorded in `execution-plan.json`.
   from the execution plan.
 - The binding covers run id, case id, assertion id, evaluation-authority digest,
   this contract's digest, rubric digest, declared input paths, every paired
-  repeat, and every input artifact digest.
+  repeat, every input artifact digest, and the exact `artifact_written` Agent
+  Trace event IDs that produced those inputs. This lets a reviewer jump from a
+  Judge input to the observable execution that created it.
 - A missing, stale, malformed, unbound, non-blind, or non-swapped judgment is
   inconclusive. It must never be silently reused or treated as a pass.

@@ -16,6 +16,59 @@ not know how to create a worker.
 Subagents supply isolated execution evidence. They do not own the final review,
 release verdict, skill edits, eval edits, or snapshot updates.
 
+For Trace purposes, the dispatched subagent is the **Eval worker** and therefore
+the evaluated actor. The lead Agent is only the dispatcher. Preserve one real
+Trace for every locked `case × arm × repeat` assignment even when the same
+subagent processes several assignments; never concatenate multiple repeats or
+mix lead-Agent planning events into a worker Trace.
+
+The bundled local Codex adapter is another dispatch surface, not a second
+grader. `scripts/run_codex_eval_executor.py` accepts exactly one sanitized,
+locked assignment and asks `codex exec --json` to execute it. The lead Agent
+still owns pairing, concurrency, grading, decisions, and evolution state.
+
+For local Codex execution, bind this profile shape before compile:
+
+```json
+{
+  "target": "codex-cli",
+  "harness": "codex-exec-jsonl",
+  "capabilities": [
+    "filesystem-read",
+    "filesystem-write",
+    "shell",
+    "jsonl-agent-events",
+    "danger-full-access"
+  ],
+  "isolation": "local-unattested",
+  "sampling": {"mode": "codex-default", "paired": true}
+}
+```
+
+Then dispatch each arm/repeat, starting paired arms together when capacity
+allows:
+
+```bash
+python3 scripts/run_codex_eval_executor.py \
+  --workspace <workspace> \
+  --assignment <workspace>/assignments/<case>/with_skill/repeat-1.json \
+  --full-access
+
+python3 scripts/run_codex_eval_executor.py \
+  --workspace <workspace> \
+  --assignment <workspace>/assignments/<case>/old_skill/repeat-1.json \
+  --full-access
+```
+
+`--full-access` is an explicit local execution choice. The adapter invokes
+Codex with `danger-full-access` and approval policy `never`, but retains the
+profile as `local-unattested`. It first inspects the model-visible prompt input,
+disables every ambient Skill, verifies that none remain, and then points the
+assigned arm directly at its frozen Skill snapshot. An isolation failure blocks
+execution instead of silently contaminating the baseline. The resulting Trace
+is strong evidence of observable Agent behavior, but it cannot prove that the
+host enforced network denial or prevented every write outside the repeat root.
+
 ## When to execute
 
 - Full review or production-readiness review: if `evals/evals.json` exists and
@@ -75,12 +128,43 @@ For `with_skill`, tell the executor to follow the frozen candidate skill. For
 `old_skill`, use only the frozen accepted baseline snapshot. For `without_skill`, do not
 load either package; solve from the user prompt and provided fixture only.
 
-The lead records failed, timed-out, or interrupted runs in `execution.json` and
-retains partial outputs. Never reconstruct a missing output from memory.
-Every execution record must bind the run/case/arm/repeat, SHA-256 of its
-assignment, execution-profile digest, forbidden actions, side effects, and
-digests of every produced declared artifact. A stale or mismatched record is
-incomplete evidence.
+The harness or lead records every observable action in the repeat's append-only
+`agent-trace.jsonl`: file reads, tool calls, commands with exit codes, observable
+Agent messages, errors, and written artifacts. It must not record hidden model
+reasoning. Failed, timed-out, or interrupted runs still end with an
+`execution_finished` event and retain partial outputs. Never reconstruct a
+missing event or output from memory.
+
+This record covers what the Eval worker actually did while using the assigned
+frozen Skill snapshot. If that Skill internally dispatches another Agent, the
+child is not a second Eval worker or a new repeat. Retain its observable events
+only when the native harness binds them to the parent assignment and the locked
+execution profile declares `nested-agent-events`. Otherwise mark nested-agent
+coverage unavailable and do not use presumed child behavior as grading
+evidence.
+
+If one Eval worker needs several visible interaction turns to finish the same
+assignment, append those observable events to the same Trace in capture order.
+Do not count turns as repeats. Conversely, continuous-evolution round N+1 is a
+new locked run with its own workspace and Case matrix; retain round N unchanged
+and inspect it through that run's permalink/workspace rather than appending new
+events to an old Trace.
+
+The Codex adapter retains `codex-events.jsonl` as the observable source stream,
+plus its digest and the digest of the source bytes. Any reasoning item and any
+reasoning-named field is removed before that file or `agent-trace.jsonl` is
+written. `codex-stderr.log` is retained separately when the CLI emits
+diagnostics. These support artifacts explain how normalized Trace events map
+back to Codex; they are not assertion answers and do not replace required
+outputs.
+
+Use `skill_eval_runtime.py trace-event` when the native harness has no trace
+adapter, then use `finalize-execution` to append missing `artifact_written`
+provenance and create `execution.json`. Every execution record binds the Trace
+digest and metadata in addition to run/case/arm/repeat, assignment digest,
+execution-profile digest, forbidden actions, side effects, and produced
+artifact digests. A missing, stale, mismatched, non-contiguous, or unfinalized
+Trace is incomplete evidence.
 
 Do not hand the executor the full plan when it contains assertion expectations.
 Pass a sanitized assignment derived from the locked plan: identity, prompt,
@@ -101,6 +185,7 @@ with the lead and graders.
 │   └── <case-id>/
 │       ├── with_skill/
 │       │   ├── repeat-1/
+│       │   │   ├── agent-trace.jsonl
 │       │   │   ├── execution.json
 │       │   │   └── outputs/...
 │       │   └── grading.json

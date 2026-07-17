@@ -133,7 +133,7 @@ Evals are not scored and their absence is never a blocker. Only propose them whe
 - [ ] If semantic grading is declared: deterministic assertions run first; A/B outputs are blind and order-swapped; disagreement stays `inconclusive`.
 - [ ] If evolution is requested: development / selection / audit roles are separated, selection uses hard gates + Pareto improvement, and audit runs once without feedback to the optimizer.
 - [ ] If evolution is requested: authoritative selection/audit evals, fixtures, snapshots, graders, and accepted baseline stay immutable; a development surrogate has a separate digest; proposed authoritative eval changes wait for user confirmation and a new run.
-- [ ] If evolution is requested: every later selection and the only audit are explicitly authorized; candidate lineage, rejected candidates, query counts, and continuity resets are retained.
+- [ ] If evolution is requested: every later selection and the only audit are mechanically bound to their exact plan; candidate lineage, rejected candidates, query counts, and continuity resets are retained.
 - [ ] If audit is used for release: its holdout is opaque and resolved outside candidate/baseline/run roots; public audit remains calibration-only.
 - [ ] If a Dashboard is produced: it consumes contract-bound retained evidence and is read-only; it does not become an executor or approval authority.
 - [ ] Verification level is exactly one of `not-run`, `inconclusive`, `behavior-verified`, or `regression-verified`.

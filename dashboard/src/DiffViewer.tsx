@@ -19,6 +19,7 @@ import DiffWorker from "@pierre/diffs/worker/worker.js?worker";
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
 import { copyText } from "./dashboard-actions";
+import { fetchDashboardResource } from "./dashboard-source";
 import type { DashboardDiffLayout } from "./dashboard-view-state";
 import {
   buildDiffTree,
@@ -44,28 +45,16 @@ const languageByExtension = {
   bash: "shellscript",
   cjs: "javascript",
   css: "css",
-  go: "go",
-  html: "html",
-  java: "java",
   js: "javascript",
   json: "json",
   jsonc: "jsonc",
-  jsx: "jsx",
   md: "markdown",
-  mdx: "mdx",
   mjs: "javascript",
-  php: "php",
   py: "python",
-  rb: "ruby",
-  rs: "rust",
-  scss: "scss",
   sh: "shellscript",
-  sql: "sql",
-  toml: "toml",
   ts: "typescript",
   tsx: "tsx",
   txt: "text",
-  xml: "xml",
   yaml: "yaml",
   yml: "yaml",
   zsh: "shellscript",
@@ -290,7 +279,7 @@ function DiffBrowser({
     setLoadingId(selected.id);
     setError(null);
     setDiagnosticsStatus(null);
-    void fetch(selected.content_url, {
+    void fetchDashboardResource(selected.content_url, {
       cache: "no-store",
       signal: controller.signal,
     })

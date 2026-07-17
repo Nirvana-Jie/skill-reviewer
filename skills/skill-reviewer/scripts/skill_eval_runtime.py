@@ -10,6 +10,7 @@ grading and release decisions.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 import math
@@ -30,6 +31,7 @@ VERIFICATION_CONTRACT = "skill-reviewer.verification"
 ACCEPTANCE_CONTRACT = "skill-reviewer.acceptance-decision"
 ASSIGNMENT_CONTRACT = "skill-reviewer.executor-assignment"
 EXECUTION_CONTRACT = "skill-reviewer.executor-execution"
+TRACE_EVENT_CONTRACT = "skill-reviewer.agent-trace-event"
 SEMANTIC_JUDGMENT_CONTRACT = "skill-reviewer.semantic-judgment"
 DASHBOARD_CONTRACT = "skill-reviewer.dashboard-data"
 DASHBOARD_DIFF_CONTRACT = "skill-reviewer.dashboard-diff"
@@ -142,6 +144,56 @@ EXECUTION_FIELDS = {
     "side_effects",
     "metrics",
     "artifact_digests",
+    "trace",
+}
+TRACE_DESCRIPTOR_FIELDS = {
+    "artifact",
+    "digest",
+    "capture_source",
+    "complete",
+    "event_count",
+    "started_at",
+    "finished_at",
+    "duration_ms",
+}
+TRACE_EVENT_FIELDS = {
+    "contract",
+    "event_id",
+    "run_id",
+    "case_id",
+    "arm",
+    "repeat",
+    "sequence",
+    "occurred_at",
+    "elapsed_ms",
+    "kind",
+    "status",
+    "summary",
+    "details",
+    "artifact_refs",
+}
+TRACE_EVENT_KINDS = {
+    "execution_started",
+    "file_read",
+    "tool_call",
+    "command",
+    "agent_message",
+    "artifact_written",
+    "error",
+    "execution_finished",
+}
+TRACE_CAPTURE_SOURCES = {
+    "codex_cli_jsonl",
+    "harness_native",
+    "lead_agent_observed",
+}
+TRACE_FORBIDDEN_DETAIL_KEYS = {
+    "analysis",
+    "chain_of_thought",
+    "private_reasoning",
+    "reasoning",
+    "thought",
+    "thoughts",
 }
 CANDIDATE_AUTHORIZATION_FIELDS = {
     "phase",
@@ -1639,6 +1691,7 @@ def compile_manifest(
                     "execution_profile_digest": execution_profile["digest"],
                     "writable_root": str(repeat_root.resolve()),
                     "execution_artifact": "execution.json",
+                    "trace_artifact": "agent-trace.jsonl",
                     "expected_artifacts": expected_artifacts,
                 }
                 assignment_path = workspace / relative_path
@@ -1704,6 +1757,509 @@ def _safe_artifact(root: Path, relative: str) -> Path:
         ):
             raise ManifestError(f"artifact path is a special file: {relative}")
     return lexical
+
+
+def _trace_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace(
+        "+00:00", "Z"
+    )
+
+
+def _parse_trace_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _forbidden_trace_detail_keys(value: Any) -> set[str]:
+    forbidden: set[str] = set()
+    if isinstance(value, dict):
+        for key, item in value.items():
+            normalized = str(key).strip().lower().replace("-", "_")
+            if normalized in TRACE_FORBIDDEN_DETAIL_KEYS:
+                forbidden.add(str(key))
+            forbidden.update(_forbidden_trace_detail_keys(item))
+    elif isinstance(value, list):
+        for item in value:
+            forbidden.update(_forbidden_trace_detail_keys(item))
+    return forbidden
+
+
+def _read_trace_jsonl(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
+    events: list[dict[str, Any]] = []
+    errors: list[str] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError) as error:
+        return [], [f"agent trace is unreadable: {error}"]
+    for line_number, line in enumerate(lines, start=1):
+        if not line.strip():
+            errors.append(f"agent trace line {line_number} is empty")
+            continue
+        try:
+            value = json.loads(line, parse_constant=_reject_json_constant)
+            _require_finite_json(value, f"agent trace line {line_number}")
+        except (json.JSONDecodeError, ValueError, ManifestError) as error:
+            errors.append(f"agent trace line {line_number} is invalid JSON: {error}")
+            continue
+        if not isinstance(value, dict):
+            errors.append(f"agent trace line {line_number} must be an object")
+            continue
+        events.append(value)
+    return events, errors
+
+
+def _validate_agent_trace(
+    *,
+    trace_path: Path,
+    descriptor: Any,
+    expected_identity: dict[str, Any],
+    expected_status: Any,
+    expected_artifact: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any], list[str]]:
+    errors: list[str] = []
+    if not isinstance(descriptor, dict):
+        return [], {}, ["execution trace must be an object"]
+    unsupported = sorted(set(descriptor) - TRACE_DESCRIPTOR_FIELDS)
+    if unsupported:
+        errors.append(
+            "execution trace contains unsupported fields: " + ", ".join(unsupported)
+        )
+    missing = sorted(TRACE_DESCRIPTOR_FIELDS - set(descriptor))
+    if missing:
+        errors.append("execution trace is missing fields: " + ", ".join(missing))
+    if descriptor.get("artifact") != expected_artifact:
+        errors.append("execution trace artifact does not match the locked assignment")
+    if descriptor.get("capture_source") not in TRACE_CAPTURE_SOURCES:
+        errors.append("execution trace capture_source is invalid")
+    if descriptor.get("complete") is not True:
+        errors.append("execution trace is not finalized")
+    if not trace_path.is_file():
+        return [], dict(descriptor), [*errors, "agent-trace.jsonl is missing"]
+
+    actual_digest = sha256_file(trace_path)
+    if descriptor.get("digest") != actual_digest:
+        errors.append("execution trace digest is missing or mismatched")
+    events, parse_errors = _read_trace_jsonl(trace_path)
+    errors.extend(parse_errors)
+    seen_ids: set[str] = set()
+    previous_elapsed = -1
+    for index, event in enumerate(events, start=1):
+        unsupported_event_fields = sorted(set(event) - TRACE_EVENT_FIELDS)
+        if unsupported_event_fields:
+            errors.append(
+                f"agent trace event {index} contains unsupported fields: "
+                + ", ".join(unsupported_event_fields)
+            )
+        missing_event_fields = sorted(TRACE_EVENT_FIELDS - set(event))
+        if missing_event_fields:
+            errors.append(
+                f"agent trace event {index} is missing fields: "
+                + ", ".join(missing_event_fields)
+            )
+        if event.get("contract") != TRACE_EVENT_CONTRACT:
+            errors.append(f"agent trace event {index} contract is invalid")
+        for key, expected_value in expected_identity.items():
+            if event.get(key) != expected_value:
+                errors.append(
+                    f"agent trace event {index} {key} does not match the locked assignment"
+                )
+        if event.get("sequence") != index:
+            errors.append(f"agent trace event {index} sequence is not contiguous")
+        event_id = event.get("event_id")
+        if not isinstance(event_id, str) or not event_id:
+            errors.append(f"agent trace event {index} event_id is invalid")
+        elif event_id in seen_ids:
+            errors.append(f"agent trace event {index} event_id is duplicated")
+        else:
+            seen_ids.add(event_id)
+        if event.get("kind") not in TRACE_EVENT_KINDS:
+            errors.append(f"agent trace event {index} kind is invalid")
+        if _parse_trace_timestamp(event.get("occurred_at")) is None:
+            errors.append(f"agent trace event {index} occurred_at is invalid")
+        elapsed = event.get("elapsed_ms")
+        if not isinstance(elapsed, int) or isinstance(elapsed, bool) or elapsed < 0:
+            errors.append(f"agent trace event {index} elapsed_ms is invalid")
+        elif elapsed < previous_elapsed:
+            errors.append(f"agent trace event {index} elapsed_ms is not monotonic")
+        else:
+            previous_elapsed = elapsed
+        if not isinstance(event.get("status"), str) or not event.get("status"):
+            errors.append(f"agent trace event {index} status is invalid")
+        if not isinstance(event.get("summary"), str) or not event.get("summary"):
+            errors.append(f"agent trace event {index} summary is invalid")
+        details = event.get("details")
+        if not isinstance(details, dict):
+            errors.append(f"agent trace event {index} details must be an object")
+        else:
+            forbidden_keys = sorted(_forbidden_trace_detail_keys(details))
+            if forbidden_keys:
+                errors.append(
+                    f"agent trace event {index} contains private-reasoning fields: "
+                    + ", ".join(forbidden_keys)
+                )
+        artifact_refs = event.get("artifact_refs")
+        if not isinstance(artifact_refs, list) or not all(
+            isinstance(value, str) and value for value in artifact_refs
+        ):
+            errors.append(
+                f"agent trace event {index} artifact_refs must be an array of paths"
+            )
+
+    if not events:
+        errors.append("agent trace contains no events")
+    else:
+        first = events[0]
+        last = events[-1]
+        if first.get("kind") != "execution_started":
+            errors.append("agent trace must start with execution_started")
+        if last.get("kind") != "execution_finished":
+            errors.append("agent trace must end with execution_finished")
+        if last.get("status") != expected_status:
+            errors.append("agent trace final status does not match execution status")
+        if descriptor.get("started_at") != first.get("occurred_at"):
+            errors.append("execution trace started_at does not match the first event")
+        if descriptor.get("finished_at") != last.get("occurred_at"):
+            errors.append("execution trace finished_at does not match the final event")
+        if descriptor.get("duration_ms") != last.get("elapsed_ms"):
+            errors.append("execution trace duration_ms does not match the final event")
+        if not any(
+            event.get("kind")
+            in {
+                "file_read",
+                "tool_call",
+                "command",
+                "agent_message",
+                "artifact_written",
+                "error",
+            }
+            for event in events
+        ):
+            errors.append("agent trace contains no observable Agent action")
+        first_details = first.get("details")
+        if (
+            not isinstance(first_details, dict)
+            or first_details.get("capture_source") != descriptor.get("capture_source")
+        ):
+            errors.append("execution trace capture_source is not bound to its first event")
+    if descriptor.get("event_count") != len(events):
+        errors.append("execution trace event_count does not match the JSONL record")
+    duration = descriptor.get("duration_ms")
+    if not isinstance(duration, int) or isinstance(duration, bool) or duration < 0:
+        errors.append("execution trace duration_ms is invalid")
+    return events, {**descriptor, "digest": actual_digest}, errors
+
+
+def _trace_event_ids_by_artifact(
+    events: Iterable[dict[str, Any]],
+) -> dict[str, list[str]]:
+    result: dict[str, list[str]] = {}
+    for event in events:
+        event_id = event.get("event_id")
+        if event.get("kind") != "artifact_written" or not isinstance(event_id, str):
+            continue
+        refs = event.get("artifact_refs")
+        if not isinstance(refs, list):
+            continue
+        for ref in refs:
+            if isinstance(ref, str) and ref:
+                result.setdefault(ref, []).append(event_id)
+    return result
+
+
+def _trace_assignment_context(
+    *, assignment_path: Path, workspace: Path
+) -> tuple[dict[str, Any], Path, Path]:
+    workspace = workspace.resolve()
+    assignment = load_json(assignment_path)
+    if assignment.get("contract") != ASSIGNMENT_CONTRACT:
+        raise ManifestError(f"assignment contract must be {ASSIGNMENT_CONTRACT}")
+    case_id = _require_string(assignment.get("case_id"), "assignment.case_id")
+    arm = _require_string(assignment.get("arm"), "assignment.arm")
+    repeat = assignment.get("repeat")
+    if not isinstance(repeat, int) or isinstance(repeat, bool) or repeat < 1:
+        raise ManifestError("assignment.repeat must be a positive integer")
+    expected_assignment = _safe_artifact(
+        workspace,
+        (Path("assignments") / case_id / arm / f"repeat-{repeat}.json").as_posix(),
+    )
+    if assignment_path.resolve() != expected_assignment.resolve():
+        raise ManifestError("assignment path does not match its bound identity")
+    repeat_root = _require_real_directory(
+        workspace / "cases" / case_id / arm / f"repeat-{repeat}",
+        workspace,
+        "repeat root",
+    )
+    writable_root = Path(
+        _require_string(assignment.get("writable_root"), "assignment.writable_root")
+    ).resolve()
+    if writable_root != repeat_root:
+        raise ManifestError("assignment writable_root does not match its repeat root")
+    trace_artifact = _validate_artifact_path(
+        assignment.get("trace_artifact"), "assignment.trace_artifact"
+    )
+    return assignment, repeat_root, _safe_artifact(repeat_root, trace_artifact)
+
+
+def _append_trace_event(path: Path, event: dict[str, Any]) -> None:
+    if path.is_symlink() or path.parent.resolve() != path.parent:
+        raise ManifestError(f"refusing to append through a symbolic link: {path}")
+    try:
+        payload = json.dumps(
+            event, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+        ) + "\n"
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(path, flags, 0o600)
+        with os.fdopen(descriptor, "a", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except (OSError, TypeError, ValueError) as error:
+        raise ManifestError(f"unable to append Agent trace event: {path}") from error
+
+
+def _new_trace_event(
+    *,
+    assignment: dict[str, Any],
+    sequence: int,
+    started_at: str,
+    kind: str,
+    status: str,
+    summary: str,
+    details: dict[str, Any],
+    artifact_refs: list[str],
+) -> dict[str, Any]:
+    occurred_at = _trace_timestamp()
+    started = _parse_trace_timestamp(started_at)
+    occurred = _parse_trace_timestamp(occurred_at)
+    elapsed_ms = (
+        max(0, int((occurred - started).total_seconds() * 1000))
+        if started is not None and occurred is not None
+        else 0
+    )
+    identity = {
+        "run_id": assignment.get("run_id"),
+        "case_id": assignment.get("case_id"),
+        "arm": assignment.get("arm"),
+        "repeat": assignment.get("repeat"),
+    }
+    event_id = "event-{:04d}-{}".format(
+        sequence,
+        sha256_json(
+            {
+                **identity,
+                "sequence": sequence,
+                "occurred_at": occurred_at,
+                "kind": kind,
+                "summary": summary,
+            }
+        )[:12],
+    )
+    return {
+        "contract": TRACE_EVENT_CONTRACT,
+        "event_id": event_id,
+        **identity,
+        "sequence": sequence,
+        "occurred_at": occurred_at,
+        "elapsed_ms": elapsed_ms,
+        "kind": kind,
+        "status": status,
+        "summary": summary,
+        "details": details,
+        "artifact_refs": artifact_refs,
+    }
+
+
+def record_trace_event(
+    *,
+    assignment_path: Path,
+    workspace: Path,
+    kind: str,
+    summary: str,
+    status: str,
+    details: dict[str, Any],
+    artifact_refs: list[str],
+    capture_source: str,
+) -> dict[str, Any]:
+    if kind not in TRACE_EVENT_KINDS:
+        raise ManifestError(f"unsupported Agent trace event kind: {kind}")
+    if capture_source not in TRACE_CAPTURE_SOURCES:
+        raise ManifestError(f"unsupported Agent trace capture source: {capture_source}")
+    if not summary.strip():
+        raise ManifestError("Agent trace event summary must not be empty")
+    if not isinstance(details, dict):
+        raise ManifestError("Agent trace event details must be an object")
+    forbidden_keys = sorted(_forbidden_trace_detail_keys(details))
+    if forbidden_keys:
+        raise ManifestError(
+            "Agent trace must not contain private-reasoning fields: "
+            + ", ".join(forbidden_keys)
+        )
+    normalized_artifact_refs = [
+        _validate_artifact_path(value, "Agent trace artifact reference")
+        for value in artifact_refs
+    ]
+    assignment, _repeat_root, trace_path = _trace_assignment_context(
+        assignment_path=assignment_path, workspace=workspace
+    )
+    events: list[dict[str, Any]] = []
+    if trace_path.exists():
+        events, errors = _read_trace_jsonl(trace_path)
+        if errors:
+            raise ManifestError("existing Agent trace is invalid: " + "; ".join(errors))
+        if events and events[-1].get("kind") == "execution_finished":
+            raise ManifestError("Agent trace is already finalized")
+        if (
+            events
+            and isinstance(events[0].get("details"), dict)
+            and events[0]["details"].get("capture_source") != capture_source
+        ):
+            raise ManifestError("Agent trace capture source cannot change during execution")
+    if not events:
+        started_at = _trace_timestamp()
+        start_event = _new_trace_event(
+            assignment=assignment,
+            sequence=1,
+            started_at=started_at,
+            kind="execution_started",
+            status="running",
+            summary="Agent execution started",
+            details={"capture_source": capture_source},
+            artifact_refs=[],
+        )
+        # Preserve an exact zero origin even if timestamp formatting takes time.
+        start_event["elapsed_ms"] = 0
+        _append_trace_event(trace_path, start_event)
+        events.append(start_event)
+    elif kind == "execution_started":
+        raise ManifestError("Agent trace already has an execution_started event")
+    if kind == "execution_started":
+        return events[0]
+    started_at = str(events[0].get("occurred_at"))
+    event = _new_trace_event(
+        assignment=assignment,
+        sequence=len(events) + 1,
+        started_at=started_at,
+        kind=kind,
+        status=status,
+        summary=summary.strip(),
+        details=details,
+        artifact_refs=normalized_artifact_refs,
+    )
+    _append_trace_event(trace_path, event)
+    return event
+
+
+def finalize_execution(
+    *,
+    assignment_path: Path,
+    workspace: Path,
+    status: str,
+    metrics: dict[str, Any],
+    forbidden_actions: list[str],
+    side_effects: list[str],
+    capture_source: str,
+) -> dict[str, Any]:
+    if status not in {"completed", "failed", "timed_out", "interrupted"}:
+        raise ManifestError(f"unsupported execution status: {status}")
+    assignment, repeat_root, trace_path = _trace_assignment_context(
+        assignment_path=assignment_path, workspace=workspace
+    )
+    execution_path = _safe_artifact(
+        repeat_root,
+        _validate_artifact_path(
+            assignment.get("execution_artifact"), "assignment.execution_artifact"
+        ),
+    )
+    if execution_path.exists() or execution_path.is_symlink():
+        raise ManifestError("execution.json is already finalized")
+    artifact_digests: dict[str, str] = {}
+    expected_artifacts = assignment.get("expected_artifacts")
+    if not isinstance(expected_artifacts, list) or not all(
+        isinstance(value, str) for value in expected_artifacts
+    ):
+        raise ManifestError("assignment.expected_artifacts must be an array of paths")
+    existing_events, existing_errors = (
+        _read_trace_jsonl(trace_path) if trace_path.is_file() else ([], [])
+    )
+    if existing_errors:
+        raise ManifestError("existing Agent trace is invalid: " + "; ".join(existing_errors))
+    recorded_refs = {
+        ref
+        for event in existing_events
+        if event.get("kind") == "artifact_written"
+        for ref in event.get("artifact_refs", [])
+        if isinstance(ref, str)
+    }
+    for artifact in expected_artifacts:
+        artifact_path = _safe_artifact(repeat_root, artifact)
+        if not artifact_path.is_file():
+            continue
+        digest = sha256_file(artifact_path)
+        artifact_digests[artifact] = digest
+        if artifact not in recorded_refs:
+            record_trace_event(
+                assignment_path=assignment_path,
+                workspace=workspace,
+                kind="artifact_written",
+                summary=f"Retained output artifact: {artifact}",
+                status="completed",
+                details={
+                    "path": artifact,
+                    "digest": digest,
+                    "size": artifact_path.stat().st_size,
+                },
+                artifact_refs=[artifact],
+                capture_source=capture_source,
+            )
+    record_trace_event(
+        assignment_path=assignment_path,
+        workspace=workspace,
+        kind="execution_finished",
+        summary=f"Agent execution finished with status: {status}",
+        status=status,
+        details={
+            "forbidden_action_count": len(forbidden_actions),
+            "side_effect_count": len(side_effects),
+        },
+        artifact_refs=[],
+        capture_source=capture_source,
+    )
+    events, trace_errors = _read_trace_jsonl(trace_path)
+    if trace_errors or not events:
+        raise ManifestError("unable to finalize Agent trace: " + "; ".join(trace_errors))
+    trace = {
+        "artifact": str(assignment.get("trace_artifact")),
+        "digest": sha256_file(trace_path),
+        "capture_source": capture_source,
+        "complete": True,
+        "event_count": len(events),
+        "started_at": events[0]["occurred_at"],
+        "finished_at": events[-1]["occurred_at"],
+        "duration_ms": events[-1]["elapsed_ms"],
+    }
+    execution = {
+        "contract": EXECUTION_CONTRACT,
+        "run_id": assignment.get("run_id"),
+        "case_id": assignment.get("case_id"),
+        "arm": assignment.get("arm"),
+        "repeat": assignment.get("repeat"),
+        "assignment_digest": sha256_file(assignment_path),
+        "execution_profile_digest": assignment.get("execution_profile_digest"),
+        "status": status,
+        "forbidden_actions": forbidden_actions,
+        "side_effects": side_effects,
+        "metrics": metrics,
+        "artifact_digests": artifact_digests,
+        "trace": trace,
+    }
+    write_json(execution_path, execution)
+    return execution
 
 
 def _json_pointer(value: Any, pointer: str) -> tuple[bool, Any]:
@@ -2049,6 +2605,28 @@ def grade_arm(
             "interrupted",
         }:
             repeat_binding_errors.append("execution status is invalid")
+        trace_artifact = _validate_artifact_path(
+            assignment.get("trace_artifact"),
+            f"locked assignment trace_artifact: {assignment_relative}",
+        )
+        trace_path = _safe_artifact(repeat_root, trace_artifact)
+        if trace_path.is_file():
+            artifacts.append(str(trace_path.relative_to(workspace)))
+        trace_events, trace_descriptor, trace_errors = _validate_agent_trace(
+            trace_path=trace_path,
+            descriptor=execution.get("trace"),
+            expected_identity={
+                "run_id": run_id,
+                "case_id": case["id"],
+                "arm": arm,
+                "repeat": repeat,
+            },
+            expected_status=execution.get("status"),
+            expected_artifact=trace_artifact,
+        )
+        repeat_binding_errors.extend(trace_errors)
+        trace_event_ids = _trace_event_ids_by_artifact(trace_events)
+        trace_provenance_errors: list[str] = []
         expected_artifacts = assignment.get("expected_artifacts")
         artifact_digests = execution.get("artifact_digests")
         if not isinstance(expected_artifacts, list) or not all(
@@ -2074,6 +2652,12 @@ def grade_arm(
                 repeat_binding_errors.append(
                     f"artifact digest is missing or mismatched: {artifact}"
                 )
+            if not trace_event_ids.get(artifact):
+                provenance_error = (
+                    f"agent trace is missing artifact_written provenance: {artifact}"
+                )
+                repeat_binding_errors.append(provenance_error)
+                trace_provenance_errors.append(provenance_error)
         unexpected_digest_paths = set(artifact_digests) - set(expected_artifacts)
         if unexpected_digest_paths:
             repeat_binding_errors.append(
@@ -2128,6 +2712,15 @@ def grade_arm(
             for assertion in case.get("assertions", [])
             if assertion.get("type") in DETERMINISTIC_ASSERTION_TYPES
         ]
+        for assertion in assertions:
+            assertion_evidence = assertion.get("evidence")
+            if not isinstance(assertion_evidence, dict):
+                continue
+            assertion_artifact = assertion_evidence.get("artifact")
+            if isinstance(assertion_artifact, str):
+                assertion_evidence["source_event_ids"] = trace_event_ids.get(
+                    assertion_artifact, []
+                )
         repeat_required_passed = 0
         repeat_required_total = 0
         for result in assertions:
@@ -2153,6 +2746,11 @@ def grade_arm(
                 "binding_errors": repeat_binding_errors,
                 "execution_digest": execution_digest,
                 "artifact_digests": actual_artifact_digests,
+                "trace": {
+                    **trace_descriptor,
+                    "valid": not trace_errors and not trace_provenance_errors,
+                    "events": trace_events,
+                },
                 "assertions": assertions,
                 "required_pass_rate": repeat_pass_rate,
                 "metrics": metrics,
@@ -2227,12 +2825,26 @@ def _semantic_judgment_binding(
         for repeat in range(1, repeats + 1):
             repeat_root = case_root / arm / f"repeat-{repeat}"
             digests: dict[str, str | None] = {}
+            trace_path = _safe_artifact(repeat_root, "agent-trace.jsonl")
+            trace_events, _trace_errors = (
+                _read_trace_jsonl(trace_path) if trace_path.is_file() else ([], [])
+            )
+            trace_event_ids = _trace_event_ids_by_artifact(trace_events)
             for relative in normalized_inputs:
                 artifact_path = _safe_artifact(repeat_root, relative)
                 digests[relative] = (
                     sha256_file(artifact_path) if artifact_path.is_file() else None
                 )
-            records.append({"repeat": repeat, "digests": digests})
+            records.append(
+                {
+                    "repeat": repeat,
+                    "digests": digests,
+                    "trace_event_ids": {
+                        relative: trace_event_ids.get(relative, [])
+                        for relative in normalized_inputs
+                    },
+                }
+            )
         artifacts[arm] = records
     return {
         "run_id": run_id,
@@ -2297,6 +2909,17 @@ def grade_semantic_assertion(
         candidate_arm=candidate_arm,
         baseline_arm=baseline_arm,
     )
+    source_event_ids = sorted(
+        {
+            event_id
+            for records in expected_binding["artifacts"].values()
+            for record in records
+            for event_ids in record.get("trace_event_ids", {}).values()
+            for event_id in event_ids
+            if isinstance(event_id, str)
+        }
+    )
+    base = {**base, "source_event_ids": source_event_ids}
     if any(
         digest is None
         for records in expected_binding["artifacts"].values()
@@ -2846,6 +3469,7 @@ def verify_locked_inputs(
                     "execution_profile_digest": expected_execution_profile["digest"],
                     "writable_root": str(repeat_root.resolve()),
                     "execution_artifact": "execution.json",
+                    "trace_artifact": "agent-trace.jsonl",
                     "expected_artifacts": expected_artifacts,
                 }
                 if not assignment_path.is_file() or load_json(
@@ -3881,11 +4505,11 @@ def authorize_evolution(
         if splits != ["audit"]:
             raise ManifestError("awaiting-audit evolution can authorize only audit")
         if parent_digest is not None or trace_ids:
-            raise ManifestError("audit authorization cannot carry optimizer lineage")
+            raise ManifestError("audit query binding cannot carry optimizer lineage")
         if continuity != "continue":
-            raise ManifestError("audit authorization cannot reset continuity")
+            raise ManifestError("audit query binding cannot reset continuity")
         if int(state.get("audit_query_count", 0)) != 0:
-            raise ManifestError("audit may be authorized only once")
+            raise ManifestError("audit query may be bound only once")
         subject_digest = plan.get("subject", {}).get("digest")
         if subject_digest != state.get("selected_subject_digest"):
             raise ManifestError("audit subject is not the accepted selection candidate")
@@ -3996,7 +4620,7 @@ def advance_evolution(*, state_path: Path, decision_path: Path) -> dict[str, Any
             state.update(
                 {
                     "status": "awaiting-audit",
-                    "next_action": "authorize_audit",
+                    "next_action": "prepare_audit",
                     "terminal": False,
                     "selected_subject_digest": plan.get("subject", {}).get("digest"),
                 }
@@ -4529,7 +5153,7 @@ def _validate_evolution_state(
             raise ManifestError("dashboard state history does not match its decision")
         authorization = record.get("authorization")
         if not isinstance(authorization, dict):
-            raise ManifestError("dashboard history is missing query authorization")
+            raise ManifestError("dashboard history is missing audit query binding")
         if decision.get("phase") == "selection":
             lineage_entry = lineage_by_run_id.get(run_id)
             if (
@@ -4579,7 +5203,7 @@ def _validate_evolution_state(
                 projection.update(
                     {
                         "status": "awaiting-audit",
-                        "next_action": "authorize_audit",
+                        "next_action": "prepare_audit",
                         "terminal": False,
                         "selected_subject_digest": decision_plan.get("subject", {}).get(
                             "digest"
@@ -5015,9 +5639,7 @@ def _dashboard_action_center(
                 signals["evidence"].append("paired_evidence_missing")
                 evidence_ids["evidence"].add(f"gate:{gate_id}")
 
-    if next_action == "authorize_audit":
-        signals["human"].append("audit_authorization_required")
-    elif next_action == "request_user_release":
+    if next_action == "request_user_release":
         signals["human"].append("release_confirmation_required")
 
     for category in signals:
@@ -5069,29 +5691,39 @@ def _dashboard_action_center(
     )
     action_requirements = {
         "generate_candidate": next_action == "propose_candidate",
+        "prepare_audit": next_action == "prepare_audit",
         "rerun_execution": next_action
         in {"run_authorized_selection", "run_authorized_audit"},
         "propose_eval_change": bool(signals["eval"])
         and decision_status in {"rejected", "inconclusive", "no-change"},
-        "authorize_audit": next_action == "authorize_audit",
         "request_release_confirmation": next_action == "request_user_release",
     }
     recommended_action = {
         "propose_candidate": "generate_candidate",
+        "prepare_audit": "prepare_audit",
         "run_authorized_selection": "rerun_execution",
         "run_authorized_audit": "rerun_execution",
-        "authorize_audit": "authorize_audit",
         "request_user_release": "request_release_confirmation",
     }.get(next_action)
     if primary_attribution == "eval" and action_requirements["propose_eval_change"]:
         recommended_action = "propose_eval_change"
 
+    automatic_action_ids = {
+        "generate_candidate",
+        "prepare_audit",
+        "rerun_execution",
+    }
+    requestable_action_ids = {
+        "propose_eval_change",
+        "request_release_confirmation",
+    }
+
     actions = []
     for action_id in (
         "generate_candidate",
+        "prepare_audit",
         "rerun_execution",
         "propose_eval_change",
-        "authorize_audit",
         "request_release_confirmation",
     ):
         actions.append(
@@ -5100,21 +5732,56 @@ def _dashboard_action_center(
                 "available": action_requirements[action_id],
                 "recommended": action_id == recommended_action,
                 "owner": "lead_agent",
+                "execution_mode": (
+                    "automatic" if action_id in automatic_action_ids else "request"
+                ),
+                "requestable": action_id in requestable_action_ids,
                 "human_confirmation_required": action_id
                 in {
                     "propose_eval_change",
-                    "authorize_audit",
                     "request_release_confirmation",
                 },
                 "evidence_ids": acceptance_evidence_ids
-                if action_id in {"authorize_audit", "request_release_confirmation"}
+                if action_id in {"prepare_audit", "request_release_confirmation"}
                 else failed_evidence_ids,
             }
         )
 
+    if recommended_action == "propose_eval_change":
+        continuation = {
+            "mode": "human_required",
+            "owner": "human",
+            "reason": "eval_change_confirmation",
+        }
+    elif next_action == "request_user_release":
+        continuation = {
+            "mode": "human_required",
+            "owner": "human",
+            "reason": "release_confirmation",
+        }
+    elif next_action == "review_evidence":
+        continuation = {
+            "mode": "human_required",
+            "owner": "human",
+            "reason": "evidence_review",
+        }
+    elif next_action == "stop":
+        continuation = {
+            "mode": "stopped",
+            "owner": "lead_agent",
+            "reason": "terminal_state",
+        }
+    else:
+        continuation = {
+            "mode": "automatic",
+            "owner": "lead_agent",
+            "reason": "within_locked_authority",
+        }
+
     return {
         "next_action": next_action,
         "owner": "lead_agent",
+        "continuation": continuation,
         "acceptance": acceptance,
         "attribution": {
             "primary": primary_attribution,
@@ -5126,7 +5793,352 @@ def _dashboard_action_center(
             "audit_endpoint": "/dashboard-action-requests.json",
             "evidence_mutation": False,
             "eval_mutation": False,
+            "handoff_mode": "durable_local_ledger",
+            "can_wake_agent_session": False,
+            "persists_after_agent_session_end": True,
         },
+    }
+
+
+_DASHBOARD_PASS_STATUSES = {
+    "accepted",
+    "audit-passed",
+    "behavior-verified",
+    "passed",
+    "regression-verified",
+    "retained",
+}
+
+
+def _dashboard_status_passed(status: object) -> bool:
+    return str(status).lower() in _DASHBOARD_PASS_STATUSES
+
+
+def _dashboard_case_id_for_gate(
+    gate_label: object, case_ids: list[str]
+) -> str | None:
+    label = str(gate_label)
+    matches = [
+        case_id
+        for case_id in case_ids
+        if label == case_id or label.startswith(f"{case_id}:")
+    ]
+    return max(matches, key=len) if matches else None
+
+
+def _dashboard_order_spine(
+    spine: list[dict[str, Any]], case_rows: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Project the evidence index into a stable, parent-before-child audit tree.
+
+    The spine remains a lossless evidence index. This function only fixes its
+    structural semantics: case-scoped gates belong to their scenario, and the
+    serialized order must never be used as a substitute for the parent graph.
+    """
+
+    case_ids = [str(row.get("id")) for row in case_rows]
+    for node in spine:
+        if node.get("kind") != "gate":
+            continue
+        declared_case_id = node.get("case_id")
+        case_id = (
+            str(declared_case_id)
+            if declared_case_id in case_ids
+            else _dashboard_case_id_for_gate(node.get("label"), case_ids)
+        )
+        if case_id is not None:
+            node["case_id"] = case_id
+            node["parent_id"] = f"case:{case_id}"
+
+    nodes_by_parent: dict[str | None, list[tuple[int, dict[str, Any]]]] = {}
+    for index, node in enumerate(spine):
+        parent_id = node.get("parent_id")
+        nodes_by_parent.setdefault(
+            str(parent_id) if parent_id is not None else None, []
+        ).append((index, node))
+
+    kind_priority = {
+        "run": 0,
+        "case": 1,
+        "gate": 2,
+        "assertion": 3,
+        "artifact": 4,
+        "iteration": 5,
+    }
+    arm_priority = {"with_skill": 0, "old_skill": 1, "without_skill": 2}
+
+    def order_key(
+        item: tuple[int, dict[str, Any]]
+    ) -> tuple[int, int, int, int, int]:
+        index, node = item
+        kind = str(node.get("kind"))
+        arm = node.get("arm")
+        failed_first = 0 if not _dashboard_status_passed(node.get("status")) else 1
+        if kind in {"assertion", "artifact"} and isinstance(arm, str):
+            # Keep the candidate and every baseline in contiguous visual lanes.
+            # The browser can then introduce one explicit arm boundary instead
+            # of presenting paired evidence as a duplicated flat list.
+            return (
+                3,
+                arm_priority.get(arm, 90),
+                0 if kind == "assertion" else 1,
+                failed_first,
+                index,
+            )
+        return (kind_priority.get(kind, 99), 99, 0, failed_first, index)
+
+    ordered: list[dict[str, Any]] = []
+    visited: set[str] = set()
+
+    def visit(node: dict[str, Any]) -> None:
+        node_id = str(node.get("id"))
+        if node_id in visited:
+            return
+        visited.add(node_id)
+        ordered.append(node)
+        for _index, child in sorted(nodes_by_parent.get(node_id, []), key=order_key):
+            visit(child)
+
+    for _index, root in sorted(nodes_by_parent.get(None, []), key=order_key):
+        visit(root)
+    # Invalid or orphaned nodes stay visible for audit instead of disappearing.
+    for _index, node in sorted(enumerate(spine), key=order_key):
+        visit(node)
+    return ordered
+
+
+def _dashboard_review_outline(
+    *,
+    spine: list[dict[str, Any]],
+    case_rows: list[dict[str, Any]],
+    release_eligible: bool,
+    action_center: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the human review interface; the browser must not infer decisions.
+
+    The immutable spine answers "what evidence exists". The review outline
+    answers the different product question "what should a reviewer decide and
+    in what order should they inspect the evidence".
+    """
+
+    nodes_by_id = {str(node.get("id")): node for node in spine}
+    scenario_rows: list[dict[str, Any]] = []
+    blockers: list[dict[str, Any]] = []
+    passed_gate_ids: list[str] = []
+    passed_case_ids: list[str] = []
+    scoped_gate_ids: set[str] = set()
+    attribution = action_center.get("attribution", {})
+    primary_attribution = (
+        attribution.get("primary") if isinstance(attribution, dict) else None
+    )
+    next_action = action_center.get("next_action")
+    acceptance = action_center.get("acceptance", {})
+    acceptance_criteria = (
+        acceptance.get("criteria", []) if isinstance(acceptance, dict) else []
+    )
+    failed_acceptance_criteria = [
+        criterion
+        for criterion in acceptance_criteria
+        if isinstance(criterion, dict) and criterion.get("status") == "failed"
+    ]
+
+    for case in case_rows:
+        case_id = str(case.get("id"))
+        case_node_id = f"case:{case_id}"
+        children = [
+            node for node in spine if node.get("parent_id") == case_node_id
+        ]
+        gate_ids = [
+            str(node.get("id")) for node in children if node.get("kind") == "gate"
+        ]
+        scoped_gate_ids.update(gate_ids)
+        check_ids = [
+            str(node.get("id"))
+            for node in children
+            if node.get("kind") == "assertion"
+        ]
+        artifact_ids = [
+            str(node.get("id"))
+            for node in children
+            if node.get("kind") == "artifact"
+        ]
+        failed_gate_ids = [
+            node_id
+            for node_id in gate_ids
+            if not _dashboard_status_passed(nodes_by_id[node_id].get("status"))
+        ]
+        failed_check_ids = [
+            node_id
+            for node_id in check_ids
+            if not _dashboard_status_passed(nodes_by_id[node_id].get("status"))
+            and nodes_by_id[node_id].get("arm") in {None, "with_skill"}
+        ]
+        missing_artifact_ids = [
+            node_id
+            for node_id in artifact_ids
+            if str(nodes_by_id[node_id].get("status")).lower() == "missing"
+            and nodes_by_id[node_id].get("arm") in {None, "with_skill"}
+        ]
+        failed_paths = {
+            str(nodes_by_id[node_id].get("path"))
+            for node_id in failed_check_ids
+            if nodes_by_id[node_id].get("path")
+        }
+        source_evidence_ids = [
+            node_id
+            for node_id in artifact_ids
+            if nodes_by_id[node_id].get("path") in failed_paths
+            and str(nodes_by_id[node_id].get("status")).lower() != "missing"
+        ]
+        scenario_rows.append(
+            {
+                "case_id": case_id,
+                "status": case.get("status"),
+                "gate_ids": gate_ids,
+                "check_ids": check_ids,
+                "artifact_ids": artifact_ids,
+            }
+        )
+        blocking = (
+            not _dashboard_status_passed(case.get("status"))
+            or bool(failed_gate_ids)
+            or bool(failed_check_ids)
+            or bool(missing_artifact_ids)
+        )
+        if blocking:
+            blockers.append(
+                {
+                    "id": f"blocker:{case_id}",
+                    "kind": "scenario",
+                    "case_id": case_id,
+                    "status": "failed"
+                    if failed_gate_ids or failed_check_ids or missing_artifact_ids
+                    else case.get("status"),
+                    "gate_ids": failed_gate_ids,
+                    "failed_check_ids": failed_check_ids,
+                    "missing_artifact_ids": missing_artifact_ids,
+                    "source_evidence_ids": source_evidence_ids,
+                    "criterion_ids": [],
+                    "evidence_ids": [
+                        case_node_id,
+                        *failed_gate_ids,
+                        *failed_check_ids,
+                        *missing_artifact_ids,
+                        *source_evidence_ids,
+                    ],
+                    "attribution": primary_attribution,
+                    "next_action": next_action,
+                }
+            )
+        else:
+            passed_case_ids.append(case_node_id)
+        passed_gate_ids.extend(
+            node_id
+            for node_id in gate_ids
+            if _dashboard_status_passed(nodes_by_id[node_id].get("status"))
+        )
+
+    unscoped_failed_gates = [
+        node
+        for node in spine
+        if node.get("kind") == "gate"
+        and str(node.get("id")) not in scoped_gate_ids
+        and not _dashboard_status_passed(node.get("status"))
+    ]
+    for gate in unscoped_failed_gates:
+        gate_id = str(gate.get("id"))
+        blockers.append(
+            {
+                "id": f"blocker:{gate_id}",
+                "kind": "criterion",
+                "case_id": None,
+                "status": gate.get("status"),
+                "gate_ids": [gate_id],
+                "failed_check_ids": [],
+                "missing_artifact_ids": [],
+                "source_evidence_ids": [],
+                "criterion_ids": ["hard_gates"],
+                "evidence_ids": [gate_id],
+                "attribution": primary_attribution,
+                "next_action": next_action,
+            }
+        )
+
+    represented_hard_gate = any(blocker["gate_ids"] for blocker in blockers)
+    for criterion in failed_acceptance_criteria:
+        criterion_id = str(criterion.get("id"))
+        if criterion_id == "hard_gates" and represented_hard_gate:
+            continue
+        evidence_ids = [
+            str(node_id)
+            for node_id in criterion.get("evidence_ids", [])
+            if str(node_id) in nodes_by_id
+        ]
+        blockers.append(
+            {
+                "id": f"blocker:criterion:{criterion_id}",
+                "kind": "criterion",
+                "case_id": None,
+                "status": "failed",
+                "gate_ids": [],
+                "failed_check_ids": [],
+                "missing_artifact_ids": [],
+                "source_evidence_ids": [],
+                "criterion_ids": [criterion_id],
+                "evidence_ids": evidence_ids,
+                "attribution": primary_attribution,
+                "next_action": next_action,
+            }
+        )
+
+    scenario_blockers = [
+        blocker for blocker in blockers if blocker.get("kind") == "scenario"
+    ]
+    criterion_blockers = [
+        blocker for blocker in blockers if blocker.get("kind") == "criterion"
+    ]
+
+    if release_eligible:
+        decision_status = "ready"
+        decision_reason = "release_conditions_met"
+    elif any(blocker["gate_ids"] for blocker in blockers):
+        decision_status = "blocked"
+        decision_reason = "release_gate_failed"
+    elif scenario_blockers:
+        decision_status = "blocked"
+        decision_reason = "scenario_failed"
+    elif criterion_blockers:
+        decision_status = "blocked"
+        decision_reason = "candidate_acceptance_failed"
+    elif next_action in {"prepare_audit", "run_authorized_audit"}:
+        decision_status = "inconclusive"
+        decision_reason = "audit_required"
+    else:
+        decision_status = "inconclusive"
+        decision_reason = "evidence_incomplete"
+
+    return {
+        "contract": "skill-reviewer.dashboard-review",
+        "decision": {
+            "status": decision_status,
+            "reason": decision_reason,
+            "release_eligible": release_eligible,
+            "blocking_scenario_count": sum(
+                blocker.get("case_id") is not None
+                for blocker in scenario_blockers
+            ),
+            "blocking_gate_count": sum(
+                len(blocker.get("gate_ids", [])) for blocker in blockers
+            ),
+        },
+        "blockers": blockers,
+        "safeguards": {
+            "passed_gate_ids": passed_gate_ids,
+            "passed_case_ids": passed_case_ids,
+        },
+        "scenarios": scenario_rows,
+        "next_action": next_action,
+        "attribution": primary_attribution,
     }
 
 
@@ -5241,6 +6253,11 @@ def project_dashboard(
         for item in (evidence or {}).get("cases", [])
         if isinstance(item, dict)
     }
+    planned_case_ids = [
+        str(item.get("id"))
+        for item in plan.get("cases", [])
+        if isinstance(item, dict)
+    ]
 
     spine: list[dict[str, Any]] = [
         {
@@ -5261,12 +6278,19 @@ def project_dashboard(
         for gate in latest_decision.get("hard_gates", []):
             if not isinstance(gate, dict):
                 continue
+            gate_id = str(gate.get("id"))
+            gate_case_id = _dashboard_case_id_for_gate(
+                gate_id, planned_case_ids
+            )
             spine.append(
                 {
-                    "id": f"gate:{gate.get('id')}",
+                    "id": f"gate:{gate_id}",
                     "kind": "gate",
-                    "parent_id": f"run:{plan.get('run_id')}",
-                    "label": str(gate.get("id")),
+                    "parent_id": f"case:{gate_case_id}"
+                    if gate_case_id is not None
+                    else f"run:{plan.get('run_id')}",
+                    "case_id": gate_case_id,
+                    "label": gate_id,
                     "status": "passed" if gate.get("passed") is True else "failed",
                     "detail": gate.get("reason"),
                 }
@@ -5382,6 +6406,51 @@ def project_dashboard(
                     for assertion in repeat.get("assertions", [])
                     if isinstance(assertion, dict)
                 ]
+                raw_trace = repeat.get("trace")
+                trace_events = (
+                    raw_trace.get("events", [])
+                    if isinstance(raw_trace, dict)
+                    and isinstance(raw_trace.get("events"), list)
+                    else []
+                )
+                projected_trace = None
+                if isinstance(raw_trace, dict):
+                    projected_trace = {
+                        key: raw_trace.get(key)
+                        for key in (
+                            "artifact",
+                            "digest",
+                            "capture_source",
+                            "complete",
+                            "valid",
+                            "event_count",
+                            "started_at",
+                            "finished_at",
+                            "duration_ms",
+                        )
+                    }
+                    projected_trace["events"] = [
+                        event
+                        if content_visible
+                        else {
+                            "contract": event.get("contract"),
+                            "event_id": event.get("event_id"),
+                            "run_id": event.get("run_id"),
+                            "case_id": event.get("case_id"),
+                            "arm": event.get("arm"),
+                            "repeat": event.get("repeat"),
+                            "sequence": event.get("sequence"),
+                            "occurred_at": event.get("occurred_at"),
+                            "elapsed_ms": event.get("elapsed_ms"),
+                            "kind": event.get("kind"),
+                            "status": event.get("status"),
+                            "summary": "Opaque holdout event retained; content is hidden.",
+                            "details": {},
+                            "artifact_refs": [],
+                        }
+                        for event in trace_events
+                        if isinstance(event, dict)
+                    ]
                 execution_rows.append(
                     {
                         "repeat": repeat_number,
@@ -5408,6 +6477,7 @@ def project_dashboard(
                         "metrics": repeat.get("metrics", {})
                         if isinstance(repeat.get("metrics"), dict)
                         else {},
+                        "trace": projected_trace,
                     }
                 )
                 for assertion in repeat.get("assertions", []):
@@ -5477,12 +6547,15 @@ def project_dashboard(
                         )
             for artifact_index, artifact_path in enumerate(sorted(artifact_paths)):
                 artifact_node_id = f"artifact:{case_id}:{arm_id}:{artifact_index}"
+                artifact_exists = _safe_artifact(
+                    workspace, artifact_path
+                ).is_file()
                 artifact_node = {
                         "id": artifact_node_id,
                         "kind": "artifact",
                         "parent_id": case_node_id,
                         "label": Path(artifact_path).name,
-                        "status": "retained",
+                        "status": "retained" if artifact_exists else "missing",
                         "arm": arm_id,
                         "path": artifact_path,
                     }
@@ -5556,6 +6629,7 @@ def project_dashboard(
                                 "preference",
                                 "reason",
                                 "resolved_winners",
+                                "source_event_ids",
                             )
                             if key in semantic and content_visible
                         },
@@ -5627,6 +6701,7 @@ def project_dashboard(
                             "preference",
                             "artifact",
                             "resolved_winners",
+                            "source_event_ids",
                         )
                         if key in semantic
                     }
@@ -5702,6 +6777,42 @@ def project_dashboard(
         else None
     )
     skill_diffs = _dashboard_skill_diffs(plan, workspace=workspace)
+    spine = _dashboard_order_spine(spine, case_rows)
+    release_eligible = (evidence or {}).get("release_eligible", False) is True
+    summary = {
+        "case_count": len(case_rows),
+        "candidate_passed": sum(row["status"] == "passed" for row in case_rows),
+        "candidate_failed": sum(
+            row["status"] in {"failed", "incomplete"} for row in case_rows
+        ),
+        "hard_gates_passed": sum(
+            isinstance(gate, dict) and gate.get("passed") is True
+            for gate in hard_gates
+        ),
+        "hard_gates_total": len(hard_gates),
+        "decision_status": latest_decision.get("status")
+        if latest_decision
+        else None,
+        "current_round": state.get("current_round") if state else None,
+        "max_rounds": state.get("max_rounds") if state else 3,
+        "selection_queries": state.get("selection_query_count") if state else 0,
+        "audit_queries": state.get("audit_query_count") if state else 0,
+        "rejected_candidates": len(state.get("rejected_candidates", []))
+        if state
+        else 0,
+        "continuity_epoch": state.get("continuity_epoch") if state else None,
+    }
+    action_center = _dashboard_action_center(
+        state=state,
+        decisions=decisions,
+        case_rows=case_rows,
+    )
+    review = _dashboard_review_outline(
+        spine=spine,
+        case_rows=case_rows,
+        release_eligible=release_eligible,
+        action_center=action_center,
+    )
     data = {
         "contract": DASHBOARD_CONTRACT,
         "generated_at": None,
@@ -5729,32 +6840,10 @@ def project_dashboard(
                 if (holdout or {}).get("visibility") == "opaque"
                 else "public-calibration",
             ),
-            "release_eligible": (evidence or {}).get("release_eligible", False),
+            "release_eligible": release_eligible,
             "integrity": (evidence or {}).get("integrity", projected_integrity),
         },
-        "summary": {
-            "case_count": len(case_rows),
-            "candidate_passed": sum(row["status"] == "passed" for row in case_rows),
-            "candidate_failed": sum(
-                row["status"] in {"failed", "incomplete"} for row in case_rows
-            ),
-            "hard_gates_passed": sum(
-                isinstance(gate, dict) and gate.get("passed") is True
-                for gate in hard_gates
-            ),
-            "hard_gates_total": len(hard_gates),
-            "decision_status": latest_decision.get("status")
-            if latest_decision
-            else None,
-            "current_round": state.get("current_round") if state else None,
-            "max_rounds": state.get("max_rounds") if state else 3,
-            "selection_queries": state.get("selection_query_count") if state else 0,
-            "audit_queries": state.get("audit_query_count") if state else 0,
-            "rejected_candidates": len(state.get("rejected_candidates", []))
-            if state
-            else 0,
-            "continuity_epoch": state.get("continuity_epoch") if state else None,
-        },
+        "summary": summary,
         "evolution": {
             "active_query": active_query,
             "selection_query_limit": state.get("max_rounds", 3) if state else 3,
@@ -5764,11 +6853,8 @@ def project_dashboard(
             if state
             else [],
         },
-        "action_center": _dashboard_action_center(
-            state=state,
-            decisions=decisions,
-            case_rows=case_rows,
-        ),
+        "action_center": action_center,
+        "review": review,
         "cases": case_rows,
         "diffs": skill_diffs,
         "iterations": decisions,
@@ -5786,6 +6872,17 @@ def project_dashboard(
     }
     write_json(output, data)
     return data
+
+
+def _parse_cli_object(raw: str, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(raw, parse_constant=_reject_json_constant)
+        _require_finite_json(value, label)
+    except (json.JSONDecodeError, ValueError, ManifestError) as error:
+        raise ManifestError(f"{label} must be a finite JSON object: {error}") from error
+    if not isinstance(value, dict):
+        raise ManifestError(f"{label} must be a JSON object")
+    return value
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -5817,6 +6914,47 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     grade_parser = subparsers.add_parser("grade")
     grade_parser.add_argument("--plan", type=Path, required=True)
     grade_parser.add_argument("--workspace", type=Path, required=True)
+    trace_parser = subparsers.add_parser(
+        "trace-event",
+        help="Append one observable Agent event to the bound execution trace.",
+    )
+    trace_parser.add_argument("--workspace", type=Path, required=True)
+    trace_parser.add_argument("--assignment", type=Path, required=True)
+    trace_parser.add_argument("--kind", choices=sorted(TRACE_EVENT_KINDS), required=True)
+    trace_parser.add_argument("--summary", required=True)
+    trace_parser.add_argument("--status", default="completed")
+    trace_parser.add_argument("--details-json", default="{}")
+    trace_parser.add_argument(
+        "--artifact-ref", action="append", dest="artifact_refs", default=[]
+    )
+    trace_parser.add_argument(
+        "--capture-source",
+        choices=sorted(TRACE_CAPTURE_SOURCES),
+        default="lead_agent_observed",
+    )
+    finalize_parser = subparsers.add_parser(
+        "finalize-execution",
+        help="Finalize the append-only Agent trace and write execution.json.",
+    )
+    finalize_parser.add_argument("--workspace", type=Path, required=True)
+    finalize_parser.add_argument("--assignment", type=Path, required=True)
+    finalize_parser.add_argument(
+        "--status",
+        choices=["completed", "failed", "timed_out", "interrupted"],
+        required=True,
+    )
+    finalize_parser.add_argument("--metrics-json", default="{}")
+    finalize_parser.add_argument(
+        "--forbidden-action", action="append", dest="forbidden_actions", default=[]
+    )
+    finalize_parser.add_argument(
+        "--side-effect", action="append", dest="side_effects", default=[]
+    )
+    finalize_parser.add_argument(
+        "--capture-source",
+        choices=sorted(TRACE_CAPTURE_SOURCES),
+        default="lead_agent_observed",
+    )
     decide_parser = subparsers.add_parser("decide")
     decide_parser.add_argument("--plan", type=Path, required=True)
     decide_parser.add_argument("--evidence", type=Path, required=True)
@@ -5865,6 +7003,27 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "grade":
             result = grade_run(plan_path=args.plan, workspace=args.workspace)
+        elif args.command == "trace-event":
+            result = record_trace_event(
+                assignment_path=args.assignment,
+                workspace=args.workspace,
+                kind=args.kind,
+                summary=args.summary,
+                status=args.status,
+                details=_parse_cli_object(args.details_json, "--details-json"),
+                artifact_refs=args.artifact_refs,
+                capture_source=args.capture_source,
+            )
+        elif args.command == "finalize-execution":
+            result = finalize_execution(
+                assignment_path=args.assignment,
+                workspace=args.workspace,
+                status=args.status,
+                metrics=_parse_cli_object(args.metrics_json, "--metrics-json"),
+                forbidden_actions=args.forbidden_actions,
+                side_effects=args.side_effects,
+                capture_source=args.capture_source,
+            )
         elif args.command == "decide":
             result = decide_candidate(
                 plan_path=args.plan,

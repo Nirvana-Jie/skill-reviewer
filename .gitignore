@@ -10,6 +10,11 @@ node_modules/
 coverage/
 .playwright-cli/
 
+# Local agent and skill-manager state
+/.agent/
+/.agents/
+/skills-lock.json
+
 # Python caches
 __pycache__/
 *.py[cod]
@@ -19,16 +24,20 @@ __pycache__/
 .env.*
 !.env.example
 
-# Local packaging artifacts. The install-ready Dashboard bundle below is the
-# one intentional tracked build output because it is part of the skill payload.
+# Local packaging and generated UI artifacts. GitHub Actions builds the
+# Dashboard into dashboard/dist and publishes only a digest-pinned Release asset.
 *.zip
 *.skill
 dist/
 build/
-!skills/skill-reviewer/dashboard/dist/
-!skills/skill-reviewer/dashboard/dist/**
 
 # Local eval workspaces
 .codex-eval-workspace/
 skill-reviewer-workspace/
-node_modules/
+
+# Local research, article-authoring, screenshots, videos, and generated demos.
+# Canonical project documentation belongs in the READMEs or the installable
+# skill package under skills/skill-reviewer/references/.
+/docs/
+/diagrams/
+/output/

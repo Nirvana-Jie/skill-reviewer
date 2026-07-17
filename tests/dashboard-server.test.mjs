@@ -4,6 +4,7 @@ import { once } from "node:events";
 import {
   mkdtempSync,
   mkdirSync,
+  readFileSync,
   readdirSync,
   rmSync,
   statSync,
@@ -23,6 +24,13 @@ const server = join(
   "scripts",
   "serve_skill_dashboard.py",
 );
+const launcher = join(
+  repoRoot,
+  "skills",
+  "skill-reviewer",
+  "scripts",
+  "start_skill_dashboard.py",
+);
 const python = process.env.PYTHON ?? "python3";
 
 function write(root, relative, content) {
@@ -35,13 +43,204 @@ function sha256Text(content) {
   return createHash("sha256").update(content).digest("hex");
 }
 
+function bridgeFetch(report, path, init = {}) {
+  const headers = new Headers(init.headers);
+  headers.set("X-Skill-Reviewer-Session", report.session_token);
+  return fetch(`${report.base_url}${path}`, { ...init, headers });
+}
+
 describe("serve_skill_dashboard.py", () => {
+  it("requires an explicit user-approval gate before starting any UI", () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-dashboard-consent-"));
+    try {
+      const workspace = join(root, "workspace");
+      const ui = join(root, "ui");
+      write(ui, "index.html", "<!doctype html><title>Local control plane</title>");
+      write(
+        workspace,
+        "dashboard-data.json",
+        JSON.stringify({
+          contract: "skill-reviewer.dashboard-data",
+          run: { id: "run-consent" },
+          spine: [],
+          diffs: [],
+        }),
+      );
+
+      const result = spawnSync(
+        python,
+        [
+          launcher,
+          "--workspace",
+          workspace,
+          "--serve-existing",
+          "--ui-dir",
+          ui,
+          "--port",
+          "0",
+        ],
+        { cwd: repoRoot, encoding: "utf8" },
+      );
+
+      expect(result.status).toBe(2);
+      expect(result.stderr).toMatch(/requires explicit user approval/);
+      expect(result.stdout).toBe("");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("starts a same-origin local control plane from a trusted UI override", async () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-dashboard-launcher-"));
+    let child;
+    try {
+      const workspace = join(root, "workspace");
+      const ui = join(root, "ui");
+      write(ui, "index.html", "<!doctype html><title>Local control plane</title>");
+      write(
+        workspace,
+        "dashboard-data.json",
+        JSON.stringify({
+          contract: "skill-reviewer.dashboard-data",
+          run: { id: "run-single-command" },
+          spine: [],
+          diffs: [],
+        }),
+      );
+
+      child = spawn(
+        python,
+        [
+          launcher,
+          "--workspace",
+          workspace,
+          "--serve-existing",
+          "--ui-dir",
+          ui,
+          "--user-approved-control-plane",
+          "--port",
+          "0",
+        ],
+        { cwd: repoRoot, stdio: ["ignore", "pipe", "pipe"] },
+      );
+      let stdout = "";
+      let stderr = "";
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      const report = await new Promise((resolveReport, rejectReport) => {
+        child.stdout.setEncoding("utf8");
+        child.stdout.on("data", (chunk) => {
+          stdout += chunk;
+          const newline = stdout.indexOf("\n");
+          if (newline < 0) return;
+          try {
+            resolveReport(JSON.parse(stdout.slice(0, newline)));
+          } catch (error) {
+            rejectReport(error);
+          }
+        });
+        child.once("exit", (code) => {
+          rejectReport(new Error(`dashboard launcher exited early (${code}): ${stderr}`));
+        });
+      });
+
+      expect(report).toEqual(
+        expect.objectContaining({
+          ok: true,
+          projected: false,
+          projection_source: "existing_projection",
+          projection_mode: "static",
+          refresh_seconds: 0,
+          run_id: "run-single-command",
+          port: expect.any(Number),
+          dashboard_hosted: false,
+          control_plane_started: true,
+          user_approved_control_plane: true,
+          ui_mode: "trusted_local_override",
+          ui_downloaded: false,
+          ui_temporary: false,
+          ui_integrity_verified: false,
+          github_token_used: false,
+        }),
+      );
+      expect(report.dashboard_session).toEqual({
+        contract: "skill-reviewer.dashboard-session",
+        run_id: "run-single-command",
+        page_url: report.url,
+        local_origin: report.base_url,
+        owner: "lead_agent",
+        lifecycle: "temporary-local-control-plane",
+        evidence_transport: "same-origin-loopback-only",
+        evidence_uploaded: false,
+        capability_transport: "url-fragment-to-request-header",
+        ui_integrity_verified: false,
+        ui_downloaded: false,
+        ui_removed_on_exit: false,
+        browser_executes_actions: false,
+        agent_handoff: {
+          contract: "skill-reviewer.dashboard-agent-handoff",
+          mode: "durable_local_ledger",
+          agent_session_state: "unbound",
+          can_wake_agent_session: false,
+          persists_after_agent_session_end: true,
+          task_root: report.task_root,
+        },
+      });
+      const pageUrl = new URL(report.url);
+      expect(`${pageUrl.origin}${pageUrl.pathname}`).toBe(
+        `${report.base_url}/skill-reviewer/`,
+      );
+      expect(pageUrl.search).toBe("");
+      const fragment = new URLSearchParams(pageUrl.hash.slice(1));
+      expect(fragment.has("bridge")).toBe(false);
+      expect(fragment.get("session")).toMatch(/^[A-Za-z0-9_-]{32,256}$/);
+      expect(pageUrl.href).not.toContain("run-single-command");
+      const page = await fetch(`${report.base_url}/skill-reviewer/`);
+      expect(page.status).toBe(200);
+      expect(page.headers.get("cache-control")).toBe("no-store");
+      expect(page.headers.get("cross-origin-resource-policy")).toBe("same-origin");
+      const sessionResponse = await fetch(`${report.base_url}/dashboard-session.json`, {
+        headers: {
+          Origin: pageUrl.origin,
+          "Sec-Fetch-Site": "same-origin",
+          "X-Skill-Reviewer-Session": fragment.get("session"),
+        },
+      });
+      expect(sessionResponse.status).toBe(200);
+      const session = await sessionResponse.json();
+      expect(session.agent_handoff).toEqual({
+        contract: "skill-reviewer.dashboard-agent-handoff",
+        mode: "durable_local_ledger",
+        agent_session_state: "unbound",
+        can_wake_agent_session: false,
+        persists_after_agent_session_end: true,
+        task_root: report.task_root,
+      });
+      const response = await fetch(`${report.base_url}/dashboard-data.json`, {
+        headers: {
+          Origin: pageUrl.origin,
+          "Sec-Fetch-Site": "same-origin",
+          "X-Skill-Reviewer-Session": fragment.get("session"),
+        },
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("access-control-allow-origin")).toBeNull();
+      expect((await response.json()).run.id).toBe("run-single-command");
+    } finally {
+      if (child && child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGTERM");
+        await once(child, "exit");
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 10_000);
+
   it("keeps evidence read-only and reports the external action task plane", () => {
     const root = mkdtempSync(join(tmpdir(), "skill-reviewer-dashboard-server-"));
     try {
       const workspace = join(root, "workspace");
-      const staticRoot = join(root, "dist");
-      write(staticRoot, "index.html", "<!doctype html><title>Evidence Lab</title>");
       write(
         workspace,
         "dashboard-data.json",
@@ -57,8 +256,6 @@ describe("serve_skill_dashboard.py", () => {
           server,
           "--workspace",
           workspace,
-          "--static-root",
-          staticRoot,
           "--check",
         ],
         { cwd: repoRoot, encoding: "utf8" },
@@ -79,19 +276,17 @@ describe("serve_skill_dashboard.py", () => {
     }
   });
 
-  it("serves only digest-bound retained evidence and never caches the app shell", async () => {
+  it("serves only digest-bound retained evidence and never caches bridge data", async () => {
     const root = mkdtempSync(join(tmpdir(), "skill-reviewer-dashboard-server-"));
     let child;
     try {
       const workspace = join(root, "workspace");
-      const staticRoot = join(root, "dist");
       const nodeId = "artifact:review:with_skill:1";
       const sourcePath = "cases/review/with_skill/repeat-1/outputs/response.md";
       const content = "# Review\nEvidence is insufficient.\n";
       const digest = sha256Text(content);
       const routeId = sha256Text(nodeId).slice(0, 24);
       const contentUrl = `/dashboard-evidence/${routeId}.json`;
-      write(staticRoot, "index.html", "<!doctype html><title>Evidence Lab</title>");
       write(workspace, sourcePath, content);
       write(
         workspace,
@@ -117,8 +312,6 @@ describe("serve_skill_dashboard.py", () => {
           server,
           "--workspace",
           workspace,
-          "--static-root",
-          staticRoot,
           "--port",
           "0",
         ],
@@ -148,9 +341,7 @@ describe("serve_skill_dashboard.py", () => {
       });
 
       expect(report.evidence_preview_count).toBe(1);
-      const indexResponse = await fetch(report.url);
-      expect(indexResponse.headers.get("cache-control")).toBe("no-store");
-      const response = await fetch(`${report.url}${contentUrl}`);
+      const response = await bridgeFetch(report, contentUrl);
       expect(response.status).toBe(200);
       expect(response.headers.get("cache-control")).toBe("no-store");
       expect(await response.json()).toEqual({
@@ -164,13 +355,13 @@ describe("serve_skill_dashboard.py", () => {
         truncated: false,
       });
       write(workspace, sourcePath, "tampered\n");
-      expect((await fetch(`${report.url}${contentUrl}`)).status).toBe(400);
+      expect((await bridgeFetch(report, contentUrl)).status).toBe(400);
       expect(
-        (await fetch(`${report.url}/dashboard-evidence/${"b".repeat(24)}.json`))
+        (await bridgeFetch(report, `/dashboard-evidence/${"b".repeat(24)}.json`))
           .status,
       ).toBe(400);
     } finally {
-      if (child && child.exitCode === null) {
+      if (child && child.exitCode === null && child.signalCode === null) {
         child.kill("SIGTERM");
         await once(child, "exit");
       }
@@ -178,12 +369,11 @@ describe("serve_skill_dashboard.py", () => {
     }
   }, 10_000);
 
-  it("creates idempotent, digest-bound lead-agent tasks outside evidence", async () => {
+  it("retains idempotent, digest-bound Agent handoffs outside evidence and across server exit", async () => {
     const root = mkdtempSync(join(tmpdir(), "skill-reviewer-dashboard-server-"));
     let child;
     try {
       const workspace = join(root, "workspace");
-      const staticRoot = join(root, "dist");
       const taskRoot = join(root, "action-tasks");
       const model = {
         contract: "skill-reviewer.dashboard-data",
@@ -192,20 +382,30 @@ describe("serve_skill_dashboard.py", () => {
           { id: "case:failed-case", kind: "case", status: "failed" },
         ],
         action_center: {
-          next_action: "propose_candidate",
+          next_action: "request_user_release",
           owner: "lead_agent",
+          task_gateway: {
+            request_endpoint: "/dashboard-action-requests",
+            audit_endpoint: "/dashboard-action-requests.json",
+            evidence_mutation: false,
+            eval_mutation: false,
+            handoff_mode: "durable_local_ledger",
+            can_wake_agent_session: false,
+            persists_after_agent_session_end: true,
+          },
           actions: [
             {
-              id: "generate_candidate",
+              id: "request_release_confirmation",
               available: true,
               owner: "lead_agent",
-              human_confirmation_required: false,
+              execution_mode: "request",
+              requestable: true,
+              human_confirmation_required: true,
               evidence_ids: ["case:failed-case"],
             },
           ],
         },
       };
-      write(staticRoot, "index.html", "<!doctype html><title>Evidence Lab</title>");
       write(workspace, "dashboard-data.json", JSON.stringify(model));
       child = spawn(
         python,
@@ -213,8 +413,6 @@ describe("serve_skill_dashboard.py", () => {
           server,
           "--workspace",
           workspace,
-          "--static-root",
-          staticRoot,
           "--task-root",
           taskRoot,
           "--port",
@@ -248,41 +446,72 @@ describe("serve_skill_dashboard.py", () => {
       const request = {
         contract: "skill-reviewer.dashboard-action-request",
         run_id: "run-action",
-        action_id: "generate_candidate",
-        expected_next_action: "propose_candidate",
+        action_id: "request_release_confirmation",
+        expected_next_action: "request_user_release",
         evidence_ids: ["case:failed-case"],
         idempotency_key: "test-action-0001",
       };
-      const create = await fetch(`${report.url}/dashboard-action-requests`, {
+      const create = await bridgeFetch(report, "/dashboard-action-requests", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Origin: report.base_url,
+        },
         body: JSON.stringify(request),
       });
       expect(create.status).toBe(201);
+      expect(create.headers.get("access-control-allow-origin")).toBeNull();
       const created = await create.json();
+      expect(stderr).toContain('"event": "dashboard_agent_handoff_saved"');
+      expect(stderr).toContain('"action_id": "request_release_confirmation"');
       expect(created).toEqual(
         expect.objectContaining({
           created: true,
           task: expect.objectContaining({
-            action_id: "generate_candidate",
+            action_id: "request_release_confirmation",
             owner: "lead_agent",
             requested_by: "human_reviewer",
-            status: "requested",
+            status: "awaiting_agent",
+            delivery_mode: "durable_local_ledger",
+            agent_session_id: null,
             dashboard_digest: expect.stringMatching(/^[a-f0-9]{64}$/),
             digest: expect.stringMatching(/^[a-f0-9]{64}$/),
           }),
+          handoff: expect.objectContaining({
+            mode: "durable_local_ledger",
+            agent_session_state: "unbound",
+            can_wake_agent_session: false,
+            task_root: report.task_root,
+          }),
         }),
       );
-      const duplicate = await fetch(`${report.url}/dashboard-action-requests`, {
+      const duplicate = await bridgeFetch(report, "/dashboard-action-requests", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(request),
       });
       expect(duplicate.status).toBe(200);
       expect((await duplicate.json()).created).toBe(false);
+      const semanticDuplicate = await bridgeFetch(
+        report,
+        "/dashboard-action-requests",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...request,
+            idempotency_key: "test-action-same-state",
+          }),
+        },
+      );
+      expect(semanticDuplicate.status).toBe(200);
+      const semanticDuplicateBody = await semanticDuplicate.json();
+      expect(semanticDuplicateBody.created).toBe(false);
+      expect(semanticDuplicateBody.task.id).toBe(created.task.id);
 
-      const logResponse = await fetch(
-        `${report.url}/dashboard-action-requests.json`,
+      const logResponse = await bridgeFetch(
+        report,
+        "/dashboard-action-requests.json",
       );
       expect(logResponse.status).toBe(200);
       expect(logResponse.headers.get("cache-control")).toBe("no-store");
@@ -292,16 +521,25 @@ describe("serve_skill_dashboard.py", () => {
           owner: "lead_agent",
           evidence_mutation: false,
           eval_mutation: false,
+          current_dashboard_digest: created.task.dashboard_digest,
+          handoff: expect.objectContaining({
+            mode: "durable_local_ledger",
+            can_wake_agent_session: false,
+            persists_after_agent_session_end: true,
+            task_root: report.task_root,
+          }),
           tasks: [expect.objectContaining({ id: created.task.id })],
         }),
       );
       expect(readdirSync(workspace)).toEqual(["dashboard-data.json"]);
       const taskFiles = readdirSync(taskRoot);
       expect(taskFiles).toHaveLength(1);
+      expect(statSync(taskRoot).mode & 0o777).toBe(0o700);
       expect(statSync(join(taskRoot, taskFiles[0])).mode & 0o222).toBe(0);
 
-      const substitutedEvidence = await fetch(
-        `${report.url}/dashboard-action-requests`,
+      const substitutedEvidence = await bridgeFetch(
+        report,
+        "/dashboard-action-requests",
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -320,39 +558,123 @@ describe("serve_skill_dashboard.py", () => {
         JSON.stringify({
           ...model,
           action_center: {
-            next_action: "authorize_audit",
+            ...model.action_center,
+            next_action: "prepare_audit",
+            owner: "lead_agent",
+            actions: [
+              {
+                id: "prepare_audit",
+                available: true,
+                owner: "lead_agent",
+                execution_mode: "automatic",
+                requestable: false,
+                human_confirmation_required: false,
+                evidence_ids: ["case:failed-case"],
+              },
+            ],
+          },
+        }),
+      );
+      const automaticAction = await bridgeFetch(
+        report,
+        "/dashboard-action-requests",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...request,
+            action_id: "prepare_audit",
+            expected_next_action: "prepare_audit",
+            idempotency_key: "test-action-automatic",
+          }),
+        },
+      );
+      expect(automaticAction.status).toBe(400);
+
+      write(
+        workspace,
+        "dashboard-data.json",
+        JSON.stringify({
+          ...model,
+          action_center: {
+            ...model.action_center,
+            next_action: "prepare_audit",
             owner: "lead_agent",
             actions: [],
           },
         }),
       );
-      const stale = await fetch(`${report.url}/dashboard-action-requests`, {
+      const stale = await bridgeFetch(report, "/dashboard-action-requests", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...request, idempotency_key: "test-action-0003" }),
       });
       expect(stale.status).toBe(400);
-      const evidencePost = await fetch(`${report.url}/dashboard-data.json`, {
+      const evidencePost = await bridgeFetch(report, "/dashboard-data.json", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: "{}",
       });
       expect(evidencePost.status).toBe(405);
+
+      const preflight = await fetch(`${report.base_url}/dashboard-action-requests`, {
+        method: "OPTIONS",
+        headers: {
+          Origin: report.base_url,
+          "Access-Control-Request-Method": "POST",
+          "Access-Control-Request-Headers":
+            "Content-Type, X-Skill-Reviewer-Session",
+          "Access-Control-Request-Private-Network": "true",
+        },
+      });
+      expect(preflight.status).toBe(204);
+      expect(preflight.headers.get("allow")).toBe("POST, OPTIONS");
+      expect(preflight.headers.get("access-control-allow-origin")).toBeNull();
+      expect(preflight.headers.get("access-control-allow-private-network")).toBeNull();
+      const untrusted = await bridgeFetch(report, "/dashboard-data.json", {
+        headers: {
+          Origin: "https://attacker.example",
+          "Sec-Fetch-Site": "cross-site",
+        },
+      });
+      expect(untrusted.status).toBe(403);
+      const wrongLoopbackOrigin = await bridgeFetch(
+        report,
+        "/dashboard-data.json",
+        { headers: { Origin: "http://localhost:9999" } },
+      );
+      expect(wrongLoopbackOrigin.status).toBe(403);
+      const missingToken = await fetch(`${report.base_url}/dashboard-data.json`, {
+        headers: { Origin: report.base_url },
+      });
+      expect(missingToken.status).toBe(403);
+      if (child.exitCode === null) {
+        const exited = once(child, "exit");
+        child.kill("SIGKILL");
+        await exited;
+      }
+      expect(readdirSync(taskRoot)).toEqual(taskFiles);
+      expect(JSON.parse(readFileSync(join(taskRoot, taskFiles[0]), "utf8"))).toEqual(
+        expect.objectContaining({
+          status: "awaiting_agent",
+          delivery_mode: "durable_local_ledger",
+          agent_session_id: null,
+        }),
+      );
     } finally {
-      if (child && child.exitCode === null) {
+      if (child && child.exitCode === null && child.signalCode === null) {
         child.kill("SIGTERM");
         await once(child, "exit");
       }
       rmSync(root, { recursive: true, force: true });
     }
-  }, 10_000);
+  }, 15_000);
 
   it("serves only registered bounded diff sidecars", async () => {
     const root = mkdtempSync(join(tmpdir(), "skill-reviewer-dashboard-server-"));
     let child;
     try {
       const workspace = join(root, "workspace");
-      const staticRoot = join(root, "dist");
       const diffId = "a".repeat(24);
       const oldDigest = "1".repeat(64);
       const newDigest = "2".repeat(64);
@@ -367,7 +689,6 @@ describe("serve_skill_dashboard.py", () => {
         new_content: "new\n",
       };
       const payloadText = JSON.stringify(payload);
-      write(staticRoot, "index.html", "<!doctype html><title>Evidence Lab</title>");
       write(workspace, payloadPath, payloadText);
       write(
         workspace,
@@ -398,8 +719,6 @@ describe("serve_skill_dashboard.py", () => {
           server,
           "--workspace",
           workspace,
-          "--static-root",
-          staticRoot,
           "--port",
           "0",
         ],
@@ -430,7 +749,7 @@ describe("serve_skill_dashboard.py", () => {
         });
       });
 
-      const response = await fetch(`${report.url}/dashboard-diffs/${diffId}.json`);
+      const response = await bridgeFetch(report, `/dashboard-diffs/${diffId}.json`);
       expect(response.status).toBe(200);
       expect(response.headers.get("cache-control")).toBe("no-store");
       expect(response.headers.get("content-security-policy")).toContain(
@@ -488,7 +807,7 @@ describe("serve_skill_dashboard.py", () => {
           ],
         }),
       );
-      const nextModelResponse = await fetch(`${report.url}/dashboard-data.json`);
+      const nextModelResponse = await bridgeFetch(report, "/dashboard-data.json");
       expect(nextModelResponse.status).toBe(200);
       expect(await nextModelResponse.json()).toEqual(
         expect.objectContaining({
@@ -500,8 +819,9 @@ describe("serve_skill_dashboard.py", () => {
           ],
         }),
       );
-      const nextResponse = await fetch(
-        `${report.url}/dashboard-diffs/${nextDiffId}.json`,
+      const nextResponse = await bridgeFetch(
+        report,
+        `/dashboard-diffs/${nextDiffId}.json`,
       );
       expect(nextResponse.status).toBe(200);
       expect(await nextResponse.json()).toEqual(
@@ -511,8 +831,9 @@ describe("serve_skill_dashboard.py", () => {
           new_content: "two\n",
         }),
       );
-      const retainedResponse = await fetch(
-        `${report.url}/dashboard-diffs/${diffId}.json`,
+      const retainedResponse = await bridgeFetch(
+        report,
+        `/dashboard-diffs/${diffId}.json`,
       );
       expect(retainedResponse.status).toBe(200);
       write(
@@ -520,16 +841,18 @@ describe("serve_skill_dashboard.py", () => {
         payloadPath,
         JSON.stringify({ ...payload, old_content: "bad\n" }),
       );
-      const tampered = await fetch(
-        `${report.url}/dashboard-diffs/${diffId}.json`,
+      const tampered = await bridgeFetch(
+        report,
+        `/dashboard-diffs/${diffId}.json`,
       );
       expect(tampered.status).toBe(400);
-      const unknown = await fetch(
-        `${report.url}/dashboard-diffs/${"b".repeat(24)}.json`,
+      const unknown = await bridgeFetch(
+        report,
+        `/dashboard-diffs/${"b".repeat(24)}.json`,
       );
       expect(unknown.status).toBe(400);
     } finally {
-      if (child && child.exitCode === null) {
+      if (child && child.exitCode === null && child.signalCode === null) {
         child.kill("SIGTERM");
         await once(child, "exit");
       }
@@ -541,7 +864,6 @@ describe("serve_skill_dashboard.py", () => {
     const root = mkdtempSync(join(tmpdir(), "skill-reviewer-dashboard-server-"));
     try {
       const workspace = join(root, "workspace");
-      const staticRoot = join(root, "dist");
       const diffId = "c".repeat(24);
       const oldDigest = "4".repeat(64);
       const newDigest = "5".repeat(64);
@@ -556,7 +878,6 @@ describe("serve_skill_dashboard.py", () => {
         new_content: content,
       });
       expect(Buffer.byteLength(payloadText)).toBeGreaterThan(2 * 512 * 1024);
-      write(staticRoot, "index.html", "<!doctype html><title>Evidence Lab</title>");
       write(workspace, `dashboard-diffs/${diffId}.json`, payloadText);
       write(
         workspace,
@@ -588,8 +909,6 @@ describe("serve_skill_dashboard.py", () => {
           server,
           "--workspace",
           workspace,
-          "--static-root",
-          staticRoot,
           "--check",
         ],
         { cwd: repoRoot, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
@@ -599,6 +918,32 @@ describe("serve_skill_dashboard.py", () => {
       expect(JSON.parse(result.stdout)).toEqual(
         expect.objectContaining({ lazy_diff_count: 1 }),
       );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to expose the evidence bridge on a non-loopback interface", () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-dashboard-server-"));
+    try {
+      const workspace = join(root, "workspace");
+      write(
+        workspace,
+        "dashboard-data.json",
+        JSON.stringify({
+          contract: "skill-reviewer.dashboard-data",
+          run: { id: "run-non-loopback" },
+        }),
+      );
+
+      const result = spawnSync(
+        python,
+        [server, "--workspace", workspace, "--host", "0.0.0.0", "--check"],
+        { cwd: repoRoot, encoding: "utf8" },
+      );
+
+      expect(result.status).toBe(2);
+      expect(JSON.parse(result.stdout).error).toMatch(/loopback/i);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

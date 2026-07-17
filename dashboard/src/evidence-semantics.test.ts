@@ -315,7 +315,7 @@ describe("evidence semantics", () => {
       technicalLabel: "failed",
     });
     expect(describeReviewStatus("zh-CN", "awaiting-audit")).toMatchObject({
-      title: "等待安全审计",
+      title: "等待发布审计",
     });
   });
 
@@ -352,7 +352,7 @@ describe("evidence semantics", () => {
 
   it("turns recorded limitations into reviewer-facing explanations", () => {
     expect(describeLimitation("zh-CN", "Audit has not passed.")).toEqual({
-      title: "安全审计尚未通过",
+      title: "发布审计尚未通过",
       description: "发布仍被审计结果阻塞；请先处理审计场景中的失败项。",
       technicalLabel: "Audit has not passed.",
     });

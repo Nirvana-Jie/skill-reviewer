@@ -39,7 +39,7 @@ section 写 `N/A — focused review of <scope>`。文件路径、字段名、标
 <逐文件审查 SKILL.md / references/ / scripts/ / assets/ / evals/。>
 
 ## 验证证据
-- 级别：`not-run` | `inconclusive` | `behavior-verified` | `regression-verified`
+- 级别：<只填写 SKILL.md 定义的一个验证级别标识；该标识全文仅出现一次，且不得出现其他级别标识>
 - 对象：<路径与 digest，或“未记录”>
 - 静态检查：<命令、结果、artifact，或“未运行”>
 - 运行：<case 与配置，或“无”>

@@ -4,7 +4,6 @@ export type DashboardCanvasView = "evidence" | "execution" | "diff" | "action";
 export type DashboardDiffLayout = "split" | "unified";
 
 export interface DashboardViewState {
-  runId: string | null;
   split: DashboardSplit;
   caseStatus: CaseStatusFilter;
   query: string;
@@ -17,7 +16,6 @@ export interface DashboardViewState {
 }
 
 export const defaultDashboardViewState: DashboardViewState = {
-  runId: null,
   split: "all",
   caseStatus: "all",
   query: "",
@@ -61,10 +59,11 @@ function booleanValue(value: string | null): boolean {
   return value === "1" || value === "true";
 }
 
-export function readDashboardViewState(search: string): DashboardViewState {
-  const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
+export function readDashboardViewState(fragment: string): DashboardViewState {
+  const params = new URLSearchParams(
+    fragment.startsWith("#") ? fragment.slice(1) : fragment,
+  );
   return {
-    runId: boundedValue(params.get("run"), 320),
     split: enumValue(params.get("split"), splitValues, "all"),
     caseStatus: enumValue(
       params.get("caseStatus"),
@@ -86,10 +85,11 @@ export function dashboardViewUrl(
   sourceUrl: string,
 ): URL {
   const url = new URL(sourceUrl);
-  const params = url.searchParams;
+  const params = new URLSearchParams(
+    url.hash.startsWith("#") ? url.hash.slice(1) : url.hash,
+  );
 
   for (const key of [
-    "run",
     "split",
     "caseStatus",
     "q",
@@ -103,7 +103,6 @@ export function dashboardViewUrl(
     params.delete(key);
   }
 
-  if (state.runId) params.set("run", state.runId);
   if (state.split !== "all") params.set("split", state.split);
   if (state.caseStatus !== "all") params.set("caseStatus", state.caseStatus);
   if (state.query) params.set("q", state.query);
@@ -113,7 +112,25 @@ export function dashboardViewUrl(
   if (state.diffLayout !== "split") params.set("layout", state.diffLayout);
   if (state.wrapLines) params.set("wrap", "1");
   if (state.focusMode) params.set("focus", "1");
+  url.hash = params.toString();
 
+  return url;
+}
+
+export function dashboardShareUrl(
+  state: DashboardViewState,
+  sourceUrl: string,
+): URL {
+  const url = dashboardViewUrl(state, sourceUrl);
+  const params = new URLSearchParams(
+    url.hash.startsWith("#") ? url.hash.slice(1) : url.hash,
+  );
+  // A copied review reference is descriptive, not an execution capability.
+  // Keep the selected view but never place the process-lifetime token or a
+  // legacy bridge address on the clipboard.
+  params.delete("session");
+  params.delete("bridge");
+  url.hash = params.toString();
   return url;
 }
 

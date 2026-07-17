@@ -11,6 +11,34 @@ declared objective, and materially improves at least one primary objective.
 Stop after three selection rounds. Run the audit once. Keep the user in
 control of eval changes, permission expansion, and new dependencies.
 
+## Automation and human-intervention policy
+
+The lead Agent owns the complete bounded loop. It must continue without asking
+the user merely because the next phase is called an audit, uses an opaque
+holdout, or consumes a one-shot query. Within the already locked authority it
+automatically performs static checks, real Eval execution, candidate
+generation, deterministic and semantic grading, selection, exact audit-plan
+binding, the one-shot audit, and evidence projection. A failed audit stops and
+reports automatically; it is not sent back to the optimizer.
+
+Ask a person only when the requested next step changes authority or makes a
+normative/external decision:
+
+| Boundary | Why a person is required |
+|---|---|
+| change `evals.json`, cases, assertions, objectives, thresholds, grader, or accepted baseline | changes what “good” means; propose first, apply only after confirmation in a new locked run |
+| widen filesystem/network/secret/credential/production/external-write permissions | expands capability beyond the authority already granted |
+| add an external dependency, material cost, or task scope not present at preflight | creates a new supply-chain, budget, or scope commitment |
+| evidence remains genuinely conflicting or inconclusive after the declared repeat/budget policy | the machine contract cannot determine a defensible result |
+| publish, deploy, overwrite, notify external parties, or otherwise create an irreversible external effect | execution leaves the review workspace and becomes a user-owned release decision |
+
+Do not interrupt for file edits inside a fresh candidate workspace, locked
+case execution, ordinary local commands, graders, or the audit itself when all
+of them remain inside the preflighted execution profile. If the initial plan
+already requests a boundary above, obtain that one scoped decision before
+starting and bind the granted execution-profile digest; do not ask again later
+unless the digest or scope changes.
+
 ## Strict role separation
 
 One agent may perform multiple roles sequentially only when the environment
@@ -98,13 +126,15 @@ enforcement by the trusted lead, not a cryptographic guarantee.
 The state pins authoritative eval/grader identity, accepted baseline, and the
 execution-profile digest, not one candidate `run_id`. Each candidate round and
 the audit use a fresh, empty run workspace and may have a different run ID.
-`evolution-advance` verifies their authority/profile, query authorization, and
+`evolution-advance` verifies their authority/profile, audit query binding, and
 lineage before accepting a transition.
 
-Initialization authorizes the round-1 selection plan. Every later selection
-query and the only audit query must be authorized explicitly before dispatch.
-The exact authorized plan/run/round can be consumed only once. Selection query
-count is limited to three; audit query count is limited to one.
+Initialization binds the round-1 selection plan. Every later selection query
+and the only audit query must also be mechanically bound to the exact locked
+plan before dispatch. `evolution-authorize` is this machine query-binding
+operation; it is not a request for human permission. The exact bound
+plan/run/round can be consumed only once. Selection query count is limited to
+three; audit query count is limited to one.
 
 For each selection round:
 
@@ -114,8 +144,8 @@ For each selection round:
 2. Lead compiles and runs a targeted development screen plus safety gates.
 3. If the screen is viable, lead compiles the full selection split in a fresh
    workspace using the same external execution profile.
-4. For round 1, `evolution-init` already authorized that plan. For later rounds,
-   authorize the exact plan, accepted-baseline parent digest, supporting training traces, and
+4. For round 1, `evolution-init` already binds that plan. For later rounds,
+   bind the exact plan, accepted-baseline parent digest, supporting training traces, and
    continuity before launching selection workers:
 
 ```bash
@@ -162,8 +192,11 @@ ask for an unbounded fourth attempt.
 
 ## One-shot audit
 
-When selection accepts a candidate, state becomes `awaiting-audit`. Compile the
-audit split with an opaque holdout pack outside protected roots, then authorize
+When selection accepts a candidate, state becomes `awaiting-audit` with
+`next_action: prepare_audit`. This is an automatic lead-Agent transition, not a
+human authorization checkpoint. Compile the audit split with an opaque holdout
+pack outside protected roots, verify that the frozen Eval authority, accepted
+baseline, execution-profile digest, and permissions are unchanged, then bind
 the exact plan before dispatch:
 
 ```bash
@@ -171,6 +204,13 @@ python3 scripts/skill_eval_runtime.py evolution-authorize \
   --state <evolution-control-workspace>/evolution-state.json \
   --plan <audit-workspace>/execution-plan.json
 ```
+
+After the command succeeds, state moves to `next_action: run_authorized_audit`;
+dispatch the audit immediately and retain its real Agent
+Trace. If compilation would widen authority, do not call the command: stop at
+the actual permission/Eval/dependency boundary and ask for that specific
+decision instead. Hidden case contents and one-shot accounting do not by
+themselves require user approval.
 
 Run candidate / accepted baseline / without-skill where applicable. The audit
 decision needs hard gates and Pareto non-regression but does not demand another
@@ -207,10 +247,12 @@ missing evidence, or human decision, but attribution never changes the
 acceptance decision. It only explains which owner should inspect the retained
 signals.
 
-Map `next_action` to one available lead-Agent task as defined in
-`action-center.md`. A browser click appends intent to an external task ledger;
-it does not call `evolution-authorize`, advance state, edit a candidate, rerun a
-plan, change Eval assets, or confirm release. Before consuming a task, the lead
+Map `next_action` according to `action-center.md`. Automatic states are shown
+as progress owned by the lead Agent and expose no browser action button; the
+lead Agent continues in the current task. Only a true human boundary may append
+intent to the external task ledger. A browser click never calls
+`evolution-authorize`, advances state, edits a candidate, reruns a plan, changes
+Eval assets, or confirms release. Before consuming a human request, the lead
 Agent must verify its run/Dashboard digest and ensure its
 `expected_next_action` still matches the authoritative state. A mismatch is a
 stale request and must not be executed.

@@ -242,7 +242,7 @@ selection rounds; audit runs once and its failure is terminal.
 Authoritative selection/audit eval assets are immutable during a run; a
 development surrogate may evolve under a separate digest. A proposed
 authoritative eval change requires user confirmation and a new locked run. Each
-later selection query and the one audit require explicit authorization and
+later selection query and the one audit require exact machine query binding and
 lineage. Public audit fixtures are calibration-only; release requires an opaque
 holdout. The optimizer may otherwise restructure the skill package without an
 artificial diff-size limit; architecture rewrites reset continuity from the

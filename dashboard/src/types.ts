@@ -1,5 +1,60 @@
 export type EvidenceStatus = string;
 
+export type AgentTraceEventKind =
+  | "execution_started"
+  | "file_read"
+  | "tool_call"
+  | "command"
+  | "agent_message"
+  | "artifact_written"
+  | "error"
+  | "execution_finished";
+
+export interface AgentTraceEvent {
+  contract: "skill-reviewer.agent-trace-event";
+  event_id: string;
+  run_id: string;
+  case_id: string;
+  arm: string;
+  repeat: number;
+  sequence: number;
+  occurred_at: string;
+  elapsed_ms: number;
+  kind: AgentTraceEventKind;
+  status: string;
+  summary: string;
+  details: Record<string, unknown>;
+  artifact_refs: string[];
+}
+
+export interface AgentExecutionTrace {
+  artifact: string;
+  digest: string;
+  capture_source:
+    | "codex_cli_jsonl"
+    | "harness_native"
+    | "lead_agent_observed";
+  complete: boolean;
+  valid: boolean;
+  event_count: number;
+  started_at: string;
+  finished_at: string;
+  duration_ms: number;
+  events: AgentTraceEvent[];
+}
+
+export interface DashboardExecution {
+  repeat: number;
+  status: string;
+  binding_error_count: number;
+  execution_digest: string | null;
+  artifact_count: number;
+  assertions: { passed: number; total: number };
+  required_pass_rate: number | null;
+  metrics: Record<string, number>;
+  trace: AgentExecutionTrace | null;
+}
+
 export interface DashboardArm {
   id: string;
   complete: boolean;
@@ -11,16 +66,7 @@ export interface DashboardArm {
   metrics: Record<string, number>;
   assertions: { passed: number; total: number };
   artifact_count: number;
-  executions?: Array<{
-    repeat: number;
-    status: string;
-    binding_error_count: number;
-    execution_digest: string | null;
-    artifact_count: number;
-    assertions: { passed: number; total: number };
-    required_pass_rate: number | null;
-    metrics: Record<string, number>;
-  }>;
+  executions?: DashboardExecution[];
 }
 
 export interface DashboardCase {
@@ -45,6 +91,7 @@ export interface DashboardCase {
     reason?: string | null;
     artifact?: string;
     resolved_winners?: string[];
+    source_event_ids?: string[];
   }>;
 }
 
@@ -74,6 +121,7 @@ export interface SpineNode {
   label: string;
   status: EvidenceStatus;
   detail?: string | null;
+  case_id?: string | null;
   split?: DashboardCase["split"];
   arm?: string;
   repeat?: number;
@@ -118,14 +166,33 @@ export type ActionAttributionId =
 
 export type DashboardActionId =
   | "generate_candidate"
+  | "prepare_audit"
   | "rerun_execution"
   | "propose_eval_change"
-  | "authorize_audit"
   | "request_release_confirmation";
+
+export interface DashboardAgentHandoff {
+  contract: "skill-reviewer.dashboard-agent-handoff";
+  mode: "durable_local_ledger";
+  agent_session_state: "unbound";
+  can_wake_agent_session: false;
+  persists_after_agent_session_end: true;
+  task_root: string;
+}
 
 export interface DashboardActionCenter {
   next_action: string;
   owner: "lead_agent";
+  continuation: {
+    mode: "automatic" | "human_required" | "stopped";
+    owner: "lead_agent" | "human";
+    reason:
+      | "within_locked_authority"
+      | "eval_change_confirmation"
+      | "release_confirmation"
+      | "evidence_review"
+      | "terminal_state";
+  };
   acceptance: {
     status: string;
     accepted: boolean | null;
@@ -152,6 +219,8 @@ export interface DashboardActionCenter {
     available: boolean;
     recommended: boolean;
     owner: "lead_agent";
+    execution_mode: "automatic" | "request";
+    requestable: boolean;
     human_confirmation_required: boolean;
     evidence_ids: string[];
   }>;
@@ -160,6 +229,9 @@ export interface DashboardActionCenter {
     audit_endpoint: string;
     evidence_mutation: false;
     eval_mutation: false;
+    handoff_mode: "durable_local_ledger";
+    can_wake_agent_session: false;
+    persists_after_agent_session_end: true;
   };
 }
 
@@ -174,7 +246,9 @@ export interface DashboardActionTask {
   action_id: DashboardActionId;
   owner: "lead_agent";
   requested_by: "human_reviewer";
-  status: "requested";
+  status: "awaiting_agent";
+  delivery_mode: "durable_local_ledger";
+  agent_session_id: null;
   human_confirmation_required: boolean;
   evidence_ids: string[];
   idempotency_key: string;
@@ -188,7 +262,53 @@ export interface DashboardActionTaskLog {
   owner: "lead_agent";
   evidence_mutation: false;
   eval_mutation: false;
+  current_dashboard_digest: string;
+  handoff: DashboardAgentHandoff;
   tasks: DashboardActionTask[];
+}
+
+export interface DashboardReviewOutline {
+  contract: "skill-reviewer.dashboard-review";
+  decision: {
+    status: "ready" | "blocked" | "inconclusive";
+    reason:
+      | "release_conditions_met"
+      | "release_gate_failed"
+      | "scenario_failed"
+      | "candidate_acceptance_failed"
+      | "audit_required"
+      | "evidence_incomplete";
+    release_eligible: boolean;
+    blocking_scenario_count: number;
+    blocking_gate_count: number;
+  };
+  blockers: Array<{
+    id: string;
+    kind: "scenario" | "criterion";
+    case_id: string | null;
+    status: EvidenceStatus;
+    gate_ids: string[];
+    failed_check_ids: string[];
+    missing_artifact_ids: string[];
+    source_evidence_ids: string[];
+    criterion_ids: Array<"hard_gates" | "pareto" | "material_improvement">;
+    evidence_ids: string[];
+    attribution: ActionAttributionId | null;
+    next_action: string;
+  }>;
+  safeguards: {
+    passed_gate_ids: string[];
+    passed_case_ids: string[];
+  };
+  scenarios: Array<{
+    case_id: string;
+    status: EvidenceStatus;
+    gate_ids: string[];
+    check_ids: string[];
+    artifact_ids: string[];
+  }>;
+  next_action: string;
+  attribution: ActionAttributionId | null;
 }
 
 export interface DashboardDiff {
@@ -289,6 +409,7 @@ export interface DashboardData {
     rejected_candidates: Array<Record<string, unknown>>;
   };
   action_center: DashboardActionCenter;
+  review: DashboardReviewOutline;
   cases: DashboardCase[];
   diffs: DashboardDiff[];
   iterations: AcceptanceDecision[];

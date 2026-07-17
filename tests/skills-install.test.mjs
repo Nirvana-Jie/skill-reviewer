@@ -27,6 +27,8 @@ const python = process.env.PYTHON ?? "python3";
 
 const REQUIRED_FILES = [
   "SKILL.md",
+  "references/action-center.md",
+  "references/dashboard-ui-bundle.json",
   "references/evolution-workflow.md",
   "references/example-review-output.md",
   "references/executable-evals.md",
@@ -37,9 +39,12 @@ const REQUIRED_FILES = [
   "references/review-rubric.md",
   "references/semantic-grader-contract.md",
   "references/subagent-eval-workflow.md",
+  "scripts/dashboard_bundle.py",
   "scripts/lint_skill_package.py",
+  "scripts/run_codex_eval_executor.py",
   "scripts/run_codex_skill_evals.py",
   "scripts/serve_skill_dashboard.py",
+  "scripts/start_skill_dashboard.py",
   "scripts/skill_eval_runtime.py",
   "scripts/validate_local_snapshot.py",
   "evals/evals.json",
@@ -51,8 +56,6 @@ const REQUIRED_FILES = [
   "evals/fixtures/needs-revision-meeting-note/expected.md",
   "evals/fixtures/not-ready-repo-cleaner/SKILL.md",
   "evals/fixtures/not-ready-repo-cleaner/expected.md",
-  "dashboard/dist/index.html",
-  "dashboard/dist/favicon.svg",
 ];
 
 function run(command, args, cwd) {
@@ -124,6 +127,7 @@ function makeRemoteFixture(root) {
     "build",
     "coverage",
     "node_modules",
+    "output",
   ]);
 
   cpSync(repoRoot, source, {
@@ -248,11 +252,7 @@ describe("skills CLI installation contract", () => {
           "installed eval runtime",
         );
 
-        const assetNames = readdirSync(
-          join(installed, "dashboard", "dist", "assets"),
-        );
-        expect(assetNames.some((name) => name.endsWith(".js"))).toBe(true);
-        expect(assetNames.some((name) => name.endsWith(".css"))).toBe(true);
+        expect(existsSync(join(installed, "dashboard"))).toBe(false);
 
         const workspace = join(root, "workspace");
         mkdirSync(workspace, { recursive: true });
@@ -281,6 +281,31 @@ describe("skills CLI installation contract", () => {
             evidence_read_only: true,
             action_requests_enabled: true,
             run_id: "installed-package-check",
+          }),
+        );
+
+        const launcher = run(
+          python,
+          [
+            join(installed, "scripts", "start_skill_dashboard.py"),
+            "--workspace",
+            workspace,
+            "--serve-existing",
+            "--prepare-only",
+          ],
+          installed,
+        );
+        expectSuccess(launcher, "installed dashboard launcher");
+        expect(JSON.parse(launcher.stdout)).toEqual(
+          expect.objectContaining({
+            ok: true,
+            projected: false,
+            projection_source: "existing_projection",
+            run_id: "installed-package-check",
+            dashboard_hosted: false,
+            control_plane_started: false,
+            evidence_uploaded: false,
+            ui_downloaded: false,
           }),
         );
       } finally {

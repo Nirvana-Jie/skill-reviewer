@@ -1,0 +1,123 @@
+name: Publish Dashboard Bundle
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "dashboard/**"
+      - "skills/skill-reviewer/scripts/dashboard_bundle.py"
+      - "skills/skill-reviewer/references/dashboard-ui-bundle.json"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/publish-dashboard-bundle.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-dashboard-bundle
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and verify content-addressed bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.x"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Enable pnpm through Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test and build the local-only UI
+        run: |
+          pnpm test
+          pnpm dashboard:build
+
+      - name: Create deterministic release archive
+        run: |
+          python3 skills/skill-reviewer/scripts/dashboard_bundle.py package \
+            --ui-dir dashboard/dist \
+            --output-dir .dashboard-release \
+            --manifest-output .dashboard-release/generated-manifest.json
+
+      - name: Verify committed digest anchor and safe extraction
+        run: |
+          cmp skills/skill-reviewer/references/dashboard-ui-bundle.json \
+            .dashboard-release/generated-manifest.json
+          archive="$(find .dashboard-release -maxdepth 1 -type f -name 'dashboard-ui-*.zip' -print -quit)"
+          test -n "$archive"
+          python3 skills/skill-reviewer/scripts/dashboard_bundle.py verify \
+            --manifest skills/skill-reviewer/references/dashboard-ui-bundle.json \
+            --archive "$archive" \
+            --output-dir .dashboard-release/verified
+          test -f .dashboard-release/verified/index.html
+          test ! -e .dashboard-release/verified/dashboard-data.json
+          rm -rf .dashboard-release/verified
+
+      - name: Retain only the immutable release archive
+        run: rm .dashboard-release/generated-manifest.json
+
+      - name: Transfer bundle to isolated publish job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dashboard-ui-release
+          path: .dashboard-release/dashboard-ui-*.zip
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish:
+    name: Publish immutable GitHub Release asset
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dashboard-ui-release
+          path: .dashboard-release
+
+      - name: Publish without overwriting an existing digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          archive="$(find .dashboard-release -maxdepth 1 -type f -name 'dashboard-ui-*.zip' -print -quit)"
+          test -n "$archive"
+          gh release view dashboard-ui-assets >/dev/null 2>&1 || \
+            gh release create dashboard-ui-assets \
+              --title "Skill Reviewer Dashboard UI assets" \
+              --notes "Content-addressed, local-only Dashboard UI bundles. No evidence data is included."
+          asset_name="$(basename "$archive")"
+          existing="$(gh release view dashboard-ui-assets --json assets \
+            --jq ".assets[] | select(.name == \"$asset_name\") | .name")"
+          if [ -n "$existing" ]; then
+            mkdir existing-asset
+            gh release download dashboard-ui-assets \
+              --pattern "$asset_name" \
+              --dir existing-asset
+            cmp "$archive" "existing-asset/$asset_name"
+          else
+            gh release upload dashboard-ui-assets "$archive"
+          fi

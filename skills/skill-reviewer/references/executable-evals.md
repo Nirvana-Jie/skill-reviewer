@@ -85,12 +85,18 @@ effects remain denied for every case.
 
 ## Splits and information boundaries
 
-- `development` is visible to the optimizer and may be used for targeted fast
-  screening.
-- `selection` decides whether a candidate may advance. It may be run after the
-  development screen but must not be rewritten to fit a candidate output.
-- `audit` is withheld from optimizer feedback, runs once after selection
-  acceptance, and is never fed back into another optimization round.
+The three splits are sequential evaluation roles, not three names for the same
+test set. Dashboard copy calls them **Development validation**, **Candidate
+selection**, and **Release audit**:
+
+| Split | Question it answers | Execution policy | What may reach the optimizer | Exit condition |
+|---|---|---|---|---|
+| `development` | What is wrong, and what should the next candidate change? | May run a targeted subset for fast diagnosis. | Prompts, retained traces, typed failures, and other development evidence. | Produces diagnostic input only; it cannot accept a candidate or authorize release. |
+| `selection` | Is this candidate demonstrably better than the accepted old Skill? | Run the complete frozen split against `old_skill`; require every hard gate, Pareto non-regression, and a material primary improvement. Up to three candidate rounds. | Only the declared, retained selection result needed for the bounded next round; the split cannot be rewritten to fit a candidate. | Pass advances to the one-shot audit. Failure/no-change/inconclusive advances to another candidate within budget, then stops. |
+| `audit` | Does the selected candidate generalize on evidence that did not train the optimizer? | Run the complete split once after selection. A release-grade run uses an external opaque holdout. | Nothing. Audit cases, observations, and failures never return to candidate generation. | Pass makes behavioral evidence release-eligible; fail or inconclusive is terminal. Final external release still requires a person. |
+
+`All cases` in the Dashboard is only a cross-stage view filter. It is not a
+fourth split and does not create another decision.
 
 These are information-flow roles, not a claim that files committed in a public
 skill package are secret. A genuinely hidden audit must declare
@@ -120,6 +126,13 @@ and run workspace. Its normalized digest enters the run ID, plan, run lock,
 assignments, executor response, evidence, and evolution state. Changing it
 creates a different evidence cell. Worker-supplied identity or build metadata
 is not accepted as evidence.
+
+For the bundled local Codex CLI executor, use `target: "codex-cli"`,
+`harness: "codex-exec-jsonl"`, `isolation: "local-unattested"`, and declare
+`jsonl-agent-events`. If the lead passes `--full-access`, the profile must also
+declare `danger-full-access`. This intentionally weaker isolation label is part
+of the evidence cell: a real JSONL behavior Trace does not prove network denial
+or host-level filesystem confinement.
 
 Compile exactly one split for the current stage into a new or empty workspace
 that does not overlap either the candidate or accepted baseline package:
@@ -276,10 +289,18 @@ judgments plus the exact binding projected by the lead:
     "inputs": ["outputs/response.md"],
     "artifacts": {
       "with_skill": [
-        {"repeat": 1, "digests": {"outputs/response.md": "<sha256>"}}
+        {
+          "repeat": 1,
+          "digests": {"outputs/response.md": "<sha256>"},
+          "trace_event_ids": {"outputs/response.md": ["event-0004-…"]}
+        }
       ],
       "old_skill": [
-        {"repeat": 1, "digests": {"outputs/response.md": "<sha256>"}}
+        {
+          "repeat": 1,
+          "digests": {"outputs/response.md": "<sha256>"},
+          "trace_event_ids": {"outputs/response.md": ["event-0004-…"]}
+        }
       ]
     }
   },
@@ -302,13 +323,83 @@ Each worker gets exactly one writable repeat root and writes:
 
 ```text
 cases/<case-id>/<arm>/repeat-<N>/
+├── agent-trace.jsonl
+├── codex-events.jsonl           # local Codex: observable source events, reasoning redacted
+├── codex-stderr.log             # local Codex: only when CLI diagnostics exist
 ├── execution.json
 ├── outputs/
 │   └── response.md
 └── events.jsonl                 # only when an assertion declares it
 ```
 
-`execution.json` has this minimum shape:
+`agent-trace.jsonl` is the real Agent execution record. Each line is one
+observable event with a contiguous sequence number and bound run/case/arm/repeat
+identity. Supported event kinds are `execution_started`, `file_read`,
+`tool_call`, `command`, `agent_message`, `artifact_written`, `error`, and
+`execution_finished`. Events may retain observable arguments, results, exit
+codes, stdout/stderr excerpts, paths, digests, and durations. They must never
+contain chain-of-thought or private-reasoning fields.
+
+The auditable unit is one `case × arm × repeat × Eval worker` cell:
+
+- the lead Agent compiles, locks, and dispatches the cell; its orchestration is
+  retained in the plan, assignment, run lock, and task ledger, not mixed into
+  the evaluated behavior;
+- the Eval worker is the native subagent, local Codex Agent, or other executor
+  bound by the execution profile. For `with_skill`, its Trace includes the
+  observable work performed while following the frozen candidate Skill; for
+  `old_skill`, it follows only the frozen accepted baseline;
+- every repeat has its own directory, Trace digest, execution digest, timing,
+  artifacts, and check observations. A worker may execute several assignments,
+  but those assignments never share or append to the same Trace;
+- multiple observable interaction turns inside one assignment stay in that
+  assignment's ordered event stream. They are not extra repeats. A new Skill
+  evolution round always creates a new immutable run/workspace and run ID, so
+  its Case matrix and Trace digests never overwrite the prior round;
+- if the evaluated Skill launches another Agent, child events may appear only
+  when the harness associates them with the parent cell and the locked profile
+  declares `nested-agent-events`. Without that capture, the parent Trace must
+  not invent a child timeline or support claims that depend on unseen child
+  behavior.
+
+When the Agent framework does not expose a native trace adapter, the lead logs
+the same observable events explicitly:
+
+```bash
+python3 scripts/skill_eval_runtime.py trace-event \
+  --workspace <workspace> \
+  --assignment <workspace>/assignments/<case>/<arm>/repeat-1.json \
+  --kind command \
+  --summary "Validated the generated response" \
+  --details-json '{"argv":["test","-s","outputs/response.md"],"exit_code":0}'
+
+python3 scripts/skill_eval_runtime.py finalize-execution \
+  --workspace <workspace> \
+  --assignment <workspace>/assignments/<case>/<arm>/repeat-1.json \
+  --status completed
+```
+
+The packaged Codex adapter can create both artifacts directly from one locked
+assignment:
+
+```bash
+python3 scripts/run_codex_eval_executor.py \
+  --workspace <workspace> \
+  --assignment <workspace>/assignments/<case>/<arm>/repeat-1.json \
+  --full-access
+```
+
+It invokes `codex exec --json --ephemeral --ignore-user-config
+--skip-git-repo-check` with approval policy `never`, isolates model-visible
+ambient Skills, binds the final visible message to `outputs/response.md` when
+declared, and maps only observable JSONL events into the Trace. The skip flag is
+required because repeat roots are intentionally isolated from the subject Git
+repository. Private reasoning is discarded before source-event retention. The
+source-byte digest is retained alongside the redacted observable stream without
+exposing chain-of-thought.
+
+`finalize-execution` appends output provenance, closes the Trace, and writes
+`execution.json`. Its bound shape includes:
 
 ```json
 {
@@ -325,6 +416,16 @@ cases/<case-id>/<arm>/repeat-<N>/
   "metrics": {},
   "artifact_digests": {
     "outputs/response.md": "<sha256>"
+  },
+  "trace": {
+    "artifact": "agent-trace.jsonl",
+    "digest": "<sha256>",
+    "capture_source": "harness_native",
+    "complete": true,
+    "event_count": 8,
+    "started_at": "2026-07-16T12:00:00.000Z",
+    "finished_at": "2026-07-16T12:00:04.240Z",
+    "duration_ms": 4240
   }
 }
 ```
@@ -334,8 +435,9 @@ and artifact-digest mismatches. Forbidden actions or external side effects in
 either candidate or baseline make the evidence `inconclusive`.
 
 The worker must not add self-reported identity/build fields or infer the overall
-verdict. A lead agent records a timeout or worker failure as a non-completed
-status and keeps partial artifacts.
+verdict. `capture_source` says how observable events were collected; it is not
+a claim about model identity. A lead agent records a timeout or worker failure
+as a non-completed status, closes the Trace, and keeps partial artifacts.
 
 ## Grade and project
 
@@ -355,6 +457,13 @@ python3 scripts/skill_eval_runtime.py project-dashboard \
   --workspace <workspace> \
   --state <evolution-control-workspace>/evolution-state.json \
   --output <workspace>/dashboard-data.json
+
+python3 scripts/start_skill_dashboard.py \
+  --workspace <workspace> \
+  --state <evolution-control-workspace>/evolution-state.json \
+  --task-root <external-action-task-directory> \
+  --user-approved-control-plane \
+  --open
 ```
 
 `decide` accepts only the canonical evidence path in the run workspace and
@@ -365,6 +474,17 @@ evidence, so editing either evidence or decision JSON cannot authorize release.
 The commands compile, grade, decide, and project. They do not spawn agents,
 modify the candidate skill, apply a patch, change evals, or approve a release.
 Those responsibilities stay with the lead agent and user.
+
+The launcher is invoked only after the user explicitly accepts the optional
+control plane. It anonymously downloads the archive pinned by
+`dashboard-ui-bundle.json`, verifies the archive and extracted-tree SHA-256
+values, and serves the temporary UI plus evidence from one loopback origin. It
+sends no GitHub credential, run id, prompt, Trace, or artifact during download;
+GitHub Pages is not used. Browser API reads require the same loopback origin,
+safe Fetch Metadata, and the process-lifetime fragment capability promoted to a
+request header. Normal shutdown deletes the temporary UI. `--prepare-only`
+performs the projection check without downloading UI, while `--ui-dir` is an
+explicit trusted local/offline override.
 
 `--state` is optional for a single run and required to show cross-run evolution
 query counts, active authorization, lineage, rejected candidates, and
@@ -392,11 +512,22 @@ clients, and a route digest collision blocks the swap.
 The read model also projects `run.manifest` and, for every case arm, an
 `executions` array derived from retained repeat records. Each entry contains the
 repeat number, completion status, binding-error count, execution digest,
-assertion pass/total counts, required pass rate, objective metrics, and artifact
-count. The Dashboard may call an execution trace fully bound only when every arm
-contains exactly repeats `1..N`, every execution is completed without binding
-errors and has a valid SHA-256 digest, the plan and execution profile are locked,
-and downstream assertion or artifact evidence exists. Failed assertions are a
-real outcome and do not by themselves weaken trace binding; missing or malformed
-execution evidence does. The UI must keep that distinction visible and must not
-substitute inferred chain-of-thought for observable records.
+assertion pass/total counts, required pass rate, objective metrics, artifact
+count, Trace descriptor, and bounded event list. Opaque holdouts keep event
+identity/timing/kind/status while hiding summaries, details, and artifact paths.
+
+The Dashboard's **Agent Trace** view starts with an Eval Case run index and then
+uses a repeat-by-arm matrix. Every matrix cell is one retained execution; the
+candidate and baseline columns make the comparison explicit, while each row is
+an independent repeat of the same locked case rather than an evolution round.
+Selecting a cell opens its literal event timeline, outputs, deterministic
+checks, and Judge links. The existing review/evidence view remains the graded
+release-decision chain; it must not be relabelled as an Agent Trace.
+The Dashboard may call a Trace fully bound only when every arm contains exactly
+repeats `1..N`, every execution and Trace is finalized without binding errors,
+both digests validate, the event sequence is contiguous and bounded by start/end
+events, and each graded output cites an `artifact_written` event. Failed
+assertions are a real outcome and do not weaken Trace binding. A missing Trace
+must remain a visible empty matrix cell labelled **not captured**; the UI must
+never substitute a neighboring repeat, synthesize one from execution status,
+or expose inferred chain-of-thought.
