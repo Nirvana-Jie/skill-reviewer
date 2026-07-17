@@ -179,6 +179,19 @@ focused branch, execute only when evals or effect claims are in scope. An
 explicit “static only”, “do not run evals”, or “do not start subagents” request
 wins and yields `not-run`.
 
+Resolve the runtime stage before compiling a workspace or dispatching a worker:
+
+- With an accepted `old_skill` path and digest, compile the complete
+  `selection` split against that frozen baseline.
+- Without an accepted baseline, run only bounded `development` diagnosis
+  against `without_skill`; it cannot authorize release or support an
+  improvement claim.
+- Resolve an explicit static-only, no-eval, or no-subagent request at the lead
+  boundary. Do not create an Eval workspace or worker merely to test that no
+  worker should be created.
+- A case that claims artifact-backed verification must assert retained
+  execution/evidence artifacts. Response keywords alone are insufficient.
+
 Deterministic assertions run first. `semantic_pair` may supplement them through
 two anonymized, A/B-order-swapped judgments under a frozen rubric and grader
 contract. The lead binds the mapped judgment to the run, case, rubric, and all
@@ -218,9 +231,9 @@ Missing evals never lower a normal review score. But when runtime verification
 was requested, a failed declared check, missing paired evidence, or false
 verification claim is a Critical Issue.
 
-The Dashboard is an optional human-review control plane, not a prerequisite for
-executing evals. Resolve the control-plane preference once per run before any UI
-download:
+The Dashboard is an optional human-review control plane, never a prerequisite
+for a locked Eval. Resolve the control-plane preference once per run before any
+UI download:
 
 - An explicit request to open, show, or use the Dashboard is already an
   affirmative answer; start it after compile without asking again.
@@ -239,141 +252,33 @@ Use this concise question:
 > 是否需要打开临时本地 Dashboard 控制面进行人工 Review？它会匿名下载经摘要校验的静态 UI，停止后自动删除；评测数据始终留在本机。
 
 Use `打开控制面（推荐）` and `不打开` as the two choices. Only an explicit
-yes authorizes the download and local server. If accepted, the lead Agent
-starts exactly one evidence-bound session for the run; never let an Eval worker
-start a server or create one server per arm/repeat. The same entry point can
-open a completed run later:
+yes authorizes the verified temporary UI download and local loopback server.
+Read `references/action-center.md` completely before launching or consuming a
+Dashboard handoff; it is the authority for consent, lifecycle, capability,
+same-origin, Action Center, and recovery behavior.
 
-```bash
-python3 scripts/start_skill_dashboard.py \
-  --workspace <workspace> \
-  --state <evolution-control-workspace>/evolution-state.json \
-  --task-root <external-action-task-directory> \
-  --user-approved-control-plane \
-  --open
-```
+Start at most one foreground Dashboard session per run through
+`scripts/start_skill_dashboard.py`. It presents retained evidence but never
+executes a worker, mutates Eval authority, confirms release, or wakes an Agent.
+A browser action only appends an external local handoff; the receiving lead must
+revalidate its run, Dashboard digest, evidence references, and `next_action`.
 
 The consent flag is a hard launcher gate, not a substitute for consent. Pass it
 only after an affirmative answer in the current request or structured question;
 without it the launcher exits before any UI download or server startup.
 
-This is the only user-facing control-plane entry point. It verifies and
-projects the locked plan, anonymously downloads the content-addressed UI bundle
-declared by `references/dashboard-ui-bundle.json`, checks both archive and
-extracted-tree SHA-256 values, safely extracts it under the operating system's
-private temporary directory, and serves UI plus evidence from one loopback
-origin. It sends no GitHub credentials, cookies, run id, prompt, Trace, or
-artifact during download. The browser never connects to GitHub Pages and all
-evidence remains on the machine.
+Every configured `case × arm × repeat` still needs an independent, contiguous,
+digest-bound `agent-trace.jsonl` and `execution.json`. Follow
+`references/executable-evals.md` and `references/subagent-eval-workflow.md` for
+Trace capture and artifact provenance. The Dashboard must show a missing Trace
+as missing; never reconstruct events, mix lead orchestration into a worker
+Trace, expose private reasoning, or use presentation data as grading evidence.
 
-The launcher reprojects retained evidence every 3 seconds, tries ports
-8765–8767 without killing another process, and prints a local URL whose fragment
-contains an unguessable, process-lifetime capability. API requests must be
-same-origin, loopback-hosted, Fetch-Metadata-safe, and carry that capability in
-a request header. After bootstrap the page removes the capability from the
-address bar and copied view/evidence references never include it. All UI and
-evidence responses are `no-store`. The process
-runs in the foreground so the lead Agent can retain it as a managed terminal
-session while dispatching Eval workers. Its first JSON line binds the local
-page, exact run, lead-Agent ownership, verified UI digest, and automatic cleanup
-lifecycle. Stop it after user review; normal interrupt or termination removes
-the temporary UI. A server or download failure does not authorize inventing
-evidence: continue the locked Eval if safe and report that live observability is
-unavailable.
-
-The Dashboard is not connected to the host Agent session. A human-boundary
-button saves an `awaiting_agent` handoff in the local `--task-root`; it does not
-send a prompt, wake the current task, or spawn a new Agent. Tell the user to
-return to the current Agent task after saving, or use “复制给 Agent 的恢复指令”
-in a new task if the original task ended. When receiving that instruction,
-validate the complete task digest chain, current run/Dashboard digest and
-`next_action` before doing work. If the launcher has also exited, restart it
-with the same run and task root to restore the handoff history; never claim a
-local record was delivered or completed without real retained execution
-evidence.
-
-Use `--port 0` when no stable port is required, `--refresh-seconds 0` for a
-static projection, and `--serve-existing` only for a read-only projection that
-must not be regenerated. `--prepare-only` validates the projection without
-downloading the UI. `--ui-dir <trusted-dashboard-dist>` is an explicit
-developer/offline override; it is neither downloaded nor deleted. The lower
-level server and bundle modules are internal CI/debugging surfaces, not extra
-product entry points.
-
-The Dashboard evidence plane is a presentation of retained evidence, not a new
-source of truth. Its default view must use the projected `review` model and read
-in human decision order: release conclusion → independent blocking scenario →
-failed requirement → failed candidate observation → source artifact. Keep the
-complete `spine` behind a secondary audit archive; a reviewer must not have to
-open every evidence node to understand the decision. For evolution runs,
-`--state` projects query budgets, lineage,
-rejected candidates, continuity, the exact `next_action`, candidate
-acceptability, deterministic failure attribution, and available action requests
-are projected as well. Read `references/action-center.md` completely before
-serving or acting on the Dashboard's Next steps view.
-
-Projection must keep two concepts separate. The review/evidence view explains
-the release conclusion and its graded evidence. The **Agent Trace** view shows
-only the literal, append-only events captured while an Agent executed one Eval
-case: file reads, tool calls, commands and exit codes, observable messages,
-errors, and produced artifacts. Start with an Eval Case run index, then show a
-repeat-by-arm execution matrix; selecting one cell opens its event timeline and
-linked checks/Judge evidence. A repeat is an independent execution of the same
-locked case, not an evolution round. Multiple visible turns within one worker
-assignment stay in that cell's ordered Trace; each evolution round starts a new
-immutable run/workspace and preserves prior-run Traces. Never synthesize an Agent Trace from an
-`execution.json` status summary. If `agent-trace.jsonl` is missing or invalid,
-show **Trace not captured** in that exact matrix cell and make the execution
-incomplete.
-
-Every configured arm/repeat must therefore retain a digest-bound,
-`execution_started`/`execution_finished`-bounded `agent-trace.jsonl`. Use
-`run_codex_eval_executor.py` for local Codex CLI JSONL capture, or use
-`skill_eval_runtime.py trace-event` from the lead/harness for each observable
-action and `finalize-execution` to append output provenance and write the bound
-`execution.json`. A framework-native adapter may emit the same contract
-directly. Deterministic assertions cite the `artifact_written` event IDs for
-the artifacts they read; semantic judgment bindings cite those same event IDs.
-Do not record or display hidden chain-of-thought, private reasoning, or invented
-events. Claim a fully bound Trace only when the manifest, plan lock, execution
-profile, exact repeats, execution digest, Trace digest, contiguous event stream,
-and artifact provenance all bind. Do not merge the lead Agent's orchestration
-with the Eval worker's behavior. When a conclusion depends on an internally
-spawned child Agent, missing child-event capture is an explicit coverage gap,
-not permission to summarize the presumed child run.
-
-The Next steps view must distinguish automatic continuation from a real human
-boundary. Candidate generation, locked selection, exact audit-plan binding,
-and the one-shot audit are automatic lead-Agent work with no request button.
-Human buttons only append bounded digest-chained handoffs outside evidence; they
-never execute, confirm release, or edit evidence/`evals.json`. The lead Agent
-revalidates run, Dashboard digest, evidence, and `next_action` before consuming
-a human handoff. Eval actions are proposals; applying one needs user confirmation
-and a new locked run.
-
-Do not claim a Dashboard button sends a prompt to an Agent. In automatic states
-the current lead Agent continues and the page only observes refreshed evidence.
-At a human boundary, a click appends an `awaiting_agent` local handoff and emits
-one `dashboard_agent_handoff_saved` launcher event. That event is an audit log,
-not delivery or a wake-up signal. Ask the user to copy the generated recovery
-instructions into the current Agent task; if that task has ended, paste them
-into a new Agent task. The receiving Agent revalidates run id, Dashboard digest,
-`next_action`, and evidence ids before work. The browser never executes a worker.
-
-Projection also creates digest-bound `dashboard-diffs/*.json` sidecars for bounded text
-previews; the server validates each sidecar SHA-256 over the response bytes,
-and applies its 512 KiB per-side cap to parsed UTF-8 text rather than escaped
-JSON size. Binary or oversized files stay metadata-only. This presentation
-budget must never become a candidate acceptance or diff-size gate.
-Live reprojection is generation-atomic: a new read model becomes visible only
-after every referenced sidecar validates, while content-addressed prior routes
-remain available for in-flight views.
-
-**Completion criterion:** plan, eval/grader authority, assignments, skill
-snapshots, and input digests are locked; every configured arm/repeat has a
-run/case/arm/repeat-bound real Agent Trace and an artifact-digest-bound execution record; the
-verification level follows from graded artifacts; missing, stale, timed-out,
-mismatched, drifted, unsafe, or conflicting evidence is
+**Completion criterion:** a `not-run` branch creates no Eval workspace or worker
+and binds the static sources used for its review. An attempted Eval binds its
+plan, eval/grader authority, assignments, snapshots, inputs, Traces, executions,
+and artifacts, and derives the verification level from graded evidence. Missing,
+stale, unsafe, conflicting, or unbound evidence in an attempted run is
 `inconclusive`, never silently passing.
 
 ### 5. Evolve only on explicit request
