@@ -101,8 +101,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--user-approved-control-plane",
         action="store_true",
         help=(
-            "Assert that the user explicitly accepted this temporary local "
-            "control-plane session. Required unless --prepare-only is used."
+            "Assert that the current request or a structured consent question "
+            "explicitly authorized this temporary local control-plane session. "
+            "Required unless --prepare-only is used."
         ),
     )
     args = parser.parse_args(argv)
@@ -117,8 +118,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     if not args.prepare_only and not args.user_approved_control_plane:
         parser.error(
             "starting the optional Dashboard requires explicit user approval; "
-            "ask once, then pass --user-approved-control-plane only after an "
-            "affirmative answer"
+            "use an existing explicit Dashboard request or ask once with a "
+            "standalone structured question, then pass "
+            "--user-approved-control-plane only after an affirmative answer"
         )
     return args
 

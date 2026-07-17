@@ -14,12 +14,13 @@ The Action Center has two planes:
 
 The React control plane runs only on the user's loopback interface. The
 installed Skill contains a small content-addressed manifest and launcher, not
-the React source or build. After explicit user consent, the launcher anonymously
-downloads the pinned GitHub Release archive, verifies both archive and extracted
-tree digests, safely extracts it under a private OS temporary directory, and
-serves UI, immutable read model, digest-bound sidecars, and bounded action-task
-gateway from one origin. No credential, run id, evidence, or prompt is sent to
-the archive host, and GitHub Pages is not used.
+the React source or build. An explicit Dashboard request or an affirmative
+structured consent answer authorizes the launcher to anonymously download the
+pinned GitHub Release archive. It verifies both archive and extracted-tree
+digests, safely extracts it under a private OS temporary directory, and serves
+UI, immutable read model, digest-bound sidecars, and bounded action-task gateway
+from one origin. No credential, run id, evidence, or prompt is sent to the
+archive host, and GitHub Pages is not used.
 
 The local service must reject a non-loopback Host, a mismatched Origin,
 cross-site Fetch Metadata, and a missing or stale process-lifetime capability.
@@ -34,13 +35,16 @@ The control plane is optional. One interactive Eval run owns at most one
 Dashboard session:
 
 1. The lead Agent compiles and locks the run before any worker executes.
-2. The lead Agent asks the user whether to open the temporary local control
-   plane. Only an explicit yes authorizes downloading executable UI assets.
+2. The lead Agent resolves consent once. A current-request instruction to open
+   the Dashboard is already consent; an explicit refusal skips it. Otherwise an
+   interactive host uses a standalone structured question with `打开控制面（推荐）`
+   and `不打开`, then waits. The question must not be embedded in a progress
+   update, and silence must not be converted into either answer.
 3. The lead Agent starts `start_skill_dashboard.py` with
    `--user-approved-control-plane` as a managed foreground process. The flag is
-   only a record of the affirmative answer; without it, the launcher exits
-   before download. It projects the initial read model, materializes the
-   digest-pinned UI, binds one loopback origin, and prints a
+   only a record of consent from the current request or structured answer;
+   without it, the launcher exits before download. It projects the initial read
+   model, materializes the digest-pinned UI, binds one loopback origin, and prints a
    `skill-reviewer.dashboard-session` record.
 4. The launcher opens a local URL. Its fragment contains only an unguessable
    process-lifetime capability; the page reads run identity from the
@@ -53,11 +57,12 @@ Dashboard session:
 7. Stopping the launcher closes the service, invalidates the capability, and
    deletes the temporary UI. No remote service can recover local evidence.
 
-A no, no answer, headless environment, or download failure skips only the
-control plane; it does not cancel a safe locked Eval. Report the observability
-gap rather than inventing evidence. `--prepare-only` validates projection
-without a UI download. `--ui-dir` is an explicit trusted local/offline override
-and is not deleted by the launcher.
+An explicit no, a non-interactive/headless environment, task termination before
+consent, or download failure produces no control plane; it does not invalidate
+retained Eval evidence. Silence is absence of authority, not a recorded refusal.
+Report the observability gap rather than inventing evidence. `--prepare-only`
+validates projection without a UI download. `--ui-dir` is an explicit trusted
+local/offline override and is not deleted by the launcher.
 
 Do not create one server per case, arm, repeat, or worker. Those are evidence
 cells under one run-level control plane. For a new immutable run or evolution
