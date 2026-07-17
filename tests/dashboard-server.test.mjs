@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const server = join(
@@ -462,8 +462,12 @@ describe("serve_skill_dashboard.py", () => {
       expect(create.status).toBe(201);
       expect(create.headers.get("access-control-allow-origin")).toBeNull();
       const created = await create.json();
-      expect(stderr).toContain('"event": "dashboard_agent_handoff_saved"');
-      expect(stderr).toContain('"action_id": "request_release_confirmation"');
+      await vi.waitFor(() => {
+        expect(stderr).toContain('"event": "dashboard_agent_handoff_saved"');
+        expect(stderr).toContain(
+          '"action_id": "request_release_confirmation"',
+        );
+      });
       expect(created).toEqual(
         expect.objectContaining({
           created: true,
