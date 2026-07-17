@@ -219,14 +219,27 @@ was requested, a failed declared check, missing paired evidence, or false
 verification claim is a Critical Issue.
 
 The Dashboard is an optional human-review control plane, not a prerequisite for
-executing evals. After compile (and evolution-state initialization when
-applicable), ask exactly one concise question before downloading UI code:
+executing evals. Resolve the control-plane preference once per run before any UI
+download:
+
+- An explicit request to open, show, or use the Dashboard is already an
+  affirmative answer; start it after compile without asking again.
+- An explicit refusal, static-only request, headless CI, or unavailable browser
+  skips it without weakening the locked Eval.
+- Otherwise, an interactive host MUST use its structured `AskUserQuestion` /
+  `request_user_input` surface as a standalone consent gate. Offer exactly two
+  choices, recommend opening the control plane, and wait for the answer. Do not
+  bury the question in a progress update or continue as though silence were a
+  user decision.
+- If no interactive question surface exists or the task ends before an answer,
+  do not download or start anything. Silence grants no permission.
+
+Use this concise question:
 
 > 是否需要打开临时本地 Dashboard 控制面进行人工 Review？它会匿名下载经摘要校验的静态 UI，停止后自动删除；评测数据始终留在本机。
 
-Only an explicit yes authorizes the download and local server. A no, no answer,
-static-only review, headless CI, or unavailable browser skips the control plane
-without weakening or stopping the locked Eval. If accepted, the lead Agent
+Use `打开控制面（推荐）` and `不打开` as the two choices. Only an explicit
+yes authorizes the download and local server. If accepted, the lead Agent
 starts exactly one evidence-bound session for the run; never let an Eval worker
 start a server or create one server per arm/repeat. The same entry point can
 open a completed run later:
@@ -240,10 +253,9 @@ python3 scripts/start_skill_dashboard.py \
   --open
 ```
 
-The consent flag is a hard launcher gate, not a substitute for asking. Pass it
-only after the affirmative answer; without it the launcher exits before any UI
-download or server startup. Prefer the host Agent's structured question UI when
-available and treat timeout or silence as decline.
+The consent flag is a hard launcher gate, not a substitute for consent. Pass it
+only after an affirmative answer in the current request or structured question;
+without it the launcher exits before any UI download or server startup.
 
 This is the only user-facing control-plane entry point. It verifies and
 projects the locked plan, anonymously downloads the content-addressed UI bundle

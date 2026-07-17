@@ -123,7 +123,7 @@ The Dashboard answers three questions:
 2. **Is the candidate actually better?** Compare candidate and baseline runs, scores, file diffs, and repeats side by side.
 3. **What happens next?** Project the state machine’s `next_action`, responsibility, and human boundary.
 
-It is not the executor and cannot mutate Eval, evidence, or release state. The lead Agent starts it only after explicit user consent:
+It is not the executor and cannot mutate Eval, evidence, or release state. An explicit request to show the Dashboard is consent. Otherwise, an interactive lead Agent asks once with a standalone structured choice and recommends opening it; silence never authorizes a download or server:
 
 ```bash
 python3 skills/skill-reviewer/scripts/start_skill_dashboard.py \

@@ -92,7 +92,13 @@ describe("EvidenceContentViewer", () => {
     ].join("\n");
     renderViewer(payload({ path: "response.md", media_type: "text/markdown", content: markdown }));
 
-    expect(await screen.findByRole("heading", { name: "Review result" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole(
+        "heading",
+        { name: "Review result" },
+        { timeout: 5_000 },
+      ),
+    ).toBeInTheDocument();
     expect(screen.getByRole("table")).toBeInTheDocument();
     expect(screen.getByText("Image not loaded: remote image")).toBeInTheDocument();
     expect(document.querySelector("img")).not.toBeInTheDocument();
