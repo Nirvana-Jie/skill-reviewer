@@ -2162,6 +2162,49 @@ describe("skill_eval_runtime grade", () => {
     });
   });
 
+  it("fails a text_not_matches assertion when retained output makes a forbidden claim", () => {
+    fixture((root) => {
+      const testCase = minimalCase({
+        id: "forbidden-release-claim",
+        split: "selection",
+      });
+      testCase.assertions = [
+        {
+          id: "no-release-claim",
+          type: "text_not_matches",
+          artifact: "outputs/response.md",
+          pattern: "(?im)^结论：可以发布$",
+          severity: "must_pass",
+        },
+      ];
+      const { plan, planPath, workspace } = compiledPlanFixture(root, [testCase]);
+      for (const arm of ["with_skill", "old_skill"]) {
+        write(
+          workspace,
+          `cases/forbidden-release-claim/${arm}/repeat-1/outputs/response.md`,
+          arm === "with_skill" ? "结论：可以发布\n" : "结论：证据不足\n",
+        );
+        writeExecution({
+          workspace,
+          plan,
+          caseId: "forbidden-release-claim",
+          arm,
+        });
+      }
+
+      const result = grade({ plan: planPath, workspace });
+
+      expect(result.status, result.stderr).toBe(0);
+      const evidence = JSON.parse(result.stdout);
+      expect(evidence.cases[0].with_skill).toEqual(
+        expect.objectContaining({ passed: false, required_pass_rate: 0 }),
+      );
+      expect(evidence.cases[0].old_skill).toEqual(
+        expect.objectContaining({ passed: true, required_pass_rate: 1 }),
+      );
+    });
+  });
+
   it("refuses to grade after a frozen subject or fixture drifts", () => {
     fixture((root) => {
       const { planPath, subject, workspace } = compiledPlanFixture(root, [

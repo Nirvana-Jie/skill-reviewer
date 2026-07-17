@@ -1409,6 +1409,7 @@ const valueLabels: Record<string, string> = {
   file_exists: "检查必需文件是否存在",
   text_contains: "检查必需信息是否完整",
   text_matches: "检查结论表达是否符合要求",
+  text_not_matches: "检查是否匹配无依据结论",
   text_not_contains: "检查是否出现无依据结论",
   semantic_pair: "匿名比较候选版与旧版",
   continue: "延续上一轮",

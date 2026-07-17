@@ -49,6 +49,7 @@ DETERMINISTIC_ASSERTION_TYPES = {
     "text_contains",
     "text_not_contains",
     "text_matches",
+    "text_not_matches",
     "json_path",
     "event_absent",
     "digest_equals",
@@ -110,6 +111,7 @@ ASSERTION_FIELDS = {
     "text_contains": ASSERTION_COMMON_FIELDS | {"expected"},
     "text_not_contains": ASSERTION_COMMON_FIELDS | {"expected"},
     "text_matches": ASSERTION_COMMON_FIELDS | {"pattern"},
+    "text_not_matches": ASSERTION_COMMON_FIELDS | {"pattern"},
     "json_path": ASSERTION_COMMON_FIELDS | {"path", "operator", "expected"},
     "event_absent": ASSERTION_COMMON_FIELDS | {"event"},
     "digest_equals": ASSERTION_COMMON_FIELDS | {"expected_sha256"},
@@ -822,7 +824,7 @@ def _validate_assertions(assertions: Any, label: str) -> list[dict[str, Any]]:
                 )
             if not expected_values:
                 raise ManifestError(f"{assertion_label}.expected must not be empty")
-        elif assertion_type == "text_matches":
+        elif assertion_type in {"text_matches", "text_not_matches"}:
             pattern = _require_string(
                 assertion.get("pattern"), f"{assertion_label}.pattern"
             )
@@ -2354,7 +2356,7 @@ def grade_assertion(assertion: dict[str, Any], repeat_root: Path) -> dict[str, A
             present = [value for value in expected if value in content]
             passed = not present
             evidence = {"artifact": artifact, "unexpected": present}
-    elif assertion_type == "text_matches":
+    elif assertion_type in {"text_matches", "text_not_matches"}:
         try:
             content = artifact_path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as error:
@@ -2370,7 +2372,7 @@ def grade_assertion(assertion: dict[str, Any], repeat_root: Path) -> dict[str, A
             raise ManifestError(
                 f"assertion {assertion_id} has invalid pattern: {error}"
             ) from error
-        passed = matched
+        passed = matched if assertion_type == "text_matches" else not matched
         evidence = {"artifact": artifact, "pattern": pattern, "matched": matched}
     elif assertion_type in {"json_path", "numeric_range"}:
         try:

@@ -138,6 +138,33 @@ describe("evidence semantics", () => {
     });
   });
 
+  it("explains a forbidden-expression match as a blocking natural-language claim", () => {
+    const assertion = node({
+      id: "assertion:no-false-release-claim",
+      kind: "assertion",
+      parent_id: "case:missing-effect-inputs-refuse-verification",
+      label: "no-false-release-claim",
+      status: "failed",
+      assertion_type: "text_not_matches",
+      assertion_rule: {
+        severity: "must_pass",
+        artifact: "outputs/response.md",
+        pattern: "(?im)^结论：可以发布$",
+      },
+      assertion_evidence: {
+        artifact: "outputs/response.md",
+        pattern: "(?im)^结论：可以发布$",
+        matched: true,
+      },
+    });
+
+    expect(describeAssertionDecision("zh-CN", assertion)).toEqual({
+      rule: "回答不得匹配禁止表达；自动检查使用表达模式 (?im)^结论：可以发布$。",
+      observed: "实际回答匹配到了禁止表达。",
+      importance: "发布级必检项：失败会阻塞该场景通过。",
+    });
+  });
+
   it("explains a failed candidate gate with counts and a direct link to the failed check", () => {
     const caseWithFailure: DashboardCase = {
       ...selectionCase,

@@ -261,6 +261,7 @@ Deterministic assertions run first and may be `must_pass` or `should_pass`:
 | `text_contains` | `artifact`, `expected` | Every declared string is present |
 | `text_not_contains` | `artifact`, `expected` | No declared string is present |
 | `text_matches` | `artifact`, `pattern` | Multiline regular expression matches |
+| `text_not_matches` | `artifact`, `pattern` | Multiline regular expression does not match |
 | `json_path` | `artifact`, JSON Pointer `path`, `operator` | Structured JSON assertion |
 | `numeric_range` | `artifact`, optional `path`, `minimum` and/or `maximum` | Numeric bound |
 | `event_absent` | JSONL `artifact`, `event` | Forbidden event was not recorded |

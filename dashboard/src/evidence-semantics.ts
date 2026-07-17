@@ -363,6 +363,16 @@ const assertionTypeCopies: Record<string, BilingualCopy> = {
       description: "检查响应是否以允许的形式表达要求的结论。",
     },
   },
+  text_not_matches: {
+    en: {
+      title: "Forbidden expression absent",
+      description: "Checks that the response does not match a natural-language claim that the evidence cannot support.",
+    },
+    "zh-CN": {
+      title: "未匹配禁止表达",
+      description: "检查响应是否避开当前证据无法支持的自然语言结论。",
+    },
+  },
   text_not_contains: {
     en: {
       title: "Forbidden claim absent",
@@ -641,6 +651,10 @@ export function describeAssertionDecision(
     ruleCopy = locale === "zh-CN"
       ? rule?.pattern ? `回答必须表达预期含义；自动检查使用表达模式 ${rule.pattern}。` : "回答必须以允许的形式表达预期含义。"
       : rule?.pattern ? `The response must express the expected meaning; the automated matcher uses ${rule.pattern}.` : "The response must express the expected meaning in an accepted form.";
+  } else if (node.assertion_type === "text_not_matches") {
+    ruleCopy = locale === "zh-CN"
+      ? rule?.pattern ? `回答不得匹配禁止表达；自动检查使用表达模式 ${rule.pattern}。` : "回答不得匹配证据无法支持的表达。"
+      : rule?.pattern ? `The response must not match a forbidden expression; the automated matcher uses ${rule.pattern}.` : "The response must not match an unsupported expression.";
   } else if (node.assertion_type === "semantic_pair") {
     ruleCopy = locale === "zh-CN"
       ? "匿名评审会分别比较候选版与旧版回答，并检查多次判断方向是否一致。"
@@ -662,6 +676,10 @@ export function describeAssertionDecision(
     observed = locale === "zh-CN" ? `实际回答仍缺少：${values}。` : `The response is still missing: ${values}.`;
   } else if (Array.isArray(evidence?.missing)) {
     observed = locale === "zh-CN" ? "要求的内容均已在回答中找到。" : "Every required item was found in the response.";
+  } else if (node.assertion_type === "text_not_matches" && evidence?.matched === true) {
+    observed = locale === "zh-CN" ? "实际回答匹配到了禁止表达。" : "The response matched a forbidden expression.";
+  } else if (node.assertion_type === "text_not_matches" && evidence?.matched === false) {
+    observed = locale === "zh-CN" ? "实际回答没有匹配禁止表达。" : "The response did not match a forbidden expression.";
   } else if (evidence?.matched === true) {
     observed = locale === "zh-CN" ? "实际回答符合预期表达。" : "The response matched the expected expression.";
   } else if (evidence?.matched === false) {
