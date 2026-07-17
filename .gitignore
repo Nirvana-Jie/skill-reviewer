@@ -8,13 +8,24 @@ __MACOSX/
 .idea/
 node_modules/
 coverage/
+.playwright-cli/
+
+# Local agent and skill-manager state
+/.agent/
+/.agents/
+/skills-lock.json
+
+# Python caches
+__pycache__/
+*.py[cod]
 
 # Secrets
 .env
 .env.*
 !.env.example
 
-# Packaging artifacts — never ship these in a .skill/zip
+# Local packaging and generated UI artifacts. GitHub Actions builds the
+# Dashboard into dashboard/dist and publishes only a digest-pinned Release asset.
 *.zip
 *.skill
 dist/
@@ -23,4 +34,10 @@ build/
 # Local eval workspaces
 .codex-eval-workspace/
 skill-reviewer-workspace/
-node_modules/
+
+# Local research, article-authoring, screenshots, videos, and generated demos.
+# Canonical project documentation belongs in the READMEs or the installable
+# skill package under skills/skill-reviewer/references/.
+/docs/
+/diagrams/
+/output/

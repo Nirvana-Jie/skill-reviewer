@@ -5,6 +5,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+SKILL_ROOT = Path(__file__).resolve().parents[1] / "skills" / "skill-reviewer"
+sys.path.insert(0, str(SKILL_ROOT))
+
 from scripts import run_codex_skill_evals as runner
 from scripts import validate_local_snapshot as validator
 
@@ -249,6 +252,7 @@ class ExistingReviewWorkspaceTests(unittest.TestCase):
             (outputs / "review.md").write_text(SAMPLE_REVIEW, encoding="utf-8")
 
             gradings = runner.materialize_existing_reviews(
+                repo_root=SKILL_ROOT,
                 contract=contract,
                 workspace=workspace,
                 configuration="with_skill",
@@ -305,54 +309,7 @@ class SnapshotValidatorTests(unittest.TestCase):
             contract_path.write_text(
                 json.dumps(
                     {
-                        "schema_version": "skill-reviewer.local-snapshot.v2",
-                        "skill_name": "skill-reviewer",
-                        "common_required_sections": [],
-                        "common_forbidden_actions": [],
-                        "evals": [
-                            {
-                                "id": "demo",
-                                "type": "review-output-snapshot",
-                                "mode": "full_review",
-                                "prompt": "Review this skill.",
-                                "input_fixture": "evals/fixtures/demo/",
-                                "expected": {
-                                    "verdict": ["Ready"],
-                                    "verification_level": ["not-run"],
-                                    "score_ranges": {},
-                                },
-                                "snapshot_artifacts": [],
-                            }
-                        ],
-                    }
-                ),
-                encoding="utf-8",
-            )
-
-            completed = subprocess.run(
-                [sys.executable, "scripts/validate_local_snapshot.py", str(contract_path)],
-                cwd=Path(__file__).resolve().parents[1],
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        payload = json.loads(completed.stdout)
-        self.assertTrue(payload["contract_only"])
-        self.assertFalse(payload["workspace_artifacts_checked"])
-        self.assertFalse(payload["model_output_checked"])
-
-    def test_cli_does_not_mark_model_output_checked_when_workspace_has_no_reviews(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            contract_path = root / "contract.json"
-            workspace = root / "workspace"
-            workspace.mkdir()
-            contract_path.write_text(
-                json.dumps(
-                    {
-                        "schema_version": "skill-reviewer.local-snapshot.v2",
+                        "contract": "skill-reviewer.local-snapshot",
                         "skill_name": "skill-reviewer",
                         "common_required_sections": [],
                         "common_forbidden_actions": [],
@@ -379,7 +336,58 @@ class SnapshotValidatorTests(unittest.TestCase):
             completed = subprocess.run(
                 [
                     sys.executable,
-                    "scripts/validate_local_snapshot.py",
+                    str(SKILL_ROOT / "scripts" / "validate_local_snapshot.py"),
+                    str(contract_path),
+                ],
+                cwd=Path(__file__).resolve().parents[1],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        payload = json.loads(completed.stdout)
+        self.assertTrue(payload["contract_only"])
+        self.assertFalse(payload["workspace_artifacts_checked"])
+        self.assertFalse(payload["model_output_checked"])
+
+    def test_cli_does_not_mark_model_output_checked_when_workspace_has_no_reviews(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            contract_path = root / "contract.json"
+            workspace = root / "workspace"
+            workspace.mkdir()
+            contract_path.write_text(
+                json.dumps(
+                    {
+                        "contract": "skill-reviewer.local-snapshot",
+                        "skill_name": "skill-reviewer",
+                        "common_required_sections": [],
+                        "common_forbidden_actions": [],
+                        "evals": [
+                            {
+                                "id": "demo",
+                                "type": "review-output-snapshot",
+                                "mode": "full_review",
+                                "prompt": "Review this skill.",
+                                "input_fixture": "evals/fixtures/demo/",
+                                "expected": {
+                                    "verdict": ["Ready"],
+                                    "verification_level": ["not-run"],
+                                    "score_ranges": {},
+                                },
+                                "snapshot_artifacts": [],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SKILL_ROOT / "scripts" / "validate_local_snapshot.py"),
                     str(contract_path),
                     str(workspace),
                 ],

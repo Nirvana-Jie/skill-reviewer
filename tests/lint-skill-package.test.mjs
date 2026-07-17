@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const linter = join(repoRoot, "scripts", "lint_skill_package.py");
+const skillRoot = join(repoRoot, "skills", "skill-reviewer");
+const linter = join(skillRoot, "scripts", "lint_skill_package.py");
 const python = process.env.PYTHON ?? "python3";
 
 function write(root, relative, content) {
@@ -38,7 +39,112 @@ function fixture(callback) {
   }
 }
 
+function executableManifest(skillName, evals) {
+  return {
+    contract: "skill-reviewer.evals",
+    skill_name: skillName,
+    defaults: {
+      permissions: { network: "deny", writable_roots: ["outputs"] },
+      repeats: { deterministic: 1, stochastic: 3 },
+      evolution: { max_rounds: 3 },
+      case_timeout_seconds: 300,
+    },
+    evals,
+  };
+}
+
+function evalCase(overrides = {}) {
+  return {
+    id: "one",
+    purpose: "Exercise the skill behavior.",
+    split: "selection",
+    prompt: "Review it.",
+    determinism: "deterministic",
+    files: [],
+    assertions: [
+      {
+        id: "response-exists",
+        type: "file_exists",
+        artifact: "outputs/response.md",
+        severity: "must_pass",
+      },
+    ],
+    objectives: [
+      {
+        id: "quality",
+        metric: "required_pass_rate",
+        direction: "maximize",
+        min_material_delta: 0.1,
+        non_regression_tolerance: 0,
+      },
+    ],
+    ...overrides,
+  };
+}
+
 describe("lint_skill_package.py", () => {
+  it("binds a nested install-ready Dashboard bundle into the package digest", () => {
+    fixture((root) => {
+      write(
+        root,
+        "SKILL.md",
+        `---
+name: demo-skill
+description: Review demo inputs when the user requests a demo review.
+---
+
+# Demo
+
+Use the install-ready \`dashboard/dist/\` presentation.
+`,
+      );
+      write(root, "dashboard/dist/index.html", "<title>first</title>\n");
+
+      const first = run(root);
+      write(root, "dashboard/dist/index.html", "<title>second</title>\n");
+      const second = run(root);
+
+      expect(first.status).toBe(0);
+      expect(first.report.subject.files_scanned).toBe(2);
+      expect(second.report.subject.digest).not.toBe(first.report.subject.digest);
+    });
+  });
+
+  it("fails when SKILL.md references missing bundled resources", () => {
+    fixture((root) => {
+      write(
+        root,
+        "SKILL.md",
+        `---
+name: demo-skill
+description: Review demo inputs when the user requests a demo review.
+---
+
+# Demo
+
+## Source-of-truth map
+
+- \`references/rules.md\` — review authority.
+- \`scripts/check.py\` — deterministic package check.
+- \`dashboard/dist/\` — installed presentation surface.
+`,
+      );
+
+      const { status, report } = run(root);
+
+      expect(status).toBe(1);
+      expect(
+        report.findings
+          .filter((finding) => finding.rule_id === "resource.missing-target")
+          .map((finding) => finding.message),
+      ).toEqual([
+        "referenced package resource does not exist: dashboard/dist/",
+        "referenced package resource does not exist: references/rules.md",
+        "referenced package resource does not exist: scripts/check.py",
+      ]);
+    });
+  });
+
   it("accepts a structurally valid skill and resolves its resource graph", () => {
     fixture((root) => {
       write(
@@ -261,20 +367,24 @@ Use the \`evals/\` cases.
       write(
         root,
         "evals/evals.json",
-        JSON.stringify({
-          skill_name: "eval-skill",
-          evals: [
-            { id: 1, prompt: "one", expected_output: "one", files: [] },
-            { id: 1, prompt: "two", expected_output: "two", files: [] },
-          ],
-        }),
+        JSON.stringify(
+          executableManifest("eval-skill", [
+            evalCase({ id: "duplicate" }),
+            evalCase({ id: "duplicate" }),
+          ]),
+        ),
       );
 
       const { status, report } = run(root);
 
       expect(status).toBe(1);
-      expect(report.findings.map((finding) => finding.rule_id)).toContain(
-        "eval.duplicate-id",
+      expect(report.findings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            rule_id: "eval.invalid-manifest",
+            message: expect.stringContaining("duplicate eval id"),
+          }),
+        ]),
       );
     });
   });
@@ -297,30 +407,29 @@ Use the \`evals/\` cases.
       write(
         root,
         "evals/evals.json",
-        JSON.stringify({
-          skill_name: "file-eval-skill",
-          evals: [
-            {
-              id: 1,
-              prompt: "review it",
-              expected_output: "a review",
-              files: ["evals/files/missing.md"],
-            },
-          ],
-        }),
+        JSON.stringify(
+          executableManifest("file-eval-skill", [
+            evalCase({ files: ["evals/files/missing.md"] }),
+          ]),
+        ),
       );
 
       const { status, report } = run(root);
 
       expect(status).toBe(1);
-      expect(report.findings.map((finding) => finding.rule_id)).toContain(
-        "eval.case-file",
+      expect(report.findings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            rule_id: "eval.invalid-manifest",
+            message: expect.stringContaining("does not exist"),
+          }),
+        ]),
       );
     });
   });
 
   it("self-lints the current skill package without structural errors", () => {
-    const { status, report, stderr } = run(repoRoot);
+    const { status, report, stderr } = run(skillRoot);
 
     expect(stderr).toBe("");
     expect(status).toBe(0);

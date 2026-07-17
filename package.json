@@ -1,6 +1,5 @@
 {
   "name": "skill-reviewer",
-  "version": "0.0.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.11.0",
@@ -9,9 +8,37 @@
   },
   "scripts": {
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "typecheck": "tsc -p dashboard/tsconfig.json --noEmit",
+    "dashboard:dev": "vite --config dashboard/vite.config.ts",
+    "dashboard:build": "pnpm typecheck && vite build --config dashboard/vite.config.ts",
+    "dashboard:start": "python3 skills/skill-reviewer/scripts/start_skill_dashboard.py"
+  },
+  "dependencies": {
+    "@pierre/diffs": "1.2.12",
+    "@pierre/theme": "1.1.0",
+    "@pierre/theming": "0.0.2",
+    "@react-symbols/icons": "1.4.1",
+    "@shikijs/core": "4.3.1",
+    "@shikijs/engine-javascript": "4.3.1",
+    "@shikijs/langs": "4.3.1",
+    "lucide-react": "1.24.0",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "6.9.1",
+    "@testing-library/react": "16.3.2",
+    "@types/node": "26.1.1",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.3",
+    "jsdom": "29.1.1",
+    "skills": "1.5.17",
+    "typescript": "7.0.2",
+    "vite": "8.1.4",
     "vitest": "4.1.10"
   }
 }
