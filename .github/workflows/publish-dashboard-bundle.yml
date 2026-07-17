@@ -80,6 +80,7 @@ jobs:
         with:
           name: dashboard-ui-release
           path: .dashboard-release/dashboard-ui-*.zip
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
