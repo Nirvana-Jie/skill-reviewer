@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App, { EvidenceDashboard } from "./App";
 import DiffViewer from "./DiffViewer";
+import { agentDispatchReceiptFixture } from "./test-fixtures";
 import type { DashboardData } from "./types";
 import {
   preferenceStorageKeys,
@@ -22,6 +23,7 @@ import {
   useUiPreferences,
 } from "./ui-preferences";
 import { workspaceLayoutStorageKey } from "./workspace-layout";
+import { validateAndMigrateDashboardData } from "./dashboard-schema";
 
 const {
   workerProviderSpy,
@@ -80,7 +82,7 @@ function renderWithPreferences(node: ReactNode) {
 function traceFixture(arm: string, repeat: number) {
   const base = {
     contract: "skill-reviewer.agent-trace-event" as const,
-    run_id: "run-a324c00268e0228b50e3",
+    run_id: "run-product-test",
     case_id: "selection-quality",
     arm,
     repeat,
@@ -132,6 +134,15 @@ function traceFixture(arm: string, repeat: number) {
       },
     ],
   };
+}
+
+function dispatchFixture(arm: string, repeat: number) {
+  return agentDispatchReceiptFixture({
+    digest: String(repeat + 6).repeat(64),
+    dispatch_id: `dispatch-${arm}-${repeat}`,
+    worker_id: `worker-${arm}-${repeat}`,
+    batch_id: `batch-selection-quality-${repeat}`,
+  });
 }
 
 function WorkerPoolThemeHarness() {
@@ -236,7 +247,7 @@ const data: DashboardData = {
     candidate_lineage: [
       {
         round: 1,
-        run_id: "run-product-test",
+        run_id: "run-product-test-round-1",
         parent_digest: "b".repeat(64),
         candidate_digest: "a".repeat(64),
         change: { added: ["references/new.md"], removed: [], modified: ["SKILL.md"] },
@@ -244,6 +255,17 @@ const data: DashboardData = {
         continuity: "continue",
         continuity_epoch: 1,
         training_trace_ids: ["development-trace-1"],
+      },
+      {
+        round: 2,
+        run_id: "run-product-test",
+        parent_digest: "b".repeat(64),
+        candidate_digest: "a".repeat(64),
+        change: { added: [], removed: [], modified: ["SKILL.md"] },
+        change_digest: "f".repeat(64),
+        continuity: "continue",
+        continuity_epoch: 1,
+        training_trace_ids: ["selection-trace-2"],
       },
     ],
     rejected_candidates: [{ round: 1, status: "no-change" }],
@@ -449,6 +471,7 @@ const data: DashboardData = {
             assertions: { passed: 1, total: 1 },
             required_pass_rate: 1,
             metrics: {},
+            dispatch: dispatchFixture("with_skill", repeat),
             trace: traceFixture("with_skill", repeat),
           })),
         },
@@ -472,6 +495,7 @@ const data: DashboardData = {
             assertions: { passed: 1, total: 1 },
             required_pass_rate: 1,
             metrics: {},
+            dispatch: dispatchFixture("old_skill", repeat),
             trace: traceFixture("old_skill", repeat),
           })),
         },
@@ -575,6 +599,176 @@ const data: DashboardData = {
 };
 
 describe("EvidenceDashboard", () => {
+  it("shows an actionable compatibility page for an incomplete projection", async () => {
+    const incompatible = structuredClone(data) as DashboardData & {
+      action_center: Partial<DashboardData["action_center"]>;
+    };
+    Reflect.deleteProperty(incompatible.action_center, "continuation");
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          contract: "skill-reviewer.dashboard-session",
+          run_id: "run-product-test",
+          session_transport: "fragment-to-header",
+          session_header: "X-Skill-Reviewer-Session",
+          evidence_read_only: true,
+          eval_mutation: false,
+          action_requests_enabled: true,
+          data_endpoint: "/dashboard-data.json",
+          action_request_endpoint: "/dashboard-action-requests",
+          action_audit_endpoint: "/dashboard-action-requests.json",
+          agent_handoff: actionHandoff,
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => incompatible,
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithPreferences(<App />);
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Dashboard data is incompatible",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Regenerate dashboard-data.json with the current skill-reviewer runtime, then refresh this page.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/action_center\.continuation/)).toBeInTheDocument();
+  });
+
+  it("rejects malformed nested evidence instead of handing it to React", async () => {
+    const incompatible = structuredClone(data) as unknown as Record<string, unknown>;
+    const review = incompatible.review as Record<string, unknown>;
+    review.blockers = [{}];
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          contract: "skill-reviewer.dashboard-session",
+          run_id: "run-product-test",
+          session_transport: "fragment-to-header",
+          session_header: "X-Skill-Reviewer-Session",
+          evidence_read_only: true,
+          eval_mutation: false,
+          action_requests_enabled: true,
+          data_endpoint: "/dashboard-data.json",
+          action_request_endpoint: "/dashboard-action-requests",
+          action_audit_endpoint: "/dashboard-action-requests.json",
+          agent_handoff: actionHandoff,
+        }),
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => incompatible });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithPreferences(<App />);
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Dashboard data is incompatible",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/review\.blockers\[0\]\.id/)).toBeInTheDocument();
+  });
+
+  it("rejects fractional schema versions instead of silently relabeling them", async () => {
+    const incompatible = { ...structuredClone(data), schema_version: 1.5 };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          contract: "skill-reviewer.dashboard-session",
+          run_id: "run-product-test",
+          session_transport: "fragment-to-header",
+          session_header: "X-Skill-Reviewer-Session",
+          evidence_read_only: true,
+          eval_mutation: false,
+          action_requests_enabled: true,
+          data_endpoint: "/dashboard-data.json",
+          action_request_endpoint: "/dashboard-action-requests",
+          action_audit_endpoint: "/dashboard-action-requests.json",
+          agent_handoff: actionHandoff,
+        }),
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => incompatible });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithPreferences(<App />);
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Dashboard data is incompatible",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/expected an integer version/)).toBeInTheDocument();
+  });
+
+  it("validates declared fields inside assertion contracts", () => {
+    const incompatible = structuredClone(data);
+    incompatible.spine.push({
+      id: "assertion:malformed",
+      kind: "assertion",
+      parent_id: null,
+      label: "malformed assertion",
+      status: "failed",
+      assertion_rule: {
+        artifact: {} as unknown as string,
+      },
+    });
+
+    expect(() => validateAndMigrateDashboardData(incompatible)).toThrow(
+      /spine\[\d+\]\.assertion_rule\.artifact/,
+    );
+  });
+
+  it("rejects identity, ordering, and timing contradictions in valid Traces", () => {
+    expect(() => validateAndMigrateDashboardData(structuredClone(data))).not.toThrow();
+
+    const wrongArm = structuredClone(data);
+    wrongArm.cases[0]!.arms[0]!.executions![0]!.trace!.events[1]!.arm =
+      "old_skill";
+    expect(() => validateAndMigrateDashboardData(wrongArm)).toThrow(
+      /events\[1\]\.arm: must match its arm/,
+    );
+
+    const brokenSequence = structuredClone(data);
+    brokenSequence.cases[0]!.arms[0]!.executions![0]!.trace!.events[1]!.sequence =
+      3;
+    expect(() => validateAndMigrateDashboardData(brokenSequence)).toThrow(
+      /events\[1\]\.sequence: must be contiguous/,
+    );
+
+    const nonMonotonicElapsed = structuredClone(data);
+    nonMonotonicElapsed.cases[0]!.arms[0]!.executions![0]!.trace!.events[1]!.elapsed_ms =
+      10;
+    nonMonotonicElapsed.cases[0]!.arms[0]!.executions![0]!.trace!.events[2]!.elapsed_ms =
+      5;
+    expect(() => validateAndMigrateDashboardData(nonMonotonicElapsed)).toThrow(
+      /events\[2\]\.elapsed_ms: must be monotonic/,
+    );
+
+    const duplicateEventId = structuredClone(data);
+    duplicateEventId.cases[0]!.arms[0]!.executions![0]!.trace!.events[1]!.event_id =
+      duplicateEventId.cases[0]!.arms[0]!.executions![0]!.trace!.events[0]!.event_id;
+    expect(() => validateAndMigrateDashboardData(duplicateEventId)).toThrow(
+      /events\[1\]\.event_id: expected a unique event id/,
+    );
+
+    const mismatchedDuration = structuredClone(data);
+    mismatchedDuration.cases[0]!.arms[0]!.executions![0]!.trace!.duration_ms = 21;
+    expect(() => validateAndMigrateDashboardData(mismatchedDuration)).toThrow(
+      /duration_ms: must match the final event/,
+    );
+  });
+
   it("keeps the last verified projection visible when a refresh fails", async () => {
     const fetchMock = vi
       .fn()
@@ -627,7 +821,7 @@ describe("EvidenceDashboard", () => {
     );
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
     expect(screen.getByText("Stale")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "Next steps" }));
+    fireEvent.click(screen.getByRole("button", { name: "Review next steps" }));
     expect(
       screen.getAllByText("The local Dashboard session has ended").length,
     ).toBeGreaterThan(0);
@@ -714,6 +908,144 @@ describe("EvidenceDashboard", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("does not use success semantics when evidence is incomplete without known blockers", () => {
+    const incompleteData = structuredClone(data);
+    incompleteData.review.decision = {
+      status: "inconclusive",
+      reason: "evidence_incomplete",
+      release_eligible: false,
+      blocking_scenario_count: 0,
+      blocking_gate_count: 0,
+    };
+    incompleteData.review.blockers = [];
+    incompleteData.summary.case_count = 1;
+    incompleteData.summary.candidate_passed = 1;
+    incompleteData.summary.candidate_failed = 0;
+    incompleteData.summary.hard_gates_passed = 0;
+    incompleteData.summary.hard_gates_total = 0;
+
+    const { container } = renderWithPreferences(
+      <EvidenceDashboard data={incompleteData} connectionState="live" />,
+    );
+
+    const evidenceGap = screen.getByRole("status", {
+      name: "No known blocker was found, but release evidence is incomplete",
+    });
+    expect(evidenceGap).toHaveClass("tone-warn");
+    expect(evidenceGap).not.toHaveClass("tone-good");
+    expect(evidenceGap).toHaveTextContent("Release is not ready");
+    expect(container.querySelector(".review-no-blockers.tone-good")).toBeNull();
+    expect(screen.getAllByText("Not configured").length).toBeGreaterThan(0);
+    expect(screen.queryByText("0/0")).not.toBeInTheDocument();
+  });
+
+  it("uses the review overview as the single primary decision surface", () => {
+    const { container } = renderWithPreferences(
+      <EvidenceDashboard data={data} connectionState="live" />,
+    );
+
+    expect(
+      screen.queryByRole("region", { name: "Behavioral gate state" }),
+    ).not.toBeInTheDocument();
+    expect(container.querySelectorAll(".review-decision-hero")).toHaveLength(1);
+    expect(container.querySelector(".run-summary")).toBeNull();
+    expect(container.querySelector(".canvas-context span")).toBeNull();
+    expect(
+      screen.queryByRole("complementary", { name: "Evidence details" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("links the decision evidence spine directly to change and execution evidence", () => {
+    renderWithPreferences(
+      <EvidenceDashboard data={data} connectionState="live" />,
+    );
+
+    expect(
+      screen.getByRole("region", { name: "Decision evidence" }),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Review change evidence" }),
+    );
+    expect(screen.getByRole("tab", { name: "Diff (1)" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: "Review overview" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Review execution evidence" }),
+    );
+    expect(screen.getByRole("tab", { name: "Agent trace" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+  });
+
+  it("opens next steps as a review drawer instead of a duplicate workspace tab", () => {
+    renderWithPreferences(
+      <EvidenceDashboard data={data} connectionState="live" />,
+    );
+
+    expect(screen.queryByRole("tab", { name: "Next steps" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Review next steps" }));
+    expect(screen.getByRole("dialog", { name: "Next steps" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Close next steps" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Review overview" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+  });
+
+  it("treats an empty diff as missing change evidence rather than proof of no change", () => {
+    const noDiffData = structuredClone(data);
+    noDiffData.diffs = [];
+    renderWithPreferences(
+      <EvidenceDashboard data={noDiffData} connectionState="live" />,
+    );
+
+    expect(
+      screen.getByRole("tab", { name: "Diff · evidence missing" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("No change evidence captured")).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Review change evidence" }),
+    );
+    expect(
+      screen.getByRole("heading", { name: "No change evidence captured" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "The projection contains no change artifact. This is an evidence gap, not proof that nothing changed.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("removes zero-count stage filters", () => {
+    renderWithPreferences(
+      <EvidenceDashboard data={data} connectionState="live" />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Development validation; 0 cases" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("collapses browsing controls and lifecycle teaching for a single scenario", () => {
+    const singleCaseData = structuredClone(data);
+    singleCaseData.cases = [singleCaseData.cases[0]];
+    singleCaseData.summary.case_count = 1;
+    renderWithPreferences(
+      <EvidenceDashboard data={singleCaseData} connectionState="live" />,
+    );
+
+    expect(screen.queryByRole("searchbox", { name: "Search cases" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Scenario result" })).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("status", { name: "Single scenario · Candidate selection" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Evolution details").closest("details")).not.toHaveAttribute("open");
+  });
+
   it("exposes live release evidence without direct execution controls", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -735,7 +1067,9 @@ describe("EvidenceDashboard", () => {
     expect(screen.getAllByText("run-product-test").length).toBeGreaterThan(0);
     expect(screen.getByText("regression-verified")).toBeInTheDocument();
     expect(screen.getAllByText("public-calibration").length).toBeGreaterThan(0);
-    expect(screen.getByText(/behavioral evidence blocked/)).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Not ready for release" }),
+    ).toBeInTheDocument();
     expect(screen.getAllByText("2 / 3").length).toBeGreaterThan(0);
     expect(screen.getByText(/continuity epoch 1/)).toBeInTheDocument();
     expect(screen.getAllByText("Release quality selection").length).toBeGreaterThan(0);
@@ -754,10 +1088,10 @@ describe("EvidenceDashboard", () => {
       ),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("heading", {
+      screen.queryByRole("heading", {
         name: "What the Agent does automatically",
       }),
-    ).toBeInTheDocument();
+    ).not.toBeInTheDocument();
     expect(
       screen.queryByText(
         "The dashboard does not run an Agent by itself. It creates a bound request that the lead Agent can safely consume.",
@@ -786,12 +1120,11 @@ describe("EvidenceDashboard", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Release quality selection" }),
     );
-    expect(screen.getAllByText("Fully bound").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("6 / 6").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Fully bound")).not.toBeInTheDocument();
     expect(
       screen.getByRole("heading", { name: "Execution matrix" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("Native subagent")).toBeInTheDocument();
+    expect(screen.getByText("Host-observed native subagent")).toBeInTheDocument();
     expect(
       screen.getByText("Lead Agent dispatches; the Eval worker executes"),
     ).toBeInTheDocument();
@@ -810,7 +1143,9 @@ describe("EvidenceDashboard", () => {
         screen.getByRole("region", { name: "Blind semantic judge" }),
       ).getByText(/1 linked Trace events/),
     ).toBeInTheDocument();
-    expect(screen.getByText("Observable execution, not private chain-of-thought")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Observable execution, not private chain-of-thought"),
+    ).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: "Review overview" }));
 
     fireEvent.click(
@@ -903,6 +1238,71 @@ describe("EvidenceDashboard", () => {
     ).toBeGreaterThan(0);
   });
 
+  it("renders completed lifecycle events independently from failed check results", () => {
+    const semanticData = structuredClone(data);
+    const execution = semanticData.cases
+      .find((item) => item.id === "selection-quality")
+      ?.arms.find((arm) => arm.id === "with_skill")
+      ?.executions?.find((item) => item.repeat === 1);
+    const checkEvent = execution?.trace?.events.find(
+      (event) => event.kind === "tool_call",
+    );
+    if (!checkEvent) throw new Error("trace fixture is missing its check event");
+    checkEvent.summary = "Static analysis completed with findings";
+    checkEvent.details = {
+      static_analysis_passed: false,
+      error_count: 4,
+    };
+
+    const { container } = renderWithPreferences(
+      <EvidenceDashboard data={semanticData} connectionState="live" />,
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: "Agent trace" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Release quality selection" }),
+    );
+
+    expect(
+      screen
+        .getByText("Static analysis completed with findings")
+        .closest(".agent-event"),
+    ).toHaveClass("is-bad");
+    expect(
+      screen.getByText("Agent execution finished").closest(".agent-event"),
+    ).toHaveClass("is-neutral");
+    expect(container.querySelectorAll(".agent-event.is-good")).toHaveLength(0);
+  });
+
+  it("puts trace anomalies before execution plumbing", () => {
+    const attentionData = structuredClone(data);
+    const execution = attentionData.cases
+      .find((item) => item.id === "selection-quality")
+      ?.arms.find((arm) => arm.id === "with_skill")
+      ?.executions?.find((item) => item.repeat === 1);
+    if (!execution?.trace) throw new Error("trace fixture is missing");
+    execution.trace.duration_ms = 6000;
+    execution.trace.events[1]!.details = {
+      static_analysis_passed: false,
+      error_count: 4,
+    };
+
+    renderWithPreferences(
+      <EvidenceDashboard data={attentionData} connectionState="live" />,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Agent trace" }));
+
+    const attention = screen.getByRole("region", {
+      name: "Trace attention summary",
+    });
+    expect(within(attention).getByText("Failures")).toBeInTheDocument();
+    expect(within(attention).getByText("Slow executions")).toBeInTheDocument();
+    const matrix = screen.getByRole("heading", { name: "Execution matrix" });
+    expect(
+      attention.compareDocumentPosition(matrix) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   it("shows the locked audit transition as automatic and never creates a browser task", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -928,25 +1328,34 @@ describe("EvidenceDashboard", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     renderWithPreferences(<EvidenceDashboard data={data} connectionState="live" />);
-    fireEvent.click(screen.getByRole("tab", { name: "Next steps" }));
+    fireEvent.click(screen.getByRole("button", { name: "Review next steps" }));
+    const actionDrawer = screen.getByRole("dialog", { name: "Next steps" });
 
     expect(
-      screen.getByRole("heading", { name: "What to do next" }),
+      within(actionDrawer).getByRole("heading", { name: "What to do next" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("Release requirements")).toBeInTheDocument();
-    expect(screen.getAllByText("Hard gates").length).toBeGreaterThan(0);
-    expect(screen.getByText("Pareto admissibility")).toBeInTheDocument();
-    expect(screen.getByText("Material improvement")).toBeInTheDocument();
-    expect(screen.getByText("Who owns the blocker?")).toBeInTheDocument();
-    expect(screen.getAllByText("Prepare and bind the release audit").length).toBeGreaterThan(0);
-    expect(screen.getByText("No human decision required")).toBeInTheDocument();
     expect(
-      screen.getAllByText("The dashboard neither schedules it", {
+      within(actionDrawer).getAllByRole("heading", { name: "Next steps" }),
+    ).toHaveLength(1);
+    expect(within(actionDrawer).getByText("Release requirements")).toBeInTheDocument();
+    expect(within(actionDrawer).getAllByText("Hard gates").length).toBeGreaterThan(0);
+    expect(within(actionDrawer).getByText("Pareto admissibility")).toBeInTheDocument();
+    expect(within(actionDrawer).getByText("Material improvement")).toBeInTheDocument();
+    expect(within(actionDrawer).getByText("Who owns the blocker?")).toBeInTheDocument();
+    expect(within(actionDrawer).getAllByText("Prepare and bind the release audit").length).toBeGreaterThan(0);
+    expect(within(actionDrawer).getByText("No human decision required")).toBeInTheDocument();
+    const supportingSummary = within(actionDrawer).getByText(
+      "Agent handoff · Automation and human boundaries",
+    );
+    expect(supportingSummary.closest("details")).not.toHaveAttribute("open");
+    fireEvent.click(supportingSummary);
+    expect(
+      within(actionDrawer).getAllByText("The dashboard neither schedules it", {
         exact: false,
       }).length,
     ).toBeGreaterThan(0);
-    expect(screen.getByText("Automation and human boundaries")).toBeInTheDocument();
-    await screen.findByText("No local Agent handoff has been saved for this run.");
+    expect(within(actionDrawer).getByText("Automation and human boundaries")).toBeInTheDocument();
+    await within(actionDrawer).findByText("No local Agent handoff has been saved for this run.");
     expect(
       screen.queryByRole("button", { name: "Save local handoff" }),
     ).not.toBeInTheDocument();
@@ -958,14 +1367,14 @@ describe("EvidenceDashboard", () => {
       screen.getByRole("button", { name: "Switch to Simplified Chinese" }),
     );
     expect(screen.getByText("发布条件检查")).toBeInTheDocument();
-    expect(screen.getAllByText("当前建议").length).toBeGreaterThan(0);
-    expect(screen.getByText("由主 Agent 处理")).toBeInTheDocument();
+    expect(screen.queryByText("当前建议")).not.toBeInTheDocument();
+    expect(screen.queryByText("由主 Agent 处理")).not.toBeInTheDocument();
     expect(screen.getByText("无需人工决定")).toBeInTheDocument();
     expect(screen.getByText("自动执行与人工介入边界")).toBeInTheDocument();
     expect(
-      screen.getByText("这项建议来自本次评测已经验证的运行结果。"),
-    ).toBeInTheDocument();
-    expect(screen.getByText("evals.json 保持不可变")).toBeInTheDocument();
+      screen.queryByText("这项建议来自本次评测已经验证的运行结果。"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("evals.json 保持不可变")).not.toBeInTheDocument();
   });
 
   it("explains automatic continuation when the completed stage has no blockers", () => {
@@ -985,9 +1394,14 @@ describe("EvidenceDashboard", () => {
 
     expect(
       screen.getByText(
-        "No blocker remains in this stage. The lead Agent continues to the next locked evaluation stage automatically.",
+        "No known blocker remains, but release evidence is incomplete and release is not ready. The lead Agent continues to the next locked evaluation stage automatically.",
       ),
     ).toBeInTheDocument();
+    expect(
+      screen.getAllByText(
+        "No known blocker was found, but release evidence is incomplete",
+      ),
+    ).not.toHaveLength(0);
   });
 
   it("creates an audited task only after the state reaches a human release boundary", async () => {
@@ -1069,7 +1483,7 @@ describe("EvidenceDashboard", () => {
     renderWithPreferences(
       <EvidenceDashboard data={releaseData} connectionState="live" />,
     );
-    fireEvent.click(screen.getByRole("tab", { name: "Next steps" }));
+    fireEvent.click(screen.getByRole("button", { name: "Review next steps" }));
 
     expect(
       screen.getAllByText("Request release confirmation").length,
@@ -1152,7 +1566,7 @@ describe("EvidenceDashboard", () => {
         actionsEnabled={false}
       />,
     );
-    fireEvent.click(screen.getByRole("tab", { name: "Next steps" }));
+    fireEvent.click(screen.getByRole("button", { name: "Review next steps" }));
 
     expect(
       screen.getAllByText("The local Dashboard session has ended").length,
@@ -1623,6 +2037,9 @@ describe("EvidenceDashboard", () => {
       const railHandle = screen.getByRole("separator", {
         name: "Resize evaluation scenarios",
       });
+      fireEvent.click(
+        screen.getByRole("button", { name: /Complete audit record/ }),
+      );
       const inspectorHandle = screen.getByRole("separator", {
         name: "Resize evidence inspector",
       });
@@ -2168,6 +2585,7 @@ describe("EvidenceDashboard", () => {
           assertions: { passed: 0, total: 1 },
           required_pass_rate: 0,
           metrics: {},
+          dispatch: dispatchFixture("with_skill", 1),
           trace: traceFixture("with_skill", 1),
         },
       ],
@@ -2191,6 +2609,7 @@ describe("EvidenceDashboard", () => {
           assertions: { passed: 0, total: 1 },
           required_pass_rate: 0,
           metrics: {},
+          dispatch: dispatchFixture("old_skill", 1),
           trace: traceFixture("old_skill", 1),
         },
       ],

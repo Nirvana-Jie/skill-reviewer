@@ -141,6 +141,20 @@ describe("workspace pane constraints", () => {
       canvasMinimum: 0,
     });
   });
+
+  it("keeps the reviewed 390, 1024, and 1440 viewport contracts stable", () => {
+    const layoutAt = (width: number) =>
+      calculateWorkspaceLayout({
+        containerWidth: width,
+        viewportWidth: width,
+        expandedCanvas: false,
+        preferences: defaultWorkspacePanePreferences,
+      });
+
+    expect(layoutAt(390).mode).toBe("stacked");
+    expect(layoutAt(1024).mode).toBe("two");
+    expect(layoutAt(1440).mode).toBe("three");
+  });
 });
 
 describe("workspace pane keyboard resizing", () => {

@@ -37,11 +37,7 @@ import {
 } from "react";
 
 import { CommandPalette, type DashboardCommand } from "./CommandPalette";
-import {
-  ActionAuditGuide,
-  ActionCenter,
-  nextActionMessageKey,
-} from "./ActionCenter";
+import { ActionCenter, nextActionMessageKey } from "./ActionCenter";
 import { copyText, downloadDashboardData } from "./dashboard-actions";
 import {
   currentDashboardSource,
@@ -49,12 +45,13 @@ import {
   loadDashboardSession,
 } from "./dashboard-source";
 import {
-  EvalExecutionTraceGuide,
-  EvalExecutionTraceView,
-} from "./EvalExecutionTrace";
+  DashboardCompatibilityError,
+  validateAndMigrateDashboardData,
+} from "./dashboard-schema";
+import { EvalExecutionTraceView } from "./EvalExecutionTrace";
 import { EvidenceNodeIcon } from "./EvidenceNodeIcon";
 import { EvidenceReader } from "./EvidenceReader";
-import { ReviewNavigationGuide, ReviewOverview } from "./ReviewOverview";
+import { ReviewOverview } from "./ReviewOverview";
 import { WorkspacePaneResizeHandle } from "./WorkspacePaneResizeHandle";
 import {
   dashboardShareUrl,
@@ -335,6 +332,8 @@ function caseForEvidenceNode(
 function useDashboardData() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [compatibilityError, setCompatibilityError] =
+    useState<DashboardCompatibilityError | null>(null);
   const [connectionState, setConnectionState] =
     useState<ConnectionState>("connecting");
   const [paused, setPaused] = useState(false);
@@ -380,18 +379,14 @@ function useDashboardData() {
       if (!response.ok) {
         throw new Error(`read model returned ${response.status}`);
       }
-      const next = (await response.json()) as DashboardData;
-      if (next.contract !== "skill-reviewer.dashboard-data") {
-        throw new Error(
-          `unsupported dashboard contract: ${String(next.contract)}`,
-        );
-      }
+      const next = validateAndMigrateDashboardData(await response.json());
       if (session && next.run.id !== session.run_id) {
         throw new Error("dashboard read model does not match the active local session");
       }
       if (!activeRef.current || controller.signal.aborted) return;
       setData(next);
       setError(null);
+      setCompatibilityError(null);
       setConnectionState("live");
       setActionsEnabled(
         source.mode === "configured" ||
@@ -407,8 +402,11 @@ function useDashboardData() {
       ) {
         return;
       }
-      setError(
-        cause instanceof Error ? cause.message : "unable to read dashboard data",
+      const message =
+        cause instanceof Error ? cause.message : "unable to read dashboard data";
+      setError(message);
+      setCompatibilityError(
+        cause instanceof DashboardCompatibilityError ? cause : null,
       );
       setActionsEnabled(false);
       setConnectionState((current) =>
@@ -458,6 +456,7 @@ function useDashboardData() {
     data,
     actionsEnabled,
     error,
+    compatibilityError,
     connectionState,
     paused,
     setPaused,
@@ -521,7 +520,36 @@ function EvaluationStageFilter({
       ) as Record<EvaluationStage, number>,
     [cases],
   );
-  const activeCopy = split === "all" ? null : evaluationStageCopy[split];
+  const visibleStages = evaluationStages.filter((stage) => counts[stage] > 0);
+  const activeCopy =
+    split === "all" || counts[split] === 0
+      ? null
+      : evaluationStageCopy[split];
+
+  useEffect(() => {
+    if (split !== "all" && counts[split] === 0) onChange("all");
+  }, [counts, onChange, split]);
+
+  if (cases.length === 1) {
+    const stage = cases[0].split as EvaluationStage;
+    const copy = evaluationStageCopy[stage];
+    const Icon = copy.icon;
+    return (
+      <div
+        className="single-case-stage"
+        role="status"
+        aria-label={t("singleScenarioStageLabel", {
+          stage: t(splitMessageKeys[stage]),
+        })}
+      >
+        <Icon size={14} aria-hidden="true" />
+        <span>
+          <small>{t("evaluationLifecycle")}</small>
+          <strong>{t(splitMessageKeys[stage])}</strong>
+        </span>
+      </div>
+    );
+  }
 
   return (
     <div className="evaluation-stage-filter">
@@ -547,7 +575,7 @@ function EvaluationStageFilter({
         role="group"
         aria-label={t("evaluationLifecycle")}
       >
-        {evaluationStages.map((stage, index) => {
+        {visibleStages.map((stage, index) => {
           const copy = evaluationStageCopy[stage];
           const Icon = copy.icon;
           return (
@@ -1201,6 +1229,7 @@ export function EvidenceDashboard({
 
   const selected =
     data.spine.find((node) => node.id === selectedId) ?? visibleNodes[0];
+  const inspectorVisible = archiveOpen && Boolean(selected);
   const selectedCase = caseForEvidenceNode(selected, nodesById, data.cases);
   const executionCase =
     selectedCase ?? data.cases.find(isAttentionCase) ?? data.cases[0] ?? null;
@@ -1222,30 +1251,6 @@ export function EvidenceDashboard({
   useEffect(() => {
     if (inspectorBodyRef.current) inspectorBodyRef.current.scrollTop = 0;
   }, [selected?.id]);
-  const failedGateCount = Math.max(
-    0,
-    data.summary.hard_gates_total - data.summary.hard_gates_passed,
-  );
-  const failedCaseCount = Math.max(0, data.summary.candidate_failed);
-  const runTone = data.run.release_eligible
-    ? "good"
-    : failedCaseCount > 0 || failedGateCount > 0
-      ? "bad"
-      : "warn";
-  const releaseMessage = data.run.release_eligible
-    ? t("releaseEligible")
-    : t("releaseBlocked");
-  const releaseDecision = data.run.release_eligible
-    ? t("releaseReady")
-    : t("releaseBlockedTitle");
-  const releaseDecisionSummary = data.run.release_eligible
-    ? t("releaseReadySummary")
-    : failedCaseCount > 0 || failedGateCount > 0
-      ? t("releaseBlockedSummary", {
-          cases: failedCaseCount,
-          gates: failedGateCount,
-        })
-      : t("releaseBlockedGenericSummary");
   const copyEvidenceReference = useCallback(() => {
     if (!selected) return;
     const permalink = dashboardShareUrl(
@@ -1294,6 +1299,7 @@ export function EvidenceDashboard({
     nextActionMessageKey(data.action_center.next_action) ??
       "nextActionReviewEvidence",
   );
+  const reviewSelected = canvasView === "evidence" || canvasView === "action";
 
   const renderEvidenceNode = (
     node: SpineNode,
@@ -1665,55 +1671,11 @@ export function EvidenceDashboard({
         </div>
       )}
 
-      <section
-        className={`run-summary summary-${runTone}`}
-        aria-label={t("behavioralGateState")}
-      >
-        <div className="release-state">
-          <span>{t("releaseState")}</span>
-          <strong>{releaseDecision}</strong>
-          <small>{releaseDecisionSummary}</small>
-        </div>
-        <div className="summary-metrics" role="list" aria-label={t("runSummary")}>
-          <div role="listitem">
-            <span>{t("hardGates")}</span>
-            <strong>
-              {data.summary.hard_gates_passed} / {data.summary.hard_gates_total}
-            </strong>
-          </div>
-          <div role="listitem">
-            <span>{t("casesPassed")}</span>
-            <strong>
-              {data.summary.candidate_passed} / {data.summary.case_count}
-            </strong>
-          </div>
-          <div role="listitem">
-            <span>{t("round")}</span>
-            <strong>
-              {data.summary.current_round ?? "—"} / {data.summary.max_rounds}
-            </strong>
-          </div>
-          <div role="listitem">
-            <span>{t("evidenceScope")}</span>
-            <strong>{localizeValue(locale, data.run.evidence_scope)}</strong>
-          </div>
-        </div>
-        <div className="integrity-mark">
-          {data.run.integrity?.verified ? (
-            <ShieldCheck size={15} />
-          ) : (
-            <CircleAlert size={15} />
-          )}
-          <span>
-            {data.run.integrity?.verified ? t("inputsLocked") : t("integrityPending")}
-            <small>{releaseMessage}</small>
-          </span>
-        </div>
-      </section>
-
       <div
         ref={workspaceLayout.containerRef}
-        className={`workspace-grid layout-${workspaceLayout.layout.mode}`}
+        className={`workspace-grid layout-${workspaceLayout.layout.mode} ${
+          inspectorVisible ? "has-inspector" : "without-inspector"
+        }`}
         data-layout-mode={workspaceLayout.layout.mode}
         style={workspaceLayout.style}
       >
@@ -1733,7 +1695,9 @@ export function EvidenceDashboard({
               split={split}
               onChange={setSplit}
             />
-            <label className="case-search">
+            {data.cases.length > 1 && (
+              <>
+              <label className="case-search">
               <Search size={13} aria-hidden="true" />
               <input
                 ref={caseSearchRef}
@@ -1744,8 +1708,8 @@ export function EvidenceDashboard({
                 onChange={(event) => setCaseQuery(event.target.value)}
               />
               <kbd>/</kbd>
-            </label>
-            <div className="case-status-control">
+              </label>
+              <div className="case-status-control">
               <span>{t("caseStatus")}</span>
               <div
                 className="segmented-control compact-segments"
@@ -1777,14 +1741,16 @@ export function EvidenceDashboard({
                   },
                 )}
               </div>
-            </div>
-            <div className="case-filter-meta" role="status">
+              </div>
+              <div className="case-filter-meta" role="status">
               {t("caseResults", {
                 count: visibleCases.length,
                 total: data.cases.length,
               })}
-            </div>
-            <p className="case-filter-scope">{t("caseFilterScope")}</p>
+              </div>
+              <p className="case-filter-scope">{t("caseFilterScope")}</p>
+              </>
+            )}
           </div>
 
           <div
@@ -1850,7 +1816,11 @@ export function EvidenceDashboard({
             )}
           </div>
 
-          <div className="evolution-summary">
+          <details
+            className="evolution-summary"
+            open={data.cases.length > 1 ? true : undefined}
+          >
+            <summary>{t("evolutionDetails")}</summary>
             <div className="section-label">
               <GitCompareArrows size={13} /> {t("evolution")}
             </div>
@@ -1887,7 +1857,7 @@ export function EvidenceDashboard({
                 </div>
               ))}
             </div>
-          </div>
+          </details>
         </aside>
 
         <WorkspacePaneResizeHandle
@@ -1920,9 +1890,9 @@ export function EvidenceDashboard({
                 role="tab"
                 data-roving-item
                 aria-controls="canvas-panel"
-                aria-selected={canvasView === "evidence"}
-                tabIndex={canvasView === "evidence" ? 0 : -1}
-                className={canvasView === "evidence" ? "is-active" : ""}
+                aria-selected={reviewSelected}
+                tabIndex={reviewSelected ? 0 : -1}
+                className={reviewSelected ? "is-active" : ""}
                 onClick={() => {
                   setArchiveOpen(false);
                   setCanvasView("evidence");
@@ -1957,48 +1927,29 @@ export function EvidenceDashboard({
                 className={canvasView === "diff" ? "is-active" : ""}
                 onClick={() => setCanvasView("diff")}
               >
-                {t("diff")} ({data.diffs.length})
-              </button>
-              <button
-                id="canvas-tab-action"
-                type="button"
-                role="tab"
-                data-roving-item
-                aria-controls="canvas-panel"
-                aria-selected={canvasView === "action"}
-                tabIndex={canvasView === "action" ? 0 : -1}
-                className={canvasView === "action" ? "is-active" : ""}
-                onClick={() => setCanvasView("action")}
-              >
-                {t("actionCenter")}
+                {data.diffs.length > 0
+                  ? `${t("diff")} (${data.diffs.length})`
+                  : t("diffEvidenceMissing")}
               </button>
             </div>
             <div className="canvas-context">
-              <span>
-                {canvasView === "evidence"
-                  ? archiveOpen
+              {(!reviewSelected || archiveOpen) && (
+                <span>
+                  {reviewSelected
                     ? t("displayedEvidenceNodes", {
                         visible: displayedNodes.length,
                         total: visibleNodes.length,
                       })
-                    : data.review.blockers.length > 0
-                      ? t("releaseBlockerCount", {
-                          count: data.review.blockers.length,
-                        })
-                      : t("releaseBlockerNone")
-                  : canvasView === "execution"
+                    : canvasView === "execution"
                     ? executionTrace
                       ? t("executionTraceContext", {
                           observed: executionTrace.capturedTraces,
                           expected: executionTrace.expectedExecutions,
                         })
                       : t("notRecorded")
-                  : canvasView === "diff"
-                    ? t("runtimeFilesChanged", { count: data.diffs.length })
-                    : t("actionCenterContext", {
-                        action: nextActionLabel,
-                      })}
-              </span>
+                    : t("runtimeFilesChanged", { count: data.diffs.length })}
+                </span>
+              )}
               {canvasView === "diff" && data.diffs.length > 0 && (
                 <button
                   type="button"
@@ -2017,19 +1968,11 @@ export function EvidenceDashboard({
             id="canvas-panel"
             className="canvas-panel"
             role="tabpanel"
-            aria-labelledby={`canvas-tab-${canvasView}`}
+            aria-labelledby={
+              reviewSelected ? "canvas-tab-evidence" : `canvas-tab-${canvasView}`
+            }
           >
-          {canvasView === "action" ? (
-            <ActionCenter
-              data={data}
-              interactive={actionsEnabled}
-              connectionState={connectionState}
-              onOpenEvidence={(evidenceId) => {
-                const node = data.spine.find((item) => item.id === evidenceId);
-                if (node) openEvidence(node);
-              }}
-            />
-          ) : canvasView === "execution" && executionTrace ? (
+          {canvasView === "execution" && executionTrace ? (
             <EvalExecutionTraceView
               trace={executionTrace}
               cases={data.cases}
@@ -2048,14 +1991,20 @@ export function EvidenceDashboard({
               <strong>{t("noCasesMatch")}</strong>
               <p>{t("notRecorded")}</p>
             </div>
-          ) : canvasView === "evidence" ? (
-            <ReviewOverview
-              data={data}
-              archiveOpen={archiveOpen}
-              onToggleArchive={() => setArchiveOpen((current) => !current)}
-              onOpenEvidence={openEvidence}
-              onOpenActionCenter={() => setCanvasView("action")}
-            >
+          ) : reviewSelected ? (
+            <>
+              <ReviewOverview
+                data={data}
+                archiveOpen={archiveOpen}
+                onToggleArchive={() => setArchiveOpen((current) => !current)}
+                onOpenEvidence={openEvidence}
+                onOpenDiff={() => setCanvasView("diff")}
+                onOpenTrace={() => {
+                  if (executionCase) setSelectedId(`case:${executionCase.id}`);
+                  setCanvasView("execution");
+                }}
+                onOpenActionCenter={() => setCanvasView("action")}
+              >
             <div className="evidence-stage review-evidence-archive-stage">
               <div className="stage-intro">
                 <div>
@@ -2222,7 +2171,42 @@ export function EvidenceDashboard({
                 })}
               </div>
             </div>
-            </ReviewOverview>
+              </ReviewOverview>
+              {canvasView === "action" && (
+                <div className="action-center-drawer-backdrop">
+                  <aside
+                    className="action-center-drawer"
+                    role="dialog"
+                    aria-label={t("actionCenter")}
+                    aria-modal="true"
+                  >
+                    <header>
+                      <div>
+                        <span className="pane-kicker">{t("recommendedNextStep")}</span>
+                        <h2>{t("actionCenter")}</h2>
+                      </div>
+                      <button
+                        type="button"
+                        className="icon-button"
+                        aria-label={t("closeNextSteps")}
+                        onClick={() => setCanvasView("evidence")}
+                      >
+                        <X size={16} aria-hidden="true" />
+                      </button>
+                    </header>
+                    <ActionCenter
+                      data={data}
+                      interactive={actionsEnabled}
+                      connectionState={connectionState}
+                      onOpenEvidence={(evidenceId) => {
+                        const node = data.spine.find((item) => item.id === evidenceId);
+                        if (node) openEvidence(node);
+                      }}
+                    />
+                  </aside>
+                </div>
+              )}
+            </>
           ) : data.diffs.length ? (
             <Suspense
               fallback={
@@ -2244,80 +2228,32 @@ export function EvidenceDashboard({
           ) : (
             <div className="diff-empty">
               <GitCompareArrows size={24} />
-              <strong>{t("noRuntimeChanges")}</strong>
+              <h2>{t("noRuntimeChanges")}</h2>
               <p>{t("candidateMatchesRuntime")}</p>
             </div>
           )}
           </div>
         </section>
 
-        <WorkspacePaneResizeHandle
-          pane="inspector"
-          value={workspaceLayout.layout.inspectorWidth}
-          range={workspaceLayout.layout.inspectorRange}
-          label={t("resizeInspectorPane")}
-          hint={t("resizePaneHint")}
-          controls="evidence-workspace evidence-inspector"
-          onChange={(width) => workspaceLayout.resizePane("inspector", width)}
-          onReset={() => workspaceLayout.resetPane("inspector")}
-        />
+        {inspectorVisible && (
+          <WorkspacePaneResizeHandle
+            pane="inspector"
+            value={workspaceLayout.layout.inspectorWidth}
+            range={workspaceLayout.layout.inspectorRange}
+            label={t("resizeInspectorPane")}
+            hint={t("resizePaneHint")}
+            controls="evidence-workspace evidence-inspector"
+            onChange={(width) => workspaceLayout.resizePane("inspector", width)}
+            onReset={() => workspaceLayout.resetPane("inspector")}
+          />
+        )}
 
         <aside
           id="evidence-inspector"
           className="inspector pane"
-          aria-label={
-            canvasView === "action"
-              ? t("actionCenter")
-              : canvasView === "execution"
-                ? t("executionTraceInspector")
-                : t("evidenceInspector")
-          }
+          aria-label={t("evidenceInspector")}
+          hidden={!inspectorVisible}
         >
-          {canvasView === "action" ? (
-            <>
-              <div className="pane-heading action-inspector-heading">
-                <div>
-                  <span className="pane-kicker">{t("humanDecisionHandoff")}</span>
-                  <h2>{t("actionCenter")}</h2>
-                </div>
-                <Bot size={17} aria-hidden="true" />
-              </div>
-              <ActionAuditGuide
-                data={data}
-                connectionState={connectionState}
-              />
-            </>
-          ) : canvasView === "execution" && executionTrace ? (
-            <>
-              <div className="pane-heading execution-inspector-heading">
-                <div>
-                  <span className="pane-kicker">{t("actualExecution")}</span>
-                  <h2>{t("executionTraceInspector")}</h2>
-                </div>
-                <Fingerprint size={17} aria-hidden="true" />
-              </div>
-              <EvalExecutionTraceGuide
-                trace={executionTrace}
-                manifest={data.run.manifest}
-                planDigest={data.run.integrity?.plan_digest}
-                executionProfileDigest={data.run.execution_profile?.digest}
-              />
-            </>
-          ) : canvasView === "execution" ? (
-            <p className="empty-note">{t("noCasesMatch")}</p>
-          ) : canvasView === "evidence" && !archiveOpen ? (
-            <>
-              <div className="pane-heading review-inspector-heading">
-                <div>
-                  <span className="pane-kicker">{t("releaseState")}</span>
-                  <h2>{t("recommendedNextStep")}</h2>
-                </div>
-                <FileCheck2 size={17} aria-hidden="true" />
-              </div>
-              <ReviewNavigationGuide data={data} />
-            </>
-          ) : (
-            <>
           <div className="pane-heading">
             <div>
               <span className="pane-kicker">{t("inspector")}</span>
@@ -2674,8 +2610,6 @@ export function EvidenceDashboard({
               <p>{t("noLimitations")}</p>
             )}
           </div>
-            </>
-          )}
         </aside>
       </div>
 
@@ -2764,6 +2698,7 @@ export default function App() {
     data,
     actionsEnabled,
     error,
+    compatibilityError,
     connectionState,
     paused,
     setPaused,
@@ -2784,9 +2719,19 @@ export default function App() {
           {error ? <CircleAlert size={18} /> : "SR"}
         </div>
         <p className="pane-kicker">Skill Reviewer</p>
-        <h1>{error ? t("evidenceUnavailable") : t("connectingToEvidence")}</h1>
+        <h1>
+          {compatibilityError
+            ? t("dashboardDataIncompatible")
+            : error
+              ? t("evidenceUnavailable")
+              : t("connectingToEvidence")}
+        </h1>
         <p>{error ?? t("waitingForData")}</p>
-        {error && <p>{t("retryHelp")}</p>}
+        {compatibilityError ? (
+          <p>{t("dashboardDataRegenerateHelp")}</p>
+        ) : (
+          error && <p>{t("retryHelp")}</p>
+        )}
         {error && (
           <button
             type="button"

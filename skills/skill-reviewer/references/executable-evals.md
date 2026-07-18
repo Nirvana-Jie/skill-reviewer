@@ -324,6 +324,7 @@ Each worker gets exactly one writable repeat root and writes:
 
 ```text
 cases/<case-id>/<arm>/repeat-<N>/
+├── dispatch-receipt.json       # harness/provider-observed worker dispatch
 ├── agent-trace.jsonl
 ├── codex-events.jsonl           # local Codex: observable source events, reasoning redacted
 ├── codex-stderr.log             # local Codex: only when CLI diagnostics exist
@@ -346,6 +347,13 @@ The auditable unit is one `case × arm × repeat × Eval worker` cell:
 - the lead Agent compiles, locks, and dispatches the cell; its orchestration is
   retained in the plan, assignment, run lock, and task ledger, not mixed into
   the evaluated behavior;
+- `dispatch-receipt.json` binds the locked assignment and execution profile to
+  a real provider/harness dispatch ID, worker or thread ID, paired batch ID,
+  and dispatch timestamp. It is trusted harness provenance, not a worker
+  self-report or a cryptographic host attestation;
+- every arm for the same case/repeat must carry one batch ID and a dispatch
+  timestamp within five seconds of its paired arms; otherwise all arms in that
+  pair are incomplete even if each receipt is individually valid;
 - the Eval worker is the native subagent, local Codex Agent, or other executor
   bound by the execution profile. For `with_skill`, its Trace includes the
   observable work performed while following the frozen candidate Skill; for
@@ -367,6 +375,12 @@ When the Agent framework does not expose a native trace adapter, the lead logs
 the same observable events explicitly:
 
 ```bash
+python3 scripts/skill_eval_runtime.py record-dispatch \
+  --workspace <workspace> \
+  --assignment <workspace>/assignments/<case>/<arm>/repeat-1.json \
+  --dispatch-id <real-host-dispatch-id> \
+  --worker-id <real-worker-or-thread-id>
+
 python3 scripts/skill_eval_runtime.py trace-event \
   --workspace <workspace> \
   --assignment <workspace>/assignments/<case>/<arm>/repeat-1.json \
@@ -387,6 +401,16 @@ assignment:
 python3 scripts/run_codex_eval_executor.py \
   --workspace <workspace> \
   --assignment <workspace>/assignments/<case>/<arm>/repeat-1.json \
+  --full-access
+```
+
+For a complete local Codex plan, prefer the paired plan runner. It starts all
+arms in one case/repeat batch before waiting for any arm and grades only after
+every batch finishes:
+
+```bash
+python3 scripts/run_codex_eval_plan.py \
+  --workspace <workspace> \
   --full-access
 ```
 
@@ -411,12 +435,31 @@ exposing chain-of-thought.
   "repeat": 1,
   "assignment_digest": "<sha256-of-assignment>",
   "execution_profile_digest": "<sha256-of-normalized-profile>",
+  "dispatch": {
+    "artifact": "dispatch-receipt.json",
+    "digest": "<sha256>",
+    "provider": "codex-cli",
+    "harness": "codex-exec-jsonl",
+    "observation": "process_spawn",
+    "dispatch_id": "dispatch-…",
+    "worker_id": "pid:12345",
+    "batch_id": "batch-…",
+    "dispatched_at": "2026-07-16T11:59:59.900Z"
+  },
   "status": "completed",
   "forbidden_actions": [],
   "side_effects": [],
   "metrics": {},
   "artifact_digests": {
     "outputs/response.md": "<sha256>"
+  },
+  "source_trace": {
+    "artifact": "codex-events.jsonl",
+    "digest": "<sha256-of-redacted-stream>",
+    "source_stream_digest": "<sha256-of-source-bytes>",
+    "source_event_count": 12,
+    "retained_event_count": 12,
+    "redaction": "private-reasoning-fields-removed"
   },
   "trace": {
     "artifact": "agent-trace.jsonl",
@@ -432,12 +475,17 @@ exposing chain-of-thought.
 ```
 
 The grader rejects stale or edited execution metadata, assignment mismatches,
-and artifact-digest mismatches. Forbidden actions or external side effects in
-either candidate or baseline make the evidence `inconclusive`.
+dispatch-receipt mismatches, Codex source-stream mismatches, and output
+artifact-digest mismatches. Any declared executor profile without a valid,
+profile-matching dispatch receipt is incomplete; the Dashboard must not infer
+executor identity from the profile alone. Forbidden actions or external side
+effects in either candidate or baseline make the evidence `inconclusive`.
 
 The worker must not add self-reported identity/build fields or infer the overall
 verdict. `capture_source` says how observable events were collected; it is not
-a claim about model identity. A lead agent records a timeout or worker failure
+a claim about model identity. The dispatch receipt is a trusted observation by
+the declared harness and still is not cryptographic provider proof. A lead
+agent records a timeout or worker failure
 as a non-completed status, closes the Trace, and keeps partial artifacts.
 
 ## Grade and project
@@ -526,8 +574,11 @@ checks, and Judge links. The existing review/evidence view remains the graded
 release-decision chain; it must not be relabelled as an Agent Trace.
 The Dashboard may call a Trace fully bound only when every arm contains exactly
 repeats `1..N`, every execution and Trace is finalized without binding errors,
-both digests validate, the event sequence is contiguous and bounded by start/end
-events, and each graded output cites an `artifact_written` event. Failed
+the dispatch, execution, and Trace digests validate, the event sequence is
+contiguous and bounded by start/end events, every local Codex source stream
+validates, and each graded output cites an `artifact_written` event. Executor
+labels come from the validated per-cell dispatch receipt, never from the run
+profile alone. Failed
 assertions are a real outcome and do not weaken Trace binding. A missing Trace
 must remain a visible empty matrix cell labelled **not captured**; the UI must
 never substitute a neighboring repeat, synthesize one from execution status,

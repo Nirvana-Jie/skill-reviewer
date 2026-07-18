@@ -31,6 +31,13 @@ const executor = join(
   "scripts",
   "run_codex_eval_executor.py",
 );
+const planExecutor = join(
+  repoRoot,
+  "skills",
+  "skill-reviewer",
+  "scripts",
+  "run_codex_eval_plan.py",
+);
 const python = process.env.PYTHON ?? "python3";
 
 function write(root, relative, content) {
@@ -139,6 +146,7 @@ import json
 import os
 import pathlib
 import sys
+import time
 
 args = sys.argv[1:]
 if args == ["--version"]:
@@ -158,6 +166,19 @@ if args[:2] == ["debug", "prompt-input"]:
 </skills_instructions>"""
     print(json.dumps([{"role": "developer", "content": [{"type": "input_text", "text": text}]}]))
     raise SystemExit(0)
+
+barrier_dir = os.environ.get("FAKE_CODEX_BARRIER_DIR")
+if barrier_dir:
+    barrier = pathlib.Path(barrier_dir)
+    barrier.mkdir(parents=True, exist_ok=True)
+    arm = pathlib.Path.cwd().parent.name
+    (barrier / f"{arm}.started").write_text("started\n", encoding="utf-8")
+    deadline = time.monotonic() + 10
+    while len(list(barrier.glob("*.started"))) < 2 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    if len(list(barrier.glob("*.started"))) < 2:
+        print("paired arms were serialized", file=sys.stderr)
+        raise SystemExit(41)
 
 argv_log = os.environ.get("FAKE_CODEX_ARGV")
 if argv_log:
@@ -235,6 +256,61 @@ function assignment(workspace, arm) {
 }
 
 describe("local Codex eval executor", () => {
+  it("dispatches all locked arms through one paired plan command", () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-codex-plan-"));
+    try {
+      const { workspace } = compileRun({ root });
+      const fakeCodex = makeFakeCodex(root);
+
+      const result = run(
+        python,
+        [
+          planExecutor,
+          "--workspace",
+          workspace,
+          "--codex-bin",
+          fakeCodex,
+          "--full-access",
+        ],
+        { env: { FAKE_CODEX_BARRIER_DIR: join(root, "paired-start-barrier") } },
+      );
+
+      expectSuccess(result, "paired Codex plan execution");
+      const summary = JSON.parse(result.stdout);
+      expect(summary).toEqual(
+        expect.objectContaining({
+          contract: "skill-reviewer.codex-dispatch-summary",
+          status: "completed",
+          execution_count: 2,
+          failed_count: 0,
+        }),
+      );
+      const receipts = ["with_skill", "without_skill"].map((arm) =>
+        JSON.parse(
+          readFileSync(
+            join(
+              workspace,
+              "cases/observable-cli-trace",
+              arm,
+              "repeat-1/dispatch-receipt.json",
+            ),
+            "utf8",
+          ),
+        ),
+      );
+      expect(new Set(receipts.map((receipt) => receipt.batch_id)).size).toBe(1);
+      expect(receipts.every((receipt) => receipt.observation === "process_spawn")).toBe(true);
+      const evidence = JSON.parse(
+        readFileSync(join(workspace, "verification-evidence.json"), "utf8"),
+      );
+      expect(evidence.cases[0].with_skill.passed).toBe(true);
+      expect(evidence.cases[0].without_skill.passed).toBe(true);
+    } finally {
+      makeWritable(root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("isolates ambient skills and retains observable full-access JSONL trace", () => {
     const root = mkdtempSync(join(tmpdir(), "skill-reviewer-codex-executor-"));
     try {
@@ -287,6 +363,19 @@ describe("local Codex eval executor", () => {
           status: "completed",
           forbidden_actions: [],
           side_effects: [],
+          dispatch: expect.objectContaining({
+            artifact: "dispatch-receipt.json",
+            provider: "codex-cli",
+            harness: "codex-exec-jsonl",
+            observation: "process_spawn",
+            worker_id: expect.stringMatching(/^pid:\d+$/),
+          }),
+          source_trace: expect.objectContaining({
+            artifact: "codex-events.jsonl",
+            digest: expect.stringMatching(/^[a-f0-9]{64}$/),
+            source_stream_digest: expect.stringMatching(/^[a-f0-9]{64}$/),
+            redaction: "private-reasoning-fields-removed",
+          }),
           trace: expect.objectContaining({ capture_source: "codex_cli_jsonl", complete: true }),
           metrics: expect.objectContaining({
             full_access_enabled: 1,
@@ -302,6 +391,7 @@ describe("local Codex eval executor", () => {
       const observableWire = readFileSync(join(repeatRoot, "codex-events.jsonl"), "utf8");
       expect(observableWire).toContain('"redacted":true');
       expect(observableWire).not.toContain("PRIVATE_CHAIN_OF_THOUGHT");
+      expect(existsSync(join(repeatRoot, "dispatch-receipt.json"))).toBe(true);
 
       const baseline = run(
         python,
@@ -338,6 +428,52 @@ describe("local Codex eval executor", () => {
         evidence.cases[0].without_skill.passed,
         JSON.stringify(evidence.cases[0].without_skill, null, 2),
       ).toBe(true);
+    } finally {
+      makeWritable(root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("rejects a Codex source event stream edited after finalization", () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-codex-source-trace-"));
+    try {
+      const { workspace } = compileRun({ root });
+      const fakeCodex = makeFakeCodex(root);
+      for (const arm of ["with_skill", "without_skill"]) {
+        const result = run(python, [
+          executor,
+          "--workspace",
+          workspace,
+          "--assignment",
+          assignment(workspace, arm),
+          "--codex-bin",
+          fakeCodex,
+          "--full-access",
+        ]);
+        expectSuccess(result, `${arm} Codex execution`);
+      }
+      const sourcePath = join(
+        workspace,
+        "cases/observable-cli-trace/with_skill/repeat-1/codex-events.jsonl",
+      );
+      writeFileSync(sourcePath, `${readFileSync(sourcePath, "utf8")}{}\n`, "utf8");
+
+      const graded = run(python, [
+        runtime,
+        "grade",
+        "--plan",
+        join(workspace, "execution-plan.json"),
+        "--workspace",
+        workspace,
+      ]);
+
+      expectSuccess(graded, "grade tampered Codex source trace");
+      const evidence = JSON.parse(graded.stdout);
+      expect(evidence.cases[0].with_skill.complete).toBe(false);
+      expect(evidence.cases[0].with_skill.binding_errors.join("\n")).toContain(
+        "source trace digest",
+      );
+      expect(evidence.cases[0].with_skill.repeats[0].source_trace.valid).toBe(false);
     } finally {
       makeWritable(root);
       rmSync(root, { recursive: true, force: true });

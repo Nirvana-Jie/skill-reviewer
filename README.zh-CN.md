@@ -14,7 +14,7 @@
 `skill-reviewer` 解决三件事：
 
 - **Review**：检查触发条件、指令、资源、脚本、安全与可维护性，输出可直接修改的建议。
-- **Verify**：发现合法 `evals/evals.json` 时，使用真实 Agent 成对执行候选版与基线版，并保留 Trace 和产物。
+- **Verify**：编译合法 `evals/evals.json`，通过可用的 native harness 或本地 Codex 成对执行器分发候选版与基线版，并保留调度、Trace、源事件和输出证据。
 - **Evolve**：只有用户要求时，才进入最多三轮的有界改进；Eval 在运行中保持不可变，最终发布始终由人确认。
 
 ## 快速开始
@@ -67,6 +67,8 @@ flowchart LR
 2. **候选与基线严格分离**：相同 Case、隔离工作区、独立 Trace，避免自证循环。
 3. **证据不足就是不确定**：不会把缺失基线、缺失产物或多次执行分歧包装成“已提升”。
 4. **无效 Manifest 阻塞发布**：存在但不合法的 Eval 不会被静默跳过。
+5. **Manifest 不是 worker 凭据**：`evals.json` 只声明执行单元；只有保留的
+   provider/harness 调度凭据，才能在对应信任边界内证明该单元确实被启动。
 
 ### 三个评测阶段
 
@@ -93,16 +95,18 @@ flowchart LR
 
 ## 真实 Eval 与持续改进
 
-严格 Manifest 位于 `<skill>/evals/evals.json`。主 Agent 负责分发锁定的
-assignment，执行器每次只运行一个 Case、一个实验臂和一次 repeat：
+严格 Manifest 位于 `<skill>/evals/evals.json`。仅完成编译不会启动 Agent；
+主 Agent 必须使用 native host surface，或显式调用 provider-specific 的本地
+计划执行器。每个 executor 仍然只接收一个 Case、一个实验臂和一次 repeat：
 
 ```mermaid
 flowchart TB
     M["冻结 Eval、候选与基线"] --> C["编译执行计划"]
-    C --> W["候选版 / with_skill"]
-    C --> O["基线版 / old_skill"]
-    W --> T1["Agent Trace + 产物"]
-    O --> T2["Agent Trace + 产物"]
+    C --> D["Host 或本地成对分发"]
+    D --> W["候选版 / with_skill"]
+    D --> O["基线版 / old_skill"]
+    W --> T1["调度凭据 + Agent Trace + 产物"]
+    O --> T2["调度凭据 + Agent Trace + 产物"]
     T1 --> G["断言与 Judge"]
     T2 --> G
     G --> P{"接受候选？"}
@@ -113,6 +117,19 @@ flowchart TB
 
 真实 Trace 只记录可观察行为：Agent 消息、文件读取、工具调用、命令、退出码、错误、耗时和产物引用；不会记录或展示模型私有思维链。
 
+对于已编译的 `codex-cli` profile，可以用一个命令机械地成对分发全部
+实验臂，并在所有 case/repeat batch 完成后统一评分：
+
+```bash
+python3 skills/skill-reviewer/scripts/run_codex_eval_plan.py \
+  --workspace /tmp/skill-reviewer-run \
+  --full-access
+```
+
+Native subAgent 仍由 host 调度；harness 必须在行为事件之前记录真实的 host
+dispatch ID 和 worker/thread ID。该凭据可以防止 profile-only 的界面误判，
+但在没有 provider 签名 API 时仍属于可信 harness 证据，不是密码学证明。
+
 Eval 与 grader 在一次运行中不可变。系统可以提出修改建议，但只有用户确认并重新锁定后才能成为新的评测权威。完整字段、信任边界和运行命令见[可执行 Eval 协议](./skills/skill-reviewer/references/executable-evals.md)与[进化协议](./skills/skill-reviewer/references/evolution-workflow.md)。
 
 ## Dashboard：可选的本地只读控制面
@@ -122,6 +139,14 @@ Dashboard 用于回答三个问题：
 1. **为什么通过或不通过？** 从发布结论下钻到 Case、检查项、Trace 事件和原始产物。
 2. **候选是否真的更好？** 左右对比候选版与基线版的执行、得分、文件差异和重复轮次。
 3. **下一步做什么？** 展示状态机的 `next_action`、责任归因和需要人工介入的边界。
+
+评审总览是唯一的主结论入口。结论下方的“决策证据脊柱”可直达修改证据、
+执行覆盖和主要风险；Diff、Agent Trace 与默认折叠的审计档案仍是独立证据视图。
+下一步以侧滑抽屉打开，Inspector 只解释当前选中的证据。空 Diff 表示“未捕获
+修改证据”，不能据此断言没有修改。
+
+每份新 projection 都包含 `schema_version: 2`。界面会在渲染前校验嵌套决策
+合同；遇到不兼容数据时展示可操作的重新生成页面，而不是白屏。
 
 它不是执行器，也不会直接修改 Eval、证据或发布状态。用户明确要求展示 Dashboard 时可直接启动；否则交互式主 Agent 必须用独立的结构化问题询问一次，并推荐打开。沉默不会授权下载或本地服务：
 
@@ -158,6 +183,8 @@ Dashboard 的行动按钮只会创建带审计记录的本地交接任务，不�
 - 默认不安装依赖、不执行目标 Skill 脚本；只有合法 Manifest 声明的隔离验证才会运行。
 - 未确认的破坏性命令、发布、推送、网络、密钥或权限扩张会被阻塞。
 - `local-unattested` Trace 证明“发生过什么”，不等价于操作系统沙箱证明。
+- Dashboard 的 executor 标签依赖每个执行单元的有效调度凭据；只有 run-level
+  profile 时只显示为“声明的执行配置”。
 - 公共 Audit fixture 只用于校准，不能单独授权发布。
 
 ## 开发与验证

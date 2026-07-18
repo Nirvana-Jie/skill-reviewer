@@ -97,6 +97,30 @@ function writeExecution({
     if (existsSync(artifactPath)) artifactDigests[artifact] = sha256(artifactPath);
   }
   const startedAt = "2026-07-16T00:00:00.000Z";
+  const dispatchReceipt = {
+    contract: "skill-reviewer.dispatch-receipt",
+    run_id: plan.run_id,
+    case_id: caseId,
+    arm,
+    repeat,
+    assignment_digest: sha256(assignmentPath),
+    execution_profile_digest: plan.execution_profile.digest,
+    provider: plan.execution_profile.target,
+    harness: plan.execution_profile.harness,
+    observation:
+      plan.execution_profile.target === "native-agent"
+        ? "host_dispatch"
+        : "external_harness",
+    dispatch_id: `dispatch-${caseId}-${arm}-${repeat}`,
+    worker_id: `worker-${caseId}-${arm}-${repeat}`,
+    batch_id: `batch-${plan.run_id}-${caseId}-${repeat}`,
+    dispatched_at: startedAt,
+  };
+  const dispatchPath = write(
+    repeatRoot,
+    "dispatch-receipt.json",
+    JSON.stringify(dispatchReceipt),
+  );
   const traceEvents = [
     {
       contract: "skill-reviewer.agent-trace-event",
@@ -190,6 +214,18 @@ function writeExecution({
       side_effects: sideEffects,
       metrics,
       artifact_digests: artifactDigests,
+      dispatch: {
+        artifact: "dispatch-receipt.json",
+        digest: sha256(dispatchPath),
+        provider: dispatchReceipt.provider,
+        harness: dispatchReceipt.harness,
+        observation: dispatchReceipt.observation,
+        dispatch_id: dispatchReceipt.dispatch_id,
+        worker_id: dispatchReceipt.worker_id,
+        batch_id: dispatchReceipt.batch_id,
+        dispatched_at: dispatchReceipt.dispatched_at,
+      },
+      source_trace: null,
       trace: {
         artifact: "agent-trace.jsonl",
         digest: sha256(tracePath),
@@ -1561,6 +1597,18 @@ describe("skill_eval_runtime grade", () => {
           arm,
           "repeat-1.json",
         );
+        const dispatched = runtimeCommand([
+          "record-dispatch",
+          "--workspace",
+          workspace,
+          "--assignment",
+          assignment,
+          "--dispatch-id",
+          `dispatch-safe-case-${arm}-1`,
+          "--worker-id",
+          `worker-safe-case-${arm}-1`,
+        ]);
+        expect(dispatched.status, dispatched.stderr).toBe(0);
         const observed = runtimeCommand([
           "trace-event",
           "--workspace",
@@ -1698,6 +1746,85 @@ describe("skill_eval_runtime grade", () => {
       expect(
         evidence.cases[0].with_skill.binding_errors.join("\n"),
       ).toContain("execution_profile_digest");
+    });
+  });
+
+  it("fails closed when a retained dispatch receipt is edited after execution", () => {
+    fixture((root) => {
+      const { plan, planPath, workspace } = compiledPlanFixture(root, [
+        minimalCase({ id: "dispatch-bound" }),
+      ]);
+      for (const arm of plan.cases[0].arms) {
+        write(
+          workspace,
+          `cases/dispatch-bound/${arm}/repeat-1/outputs/response.md`,
+          `done by ${arm}\n`,
+        );
+        writeExecution({ workspace, plan, caseId: "dispatch-bound", arm });
+      }
+      const receiptPath = join(
+        workspace,
+        "cases/dispatch-bound/with_skill/repeat-1/dispatch-receipt.json",
+      );
+      const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+      receipt.worker_id = "forged-worker";
+      writeFileSync(receiptPath, JSON.stringify(receipt), "utf8");
+
+      const result = grade({ plan: planPath, workspace });
+
+      expect(result.status, result.stderr).toBe(0);
+      const evidence = JSON.parse(result.stdout);
+      expect(evidence.cases[0].with_skill.complete).toBe(false);
+      expect(evidence.cases[0].with_skill.binding_errors.join("\n")).toContain(
+        "dispatch receipt digest",
+      );
+      expect(
+        evidence.cases[0].with_skill.repeats[0].dispatch.valid,
+      ).toBe(false);
+    });
+  });
+
+  it("rejects individually valid arms that were not retained in one paired dispatch batch", () => {
+    fixture((root) => {
+      const { plan, planPath, workspace } = compiledPlanFixture(root, [
+        minimalCase({ id: "paired-dispatch" }),
+      ]);
+      const executionPaths = {};
+      for (const arm of plan.cases[0].arms) {
+        write(
+          workspace,
+          `cases/paired-dispatch/${arm}/repeat-1/outputs/response.md`,
+          `done by ${arm}\n`,
+        );
+        executionPaths[arm] = writeExecution({
+          workspace,
+          plan,
+          caseId: "paired-dispatch",
+          arm,
+        });
+      }
+      const baselineArm = plan.cases[0].arms.find((arm) => arm !== "with_skill");
+      const receiptPath = join(
+        workspace,
+        `cases/paired-dispatch/${baselineArm}/repeat-1/dispatch-receipt.json`,
+      );
+      const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+      receipt.batch_id = "batch-unpaired-baseline";
+      writeFileSync(receiptPath, JSON.stringify(receipt), "utf8");
+      const execution = JSON.parse(readFileSync(executionPaths[baselineArm], "utf8"));
+      execution.dispatch.batch_id = receipt.batch_id;
+      execution.dispatch.digest = sha256(receiptPath);
+      writeFileSync(executionPaths[baselineArm], JSON.stringify(execution), "utf8");
+
+      const result = grade({ plan: planPath, workspace });
+
+      expect(result.status, result.stderr).toBe(0);
+      const evidence = JSON.parse(result.stdout);
+      expect(evidence.cases[0].with_skill.complete).toBe(false);
+      expect(evidence.cases[0].with_skill.binding_errors.join("\n")).toContain(
+        "paired dispatch batch_id mismatch",
+      );
+      expect(evidence.cases[0][baselineArm].complete).toBe(false);
     });
   });
 
@@ -4818,6 +4945,7 @@ describe("skill_eval_runtime dashboard projection", () => {
       expect(data).toEqual(
         expect.objectContaining({
           contract: "skill-reviewer.dashboard-data",
+          schema_version: 2,
           run: expect.objectContaining({
             id: plan.run_id,
             status: "awaiting-audit",

@@ -32,13 +32,15 @@ import type {
   AssertionComparisonGroup,
   AssertionComparisonLane,
   EvalExecutionTrace,
-  ExecutionTraceGap,
 } from "./eval-execution-trace";
 import {
   buildTraceCaseIndex,
+  buildTraceAttentionSummary,
   buildTraceExecutionMatrix,
   classifyTraceExecutor,
   isVerifiedTraceExecution,
+  resolveTraceEventSemantics,
+  type TraceSemanticTone,
 } from "./eval-execution-trace";
 import type {
   AgentTraceEventKind,
@@ -52,7 +54,7 @@ import {
   useUiPreferences,
 } from "./ui-preferences";
 
-type TraceTone = "good" | "bad" | "warn";
+type TraceTone = TraceSemanticTone;
 
 function shortDigest(value: string | null | undefined): string {
   if (!value) return "—";
@@ -76,7 +78,7 @@ function TraceStateIcon({ tone, size = 15 }: { tone: TraceTone; size?: number })
 }
 
 function statusTone(status: string): TraceTone {
-  if (["passed", "completed", "retained", "agreement"].includes(status)) {
+  if (["passed", "retained", "agreement"].includes(status)) {
     return "good";
   }
   if (
@@ -86,12 +88,20 @@ function statusTone(status: string): TraceTone {
   ) {
     return "bad";
   }
+  if (status === "completed") return "neutral";
   return "warn";
 }
 
 function executionTone(execution: DashboardExecution): TraceTone {
-  if (!isVerifiedTraceExecution(execution)) {
+  if (
+    ["failed", "rejected", "invalid", "timed_out", "interrupted"].includes(
+      execution.status,
+    )
+  ) {
     return "bad";
+  }
+  if (!isVerifiedTraceExecution(execution)) {
+    return "warn";
   }
   if (
     execution.assertions.total > 0 &&
@@ -99,7 +109,13 @@ function executionTone(execution: DashboardExecution): TraceTone {
   ) {
     return "bad";
   }
-  return "good";
+  if (
+    execution.assertions.total > 0 &&
+    execution.assertions.passed === execution.assertions.total
+  ) {
+    return "good";
+  }
+  return "neutral";
 }
 
 function comparisonTone(conclusion: AssertionComparisonConclusion): TraceTone {
@@ -317,7 +333,9 @@ function TraceTimeline({
 }) {
   const { locale, t } = useUiPreferences();
   const trace =
-    execution && isVerifiedTraceExecution(execution)
+    execution &&
+    isVerifiedTraceExecution(execution) &&
+    execution.trace?.valid === true
       ? execution.trace
       : null;
 
@@ -355,7 +373,7 @@ function TraceTimeline({
       <ol className="agent-event-timeline" aria-label={t("eventTimeline")}>
         {trace.events.map((event) => {
           const selected = selectedEventId === event.event_id;
-          const tone = statusTone(event.status);
+          const tone = resolveTraceEventSemantics(event).tone;
           return (
             <li
               id={`trace-event-${event.event_id}`}
@@ -458,19 +476,22 @@ export function EvalExecutionTraceView({
   const scenario = describeDashboardCase(locale, trace.case);
   const confidenceTone: TraceTone = trace.confidence === "verified" ? "good" : "warn";
   const caseIndex = useMemo(() => buildTraceCaseIndex(cases), [cases]);
+  const attention = useMemo(() => buildTraceAttentionSummary(trace), [trace]);
   const executionMatrix = useMemo(
     () => buildTraceExecutionMatrix(trace),
     [trace],
   );
   const executor = useMemo(
-    () => classifyTraceExecutor(executionProfile),
-    [executionProfile],
+    () => classifyTraceExecutor(executionProfile, selectedExecution),
+    [executionProfile, selectedExecution],
   );
   const executorLabel = t(
     executor.kind === "native_subagent"
       ? "nativeSubagent"
       : executor.kind === "local_agent_process"
         ? "localAgentProcess"
+        : executor.kind === "declared_agent_profile"
+          ? "declaredAgentProfile"
         : executor.kind === "external_agent_harness"
           ? "externalAgentHarness"
           : executor.kind === "unrecognized_profile"
@@ -479,7 +500,10 @@ export function EvalExecutionTraceView({
   );
 
   useEffect(() => {
-    const events = selectedExecution?.trace?.events ?? [];
+    const events =
+      selectedExecution && isVerifiedTraceExecution(selectedExecution)
+        ? selectedExecution.trace.events
+        : [];
     if (
       selectedTraceEventId &&
       !events.some((event) => event.event_id === selectedTraceEventId)
@@ -515,14 +539,69 @@ export function EvalExecutionTraceView({
         </div>
       </header>
 
-      <div className="observable-boundary" role="note">
-        <Eye size={15} aria-hidden="true" />
-        <div>
-          <strong>{t("observableEvidenceBoundary")}</strong>
-          <p>{t("observableEvidenceBoundaryDescription")}</p>
+      <section
+        className="trace-attention-summary"
+        aria-label={t("traceAttentionSummary")}
+      >
+        <header>
+          <span>
+            <TriangleAlert size={16} aria-hidden="true" />
+            <h3>{t("traceAttentionTitle")}</h3>
+          </span>
+          <p>{t("traceAttentionDescription")}</p>
+        </header>
+        <div className="trace-attention-grid">
+          <article
+            className={
+              attention.failedChecks + attention.failedEvents > 0
+                ? "is-bad"
+                : "is-good"
+            }
+          >
+            <CircleX size={16} aria-hidden="true" />
+            <span>
+              <strong>{attention.failedChecks + attention.failedEvents}</strong>
+              <small>{t("traceFailures")}</small>
+            </span>
+            <em>
+              {t("traceFailureBreakdown", {
+                checks: attention.failedChecks,
+                events: attention.failedEvents,
+              })}
+            </em>
+          </article>
+          <article className={attention.evidenceGaps > 0 ? "is-warn" : "is-good"}>
+            <FileSearch size={16} aria-hidden="true" />
+            <span>
+              <strong>{attention.evidenceGaps}</strong>
+              <small>{t("traceEvidenceGaps")}</small>
+            </span>
+          </article>
+          <article
+            className={attention.comparisonDifferences > 0 ? "is-warn" : "is-neutral"}
+          >
+            <GitCompareArrows size={16} aria-hidden="true" />
+            <span>
+              <strong>{attention.comparisonDifferences}</strong>
+              <small>{t("traceComparisonDifferences")}</small>
+            </span>
+          </article>
+          <article className={attention.slowExecutions.length > 0 ? "is-warn" : "is-neutral"}>
+            <Route size={16} aria-hidden="true" />
+            <span>
+              <strong>{attention.slowExecutions.length}</strong>
+              <small>{t("traceSlowExecutions")}</small>
+            </span>
+            <em>
+              {t("traceSlowThreshold", {
+                duration: formatDuration(attention.slowThresholdMs),
+              })}
+            </em>
+          </article>
         </div>
-      </div>
+      </section>
 
+      {cases.length > 1 && (
       <section className="trace-case-index" aria-labelledby="trace-case-index-title">
         <header>
           <span>
@@ -592,6 +671,7 @@ export function EvalExecutionTraceView({
           </table>
         </div>
       </section>
+      )}
 
       <section className="trace-case-workspace">
         <header className="trace-selected-case">
@@ -602,6 +682,19 @@ export function EvalExecutionTraceView({
           </span>
           <code>{trace.case.id}</code>
         </header>
+
+        <details className="trace-technical-context">
+          <summary>
+            <Fingerprint size={14} aria-hidden="true" />
+            {t("traceTechnicalContext")}
+          </summary>
+          <div className="observable-boundary" role="note">
+            <Eye size={15} aria-hidden="true" />
+            <div>
+              <strong>{t("observableEvidenceBoundary")}</strong>
+              <p>{t("observableEvidenceBoundaryDescription")}</p>
+            </div>
+          </div>
 
         <section className="trace-responsibility" aria-labelledby="trace-responsibility-title">
           <header>
@@ -623,7 +716,7 @@ export function EvalExecutionTraceView({
               <span>
                 <small>{t("evalWorkerRole")}</small>
                 <strong>{executorLabel}</strong>
-                <p>{t("evalWorkerTraceBoundary")}</p>
+                <p>{t(executor.dispatchBound ? "evalWorkerTraceBoundary" : "declaredExecutorBoundary")}</p>
               </span>
               <code>{executor.target ?? t("notRecorded")}</code>
             </div>
@@ -637,11 +730,25 @@ export function EvalExecutionTraceView({
           </div>
         </section>
 
-        <div className="trace-binding-strip" aria-label={t("lockedEvalDefinition")}>
-          <div><Fingerprint size={14} /><span><small>{t("manifestDigest")}</small><strong>{shortDigest(manifest?.digest)}</strong></span></div>
-          <div><LockKeyhole size={14} /><span><small>{t("planDigest")}</small><strong>{shortDigest(planDigest)}</strong></span></div>
-          <div><Bot size={14} /><span><small>{t("harness")}</small><strong>{executionProfile?.harness ? localizeValue(locale, executionProfile.harness) : t("notRecorded")}</strong></span></div>
-        </div>
+          <div className="trace-binding-strip" aria-label={t("lockedEvalDefinition")}>
+            <div><Fingerprint size={14} /><span><small>{t("manifestDigest")}</small><strong>{shortDigest(manifest?.digest)}</strong></span></div>
+            <div><LockKeyhole size={14} /><span><small>{t("planDigest")}</small><strong>{shortDigest(planDigest)}</strong></span></div>
+            <div><Bot size={14} /><span><small>{t("harness")}</small><strong>{executionProfile?.harness ? localizeValue(locale, executionProfile.harness) : t("notRecorded")}</strong></span></div>
+            <div><Route size={14} /><span><small>{t("dispatchReceipt")}</small><strong>{selectedExecution?.dispatch?.valid ? shortDigest(selectedExecution.dispatch.digest) : t("notRecorded")}</strong></span></div>
+            {selectedExecution?.trace?.capture_source === "codex_cli_jsonl" && (
+              <div><FileOutput size={14} /><span><small>{t("sourceTrace")}</small><strong>{selectedExecution.source_trace?.valid ? shortDigest(selectedExecution.source_trace.digest) : t("notRecorded")}</strong></span></div>
+            )}
+          </div>
+
+          {!executor.dispatchBound && (
+            <div className="observable-boundary" role="note">
+              <TriangleAlert size={15} aria-hidden="true" />
+              <div>
+                <strong>{t("dispatchReceiptMissing")}</strong>
+                <p>{t("dispatchReceiptMissingDescription")}</p>
+              </div>
+            </div>
+          )}
 
         {executionProfile?.isolation === "local-unattested" && (
           <div className="observable-boundary is-local-unattested" role="note">
@@ -652,6 +759,20 @@ export function EvalExecutionTraceView({
             </div>
           </div>
         )}
+        </details>
+
+        <div className="timeline-section-heading">
+          <span>
+            <Route size={15} aria-hidden="true" />
+            <strong>{t("eventTimeline")}</strong>
+          </span>
+          <p>{t("eventTimelineDescription")}</p>
+        </div>
+        <TraceTimeline
+          execution={selectedExecution}
+          selectedEventId={selectedTraceEventId}
+          onSelectEvent={setSelectedTraceEventId}
+        />
 
         <div className="arm-comparison-heading">
           <span>
@@ -742,18 +863,6 @@ export function EvalExecutionTraceView({
           </table>
         </div>
 
-        <div className="timeline-section-heading">
-          <span>
-            <Route size={15} aria-hidden="true" />
-            <strong>{t("eventTimeline")}</strong>
-          </span>
-          <p>{t("eventTimelineDescription")}</p>
-        </div>
-        <TraceTimeline
-          execution={selectedExecution}
-          selectedEventId={selectedTraceEventId}
-          onSelectEvent={setSelectedTraceEventId}
-        />
       </section>
 
       <section className="trace-check-results">
@@ -856,67 +965,5 @@ export function EvalExecutionTraceView({
         </div>
       </section>
     </section>
-  );
-}
-
-function gapMessageKey(gap: ExecutionTraceGap) {
-  return `traceGap_${gap}` as MessageKey;
-}
-
-export function EvalExecutionTraceGuide({
-  trace,
-  manifest,
-  planDigest,
-  executionProfileDigest,
-}: {
-  trace: EvalExecutionTrace;
-  manifest: { path: string; digest: string } | null | undefined;
-  planDigest: string | null | undefined;
-  executionProfileDigest: string | null | undefined;
-}) {
-  const { t } = useUiPreferences();
-  const tone: TraceTone = trace.confidence === "verified" ? "good" : "warn";
-  return (
-    <div className="execution-trace-inspector-body">
-      <section className={`trace-inspector-confidence is-${tone}`}>
-        <TraceStateIcon tone={tone} size={17} />
-        <span>
-          <small>{t("actualAgentTrace")}</small>
-          <strong>{t(trace.confidence === "verified" ? "verifiedTrace" : "partialTrace")}</strong>
-          <p>{t("traceCaptureSummary", { captured: trace.capturedTraces, expected: trace.expectedExecutions })}</p>
-        </span>
-      </section>
-
-      <section className="trace-reading-guide">
-        <h3>{t("howToReadAgentTrace")}</h3>
-        <ol>
-          <li>{t("traceReadingStepCase")}</li>
-          <li>{t("traceReadingStepArm")}</li>
-          <li>{t("traceReadingStepEvent")}</li>
-          <li>{t("traceReadingStepJudge")}</li>
-        </ol>
-        <dl className="trace-inspector-bindings">
-          <div><dt>{t("manifestDigest")}</dt><dd>{shortDigest(manifest?.digest)}</dd></div>
-          <div><dt>{t("planDigest")}</dt><dd>{shortDigest(planDigest)}</dd></div>
-          <div><dt>{t("executionProfileDigest")}</dt><dd>{shortDigest(executionProfileDigest)}</dd></div>
-        </dl>
-      </section>
-
-      {trace.gaps.length > 0 && (
-        <section className="trace-gap-section">
-          <h3><TriangleAlert size={14} aria-hidden="true" />{t("traceGaps")}</h3>
-          <ul>{trace.gaps.map((gap) => <li key={gap}>{t(gapMessageKey(gap))}</li>)}</ul>
-        </section>
-      )}
-
-      <section className="analysis-boundary">
-        <Eye size={15} aria-hidden="true" />
-        <div>
-          <h3>{t("analysisBoundary")}</h3>
-          <strong>{t("noPrivateReasoning")}</strong>
-          <p>{t("noPrivateReasoningDescription")}</p>
-        </div>
-      </section>
-    </div>
   );
 }

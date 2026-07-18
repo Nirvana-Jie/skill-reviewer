@@ -25,7 +25,9 @@ mix lead-Agent planning events into a worker Trace.
 The bundled local Codex adapter is another dispatch surface, not a second
 grader. `scripts/run_codex_eval_executor.py` accepts exactly one sanitized,
 locked assignment and asks `codex exec --json` to execute it. The lead Agent
-still owns pairing, concurrency, grading, decisions, and evolution state.
+still owns decisions and evolution state. For a complete local plan,
+`scripts/run_codex_eval_plan.py` mechanically owns paired case/repeat fan-out
+and invokes grading after all cells finish.
 
 For local Codex execution, bind this profile shape before compile:
 
@@ -45,18 +47,12 @@ For local Codex execution, bind this profile shape before compile:
 }
 ```
 
-Then dispatch each arm/repeat, starting paired arms together when capacity
-allows:
+Then dispatch the locked plan. The runner starts every arm for one case/repeat
+batch before waiting for any arm:
 
 ```bash
-python3 scripts/run_codex_eval_executor.py \
+python3 scripts/run_codex_eval_plan.py \
   --workspace <workspace> \
-  --assignment <workspace>/assignments/<case>/with_skill/repeat-1.json \
-  --full-access
-
-python3 scripts/run_codex_eval_executor.py \
-  --workspace <workspace> \
-  --assignment <workspace>/assignments/<case>/old_skill/repeat-1.json \
   --full-access
 ```
 
@@ -135,6 +131,26 @@ reasoning. Failed, timed-out, or interrupted runs still end with an
 `execution_finished` event and retain partial outputs. Never reconstruct a
 missing event or output from memory.
 
+Before the first native worker event, retain the real host dispatch observation:
+
+```bash
+python3 scripts/skill_eval_runtime.py record-dispatch \
+  --workspace <workspace> \
+  --assignment <workspace>/assignments/<case>/<arm>/repeat-1.json \
+  --dispatch-id <host-dispatch-id> \
+  --worker-id <host-worker-or-thread-id> \
+  --batch-id <paired-batch-id>
+```
+
+The command derives provider, harness, and observation mode from the locked
+execution profile; caller-supplied identity cannot replace those fields. The
+receipt is trusted lead/harness provenance and detects later drift, but without
+a provider-signed host API it is not cryptographic proof against the same OS
+owner. A profile without a valid receipt remains declared configuration rather
+than being displayed as a native subagent. All arms for one case/repeat must
+share the batch ID and be dispatched within five seconds; the grader rejects a
+serialized or mismatched pair.
+
 This record covers what the Eval worker actually did while using the assigned
 frozen Skill snapshot. If that Skill internally dispatches another Agent, the
 child is not a second Eval worker or a new repeat. Retain its observable events
@@ -151,7 +167,9 @@ and inspect it through that run's permalink/workspace rather than appending new
 events to an old Trace.
 
 The Codex adapter retains `codex-events.jsonl` as the observable source stream,
-plus its digest and the digest of the source bytes. Any reasoning item and any
+plus its digest, retained/source event counts, and the digest of the source
+bytes. `execution.json` binds that descriptor and grading revalidates the file
+and its `artifact_written` event. Any reasoning item and any
 reasoning-named field is removed before that file or `agent-trace.jsonl` is
 written. `codex-stderr.log` is retained separately when the CLI emits
 diagnostics. These support artifacts explain how normalized Trace events map
@@ -159,9 +177,10 @@ back to Codex; they are not assertion answers and do not replace required
 outputs.
 
 Use `skill_eval_runtime.py trace-event` when the native harness has no trace
-adapter, then use `finalize-execution` to append missing `artifact_written`
-provenance and create `execution.json`. Every execution record binds the Trace
-digest and metadata in addition to run/case/arm/repeat, assignment digest,
+adapter, after `record-dispatch`; then use `finalize-execution` to append
+missing `artifact_written` provenance and create `execution.json`. Every
+execution record binds the dispatch receipt, Trace digest, and metadata in
+addition to run/case/arm/repeat, assignment digest,
 execution-profile digest, forbidden actions, side effects, and produced
 artifact digests. A missing, stale, mismatched, non-contiguous, or unfinalized
 Trace is incomplete evidence.
@@ -185,7 +204,9 @@ with the lead and graders.
 │   └── <case-id>/
 │       ├── with_skill/
 │       │   ├── repeat-1/
+│       │   │   ├── dispatch-receipt.json
 │       │   │   ├── agent-trace.jsonl
+│       │   │   ├── codex-events.jsonl       # local Codex only
 │       │   │   ├── execution.json
 │       │   │   └── outputs/...
 │       │   └── grading.json
@@ -194,6 +215,7 @@ with the lead and graders.
 │       └── semantic/
 │           └── <assertion-id>.json
 ├── verification-evidence.json
+├── codex-dispatch-summary.json               # local paired runner only
 ├── iteration-<N>/
 │   ├── acceptance-decision.json
 │   └── audit-decision.json             # only for the one-shot audit
@@ -249,9 +271,11 @@ After all workers finish:
 5. Project `dashboard-data.json` for inspection, but cite retained JSON/output
    paths as the evidence of record.
 
-The lead-supplied execution profile plus artifact, assignment, and input
-identity define the executor surface. Worker-supplied identity/build metadata
-is outside the accepted evidence schema.
+The lead-supplied execution profile defines the intended executor surface. The
+validated harness dispatch receipt plus artifact, assignment, and input
+identity bind the observed execution cell. Worker-supplied identity/build
+metadata is outside the accepted evidence schema, and a receipt is still only
+as strong as its trusted harness boundary.
 
 A public audit is calibration-only even if every case passes. Report its
 `release_eligible: false` limitation and do not advance to release without a

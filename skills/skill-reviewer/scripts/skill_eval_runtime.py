@@ -31,6 +31,7 @@ VERIFICATION_CONTRACT = "skill-reviewer.verification"
 ACCEPTANCE_CONTRACT = "skill-reviewer.acceptance-decision"
 ASSIGNMENT_CONTRACT = "skill-reviewer.executor-assignment"
 EXECUTION_CONTRACT = "skill-reviewer.executor-execution"
+DISPATCH_RECEIPT_CONTRACT = "skill-reviewer.dispatch-receipt"
 TRACE_EVENT_CONTRACT = "skill-reviewer.agent-trace-event"
 SEMANTIC_JUDGMENT_CONTRACT = "skill-reviewer.semantic-judgment"
 DASHBOARD_CONTRACT = "skill-reviewer.dashboard-data"
@@ -40,6 +41,7 @@ EVOLUTION_TRANSITION_CONTRACT = "skill-reviewer.evolution-transition"
 
 DASHBOARD_DIFF_RENDER_LIMIT_BYTES = 512 * 1024
 DASHBOARD_EVIDENCE_SOURCE_LIMIT_BYTES = 2 * 1024 * 1024
+MAX_PAIRED_DISPATCH_SKEW_MS = 5_000
 
 PATH_SAFE_SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 RUNTIME_SKILL_ENTRIES = ("SKILL.md", "references", "scripts", "assets")
@@ -146,7 +148,49 @@ EXECUTION_FIELDS = {
     "side_effects",
     "metrics",
     "artifact_digests",
+    "dispatch",
+    "source_trace",
     "trace",
+}
+DISPATCH_RECEIPT_FIELDS = {
+    "contract",
+    "run_id",
+    "case_id",
+    "arm",
+    "repeat",
+    "assignment_digest",
+    "execution_profile_digest",
+    "provider",
+    "harness",
+    "observation",
+    "dispatch_id",
+    "worker_id",
+    "batch_id",
+    "dispatched_at",
+}
+DISPATCH_DESCRIPTOR_FIELDS = {
+    "artifact",
+    "digest",
+    "provider",
+    "harness",
+    "observation",
+    "dispatch_id",
+    "worker_id",
+    "batch_id",
+    "dispatched_at",
+}
+DISPATCH_OBSERVATIONS = {
+    "host_dispatch",
+    "process_spawn",
+    "external_harness",
+}
+SOURCE_TRACE_DESCRIPTOR_FIELDS = {
+    "artifact",
+    "digest",
+    "source_stream_digest",
+    "source_event_count",
+    "retained_event_count",
+    "redaction",
 }
 TRACE_DESCRIPTOR_FIELDS = {
     "artifact",
@@ -1693,6 +1737,8 @@ def compile_manifest(
                     "execution_profile_digest": execution_profile["digest"],
                     "writable_root": str(repeat_root.resolve()),
                     "execution_artifact": "execution.json",
+                    "dispatch_artifact": "dispatch-receipt.json",
+                    "source_trace_artifact": "codex-events.jsonl",
                     "trace_artifact": "agent-trace.jsonl",
                     "expected_artifacts": expected_artifacts,
                 }
@@ -1774,6 +1820,342 @@ def _parse_trace_timestamp(value: Any) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def _expected_dispatch_observation(profile: dict[str, Any]) -> str:
+    target = profile.get("target")
+    harness = profile.get("harness")
+    if target == "codex-cli" and harness == "codex-exec-jsonl":
+        return "process_spawn"
+    if target == "native-agent" and harness == "lead-agent-dispatch":
+        return "host_dispatch"
+    return "external_harness"
+
+
+def _bound_execution_profile(
+    *, assignment_path: Path, workspace: Path, assignment: dict[str, Any]
+) -> dict[str, Any]:
+    plan_path = _safe_artifact(workspace, "execution-plan.json")
+    lock_path = _safe_artifact(workspace, "run-lock.json")
+    if not plan_path.is_file() or not lock_path.is_file():
+        raise ManifestError("dispatch receipt requires execution-plan.json and run-lock.json")
+    plan = load_json(plan_path)
+    lock = load_json(lock_path)
+    relative_assignment = assignment_path.resolve().relative_to(workspace).as_posix()
+    assignment_digests = lock.get("assignment_digests")
+    if (
+        not isinstance(assignment_digests, dict)
+        or assignment_digests.get(relative_assignment) != sha256_file(assignment_path)
+    ):
+        raise ManifestError("dispatch assignment digest does not match the run lock")
+    if lock.get("plan_digest") != sha256_file(plan_path):
+        raise ManifestError("dispatch execution plan digest does not match the run lock")
+    profile = plan.get("execution_profile")
+    if not isinstance(profile, dict):
+        raise ManifestError("dispatch execution profile is missing")
+    if profile.get("digest") != assignment.get("execution_profile_digest"):
+        raise ManifestError("dispatch execution profile digest is stale")
+    if plan.get("run_id") != assignment.get("run_id"):
+        raise ManifestError("dispatch assignment and plan identities do not match")
+    return profile
+
+
+def record_dispatch_receipt(
+    *,
+    assignment_path: Path,
+    workspace: Path,
+    dispatch_id: str,
+    worker_id: str,
+    batch_id: str | None = None,
+) -> dict[str, Any]:
+    workspace = workspace.resolve()
+    assignment_path = assignment_path.resolve()
+    assignment, repeat_root, _trace_path = _trace_assignment_context(
+        assignment_path=assignment_path, workspace=workspace
+    )
+    profile = _bound_execution_profile(
+        assignment_path=assignment_path,
+        workspace=workspace,
+        assignment=assignment,
+    )
+    normalized_dispatch_id = _require_string(dispatch_id, "dispatch_id")
+    normalized_worker_id = _require_string(worker_id, "worker_id")
+    if len(normalized_dispatch_id) > 256 or len(normalized_worker_id) > 256:
+        raise ManifestError("dispatch_id and worker_id must not exceed 256 characters")
+    normalized_batch_id = (
+        _require_string(batch_id, "batch_id")
+        if batch_id is not None
+        else "batch-"
+        + sha256_json(
+            {
+                "run_id": assignment.get("run_id"),
+                "case_id": assignment.get("case_id"),
+                "repeat": assignment.get("repeat"),
+            }
+        )[:20]
+    )
+    if len(normalized_batch_id) > 256:
+        raise ManifestError("batch_id must not exceed 256 characters")
+    artifact = _validate_artifact_path(
+        assignment.get("dispatch_artifact"), "assignment.dispatch_artifact"
+    )
+    receipt_path = _safe_artifact(repeat_root, artifact)
+    if receipt_path.exists() or receipt_path.is_symlink():
+        raise ManifestError("dispatch receipt is already recorded")
+    receipt = {
+        "contract": DISPATCH_RECEIPT_CONTRACT,
+        "run_id": assignment.get("run_id"),
+        "case_id": assignment.get("case_id"),
+        "arm": assignment.get("arm"),
+        "repeat": assignment.get("repeat"),
+        "assignment_digest": sha256_file(assignment_path),
+        "execution_profile_digest": assignment.get("execution_profile_digest"),
+        "provider": profile.get("target"),
+        "harness": profile.get("harness"),
+        "observation": _expected_dispatch_observation(profile),
+        "dispatch_id": normalized_dispatch_id,
+        "worker_id": normalized_worker_id,
+        "batch_id": normalized_batch_id,
+        "dispatched_at": _trace_timestamp(),
+    }
+    write_json(receipt_path, receipt)
+    return receipt
+
+
+def _dispatch_descriptor(
+    *, assignment: dict[str, Any], repeat_root: Path
+) -> dict[str, Any] | None:
+    artifact = _validate_artifact_path(
+        assignment.get("dispatch_artifact"), "assignment.dispatch_artifact"
+    )
+    receipt_path = _safe_artifact(repeat_root, artifact)
+    if not receipt_path.is_file():
+        return None
+    receipt = load_json(receipt_path)
+    return {
+        "artifact": artifact,
+        "digest": sha256_file(receipt_path),
+        **{
+            key: receipt.get(key)
+            for key in (
+                "provider",
+                "harness",
+                "observation",
+                "dispatch_id",
+                "worker_id",
+                "batch_id",
+                "dispatched_at",
+            )
+        },
+    }
+
+
+def _validate_dispatch_receipt(
+    *,
+    repeat_root: Path,
+    descriptor: Any,
+    assignment: dict[str, Any],
+    assignment_digest: str,
+    execution_profile: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    errors: list[str] = []
+    expected_artifact = _validate_artifact_path(
+        assignment.get("dispatch_artifact"), "assignment.dispatch_artifact"
+    )
+    if not isinstance(descriptor, dict):
+        return {"artifact": expected_artifact}, ["execution dispatch receipt is missing"]
+    unsupported = sorted(set(descriptor) - DISPATCH_DESCRIPTOR_FIELDS)
+    if unsupported:
+        errors.append(
+            "execution dispatch descriptor contains unsupported fields: "
+            + ", ".join(unsupported)
+        )
+    missing = sorted(DISPATCH_DESCRIPTOR_FIELDS - set(descriptor))
+    if missing:
+        errors.append(
+            "execution dispatch descriptor is missing fields: " + ", ".join(missing)
+        )
+    if descriptor.get("artifact") != expected_artifact:
+        errors.append("execution dispatch artifact does not match the locked assignment")
+    receipt_path = _safe_artifact(repeat_root, expected_artifact)
+    if not receipt_path.is_file():
+        return dict(descriptor), [*errors, "dispatch-receipt.json is missing"]
+    actual_digest = sha256_file(receipt_path)
+    if descriptor.get("digest") != actual_digest:
+        errors.append("dispatch receipt digest is missing or mismatched")
+    try:
+        receipt = load_json(receipt_path)
+    except ManifestError as error:
+        return {**descriptor, "digest": actual_digest}, [*errors, str(error)]
+    unsupported_receipt = sorted(set(receipt) - DISPATCH_RECEIPT_FIELDS)
+    if unsupported_receipt:
+        errors.append(
+            "dispatch receipt contains unsupported fields: "
+            + ", ".join(unsupported_receipt)
+        )
+    missing_receipt = sorted(DISPATCH_RECEIPT_FIELDS - set(receipt))
+    if missing_receipt:
+        errors.append("dispatch receipt is missing fields: " + ", ".join(missing_receipt))
+    expected_identity = {
+        "contract": DISPATCH_RECEIPT_CONTRACT,
+        "run_id": assignment.get("run_id"),
+        "case_id": assignment.get("case_id"),
+        "arm": assignment.get("arm"),
+        "repeat": assignment.get("repeat"),
+        "assignment_digest": assignment_digest,
+        "execution_profile_digest": assignment.get("execution_profile_digest"),
+        "provider": execution_profile.get("target"),
+        "harness": execution_profile.get("harness"),
+        "observation": _expected_dispatch_observation(execution_profile),
+    }
+    for key, expected_value in expected_identity.items():
+        if receipt.get(key) != expected_value:
+            errors.append(f"dispatch receipt {key} does not match the locked execution")
+    for key in (
+        "provider",
+        "harness",
+        "observation",
+        "dispatch_id",
+        "worker_id",
+        "batch_id",
+        "dispatched_at",
+    ):
+        if descriptor.get(key) != receipt.get(key):
+            errors.append(f"execution dispatch {key} does not match its receipt")
+    if receipt.get("observation") not in DISPATCH_OBSERVATIONS:
+        errors.append("dispatch receipt observation is invalid")
+    for key in ("dispatch_id", "worker_id", "batch_id"):
+        if not isinstance(receipt.get(key), str) or not receipt.get(key):
+            errors.append(f"dispatch receipt {key} is invalid")
+    if _parse_trace_timestamp(receipt.get("dispatched_at")) is None:
+        errors.append("dispatch receipt dispatched_at is invalid")
+    return {**descriptor, "digest": actual_digest}, errors
+
+
+def _validate_source_trace(
+    *,
+    repeat_root: Path,
+    descriptor: Any,
+    assignment: dict[str, Any],
+    trace_events: list[dict[str, Any]],
+    required: bool,
+) -> tuple[dict[str, Any] | None, list[str]]:
+    errors: list[str] = []
+    expected_artifact = _validate_artifact_path(
+        assignment.get("source_trace_artifact"),
+        "assignment.source_trace_artifact",
+    )
+    if descriptor is None:
+        return None, ["Codex source trace descriptor is missing"] if required else []
+    if not isinstance(descriptor, dict):
+        return None, ["execution source_trace must be an object or null"]
+    unsupported = sorted(set(descriptor) - SOURCE_TRACE_DESCRIPTOR_FIELDS)
+    if unsupported:
+        errors.append(
+            "execution source trace contains unsupported fields: "
+            + ", ".join(unsupported)
+        )
+    missing = sorted(SOURCE_TRACE_DESCRIPTOR_FIELDS - set(descriptor))
+    if missing:
+        errors.append("execution source trace is missing fields: " + ", ".join(missing))
+    if descriptor.get("artifact") != expected_artifact:
+        errors.append("execution source trace artifact does not match the locked assignment")
+    source_path = _safe_artifact(repeat_root, expected_artifact)
+    if not source_path.is_file():
+        return dict(descriptor), [*errors, "Codex source trace artifact is missing"]
+    actual_digest = sha256_file(source_path)
+    if descriptor.get("digest") != actual_digest:
+        errors.append("source trace digest is missing or mismatched")
+    source_stream_digest = descriptor.get("source_stream_digest")
+    if not isinstance(source_stream_digest, str) or not re.fullmatch(
+        r"[a-f0-9]{64}", source_stream_digest
+    ):
+        errors.append("source trace source_stream_digest is invalid")
+    source_event_count = descriptor.get("source_event_count")
+    retained_event_count = descriptor.get("retained_event_count")
+    if (
+        not isinstance(source_event_count, int)
+        or isinstance(source_event_count, bool)
+        or source_event_count < 0
+    ):
+        errors.append("source trace source_event_count is invalid")
+    if (
+        not isinstance(retained_event_count, int)
+        or isinstance(retained_event_count, bool)
+        or retained_event_count < 0
+    ):
+        errors.append("source trace retained_event_count is invalid")
+    try:
+        retained_lines = [
+            line
+            for line in source_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        actual_retained_count = len(retained_lines)
+    except (OSError, UnicodeDecodeError) as error:
+        errors.append(f"source trace artifact is unreadable: {error}")
+        actual_retained_count = None
+        retained_lines = []
+    for index, line in enumerate(retained_lines, start=1):
+        try:
+            event = json.loads(line, parse_constant=_reject_json_constant)
+            _require_finite_json(event, f"source trace line {index}")
+        except (json.JSONDecodeError, ValueError, ManifestError) as error:
+            errors.append(f"source trace line {index} is invalid JSON: {error}")
+            continue
+        if not isinstance(event, dict):
+            errors.append(f"source trace line {index} must be an object")
+            continue
+        forbidden_keys = sorted(_forbidden_trace_detail_keys(event))
+        if forbidden_keys:
+            errors.append(
+                f"source trace line {index} contains private-reasoning fields: "
+                + ", ".join(forbidden_keys)
+            )
+        pending: list[Any] = [event]
+        while pending:
+            value = pending.pop()
+            if isinstance(value, dict):
+                if value.get("type") == "reasoning" and value.get("redacted") is not True:
+                    errors.append(
+                        f"source trace line {index} contains unredacted reasoning"
+                    )
+                    break
+                pending.extend(value.values())
+            elif isinstance(value, list):
+                pending.extend(value)
+    if actual_retained_count is not None and retained_event_count != actual_retained_count:
+        errors.append("source trace retained_event_count does not match the artifact")
+    if (
+        isinstance(source_event_count, int)
+        and isinstance(retained_event_count, int)
+        and source_event_count < retained_event_count
+    ):
+        errors.append("source trace source_event_count is smaller than retained events")
+    if descriptor.get("redaction") != "private-reasoning-fields-removed":
+        errors.append("source trace redaction contract is invalid")
+    matching_events = [
+        event
+        for event in trace_events
+        if event.get("kind") == "artifact_written"
+        and expected_artifact in event.get("artifact_refs", [])
+    ]
+    if not matching_events:
+        errors.append("agent trace is missing source trace artifact provenance")
+    elif not any(
+        isinstance(event.get("details"), dict)
+        and event["details"].get("digest") == descriptor.get("digest")
+        and event["details"].get("source_stream_digest")
+        == descriptor.get("source_stream_digest")
+        and event["details"].get("source_event_count")
+        == descriptor.get("source_event_count")
+        and event["details"].get("retained_event_count")
+        == descriptor.get("retained_event_count")
+        and event["details"].get("redaction") == descriptor.get("redaction")
+        for event in matching_events
+    ):
+        errors.append("source trace descriptor is not bound to its artifact event")
+    return {**descriptor, "digest": actual_digest}, errors
 
 
 def _forbidden_trace_detail_keys(value: Any) -> set[str]:
@@ -2166,6 +2548,7 @@ def finalize_execution(
     forbidden_actions: list[str],
     side_effects: list[str],
     capture_source: str,
+    source_trace: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if status not in {"completed", "failed", "timed_out", "interrupted"}:
         raise ManifestError(f"unsupported execution status: {status}")
@@ -2235,6 +2618,36 @@ def finalize_execution(
     events, trace_errors = _read_trace_jsonl(trace_path)
     if trace_errors or not events:
         raise ManifestError("unable to finalize Agent trace: " + "; ".join(trace_errors))
+    execution_profile = _bound_execution_profile(
+        assignment_path=assignment_path.resolve(),
+        workspace=workspace.resolve(),
+        assignment=assignment,
+    )
+    dispatch = _dispatch_descriptor(assignment=assignment, repeat_root=repeat_root)
+    _validated_dispatch, dispatch_errors = _validate_dispatch_receipt(
+        repeat_root=repeat_root,
+        descriptor=dispatch,
+        assignment=assignment,
+        assignment_digest=sha256_file(assignment_path),
+        execution_profile=execution_profile,
+    )
+    if dispatch is not None and dispatch_errors:
+        raise ManifestError(
+            "unable to bind dispatch receipt: " + "; ".join(dispatch_errors)
+        )
+    if status == "completed" and dispatch is None:
+        raise ManifestError("completed execution requires a dispatch receipt")
+    normalized_source_trace, source_trace_errors = _validate_source_trace(
+        repeat_root=repeat_root,
+        descriptor=source_trace,
+        assignment=assignment,
+        trace_events=events,
+        required=capture_source == "codex_cli_jsonl" and status == "completed",
+    )
+    if source_trace_errors:
+        raise ManifestError(
+            "unable to bind source trace: " + "; ".join(source_trace_errors)
+        )
     trace = {
         "artifact": str(assignment.get("trace_artifact")),
         "digest": sha256_file(trace_path),
@@ -2258,6 +2671,8 @@ def finalize_execution(
         "side_effects": side_effects,
         "metrics": metrics,
         "artifact_digests": artifact_digests,
+        "dispatch": dispatch,
+        "source_trace": normalized_source_trace,
         "trace": trace,
     }
     write_json(execution_path, execution)
@@ -2511,6 +2926,7 @@ def grade_arm(
     arm: str,
     run_id: str,
     assignment_digests: dict[str, str],
+    execution_profile: dict[str, Any],
     persist: bool = True,
 ) -> dict[str, Any]:
     repeat_results: list[dict[str, Any]] = []
@@ -2607,6 +3023,19 @@ def grade_arm(
             "interrupted",
         }:
             repeat_binding_errors.append("execution status is invalid")
+        dispatch_descriptor, dispatch_errors = _validate_dispatch_receipt(
+            repeat_root=repeat_root,
+            descriptor=execution.get("dispatch"),
+            assignment=assignment,
+            assignment_digest=expected_assignment_digest,
+            execution_profile=execution_profile,
+        )
+        repeat_binding_errors.extend(dispatch_errors)
+        dispatch_artifact = dispatch_descriptor.get("artifact")
+        if isinstance(dispatch_artifact, str):
+            dispatch_path = _safe_artifact(repeat_root, dispatch_artifact)
+            if dispatch_path.is_file():
+                artifacts.append(str(dispatch_path.relative_to(workspace)))
         trace_artifact = _validate_artifact_path(
             assignment.get("trace_artifact"),
             f"locked assignment trace_artifact: {assignment_relative}",
@@ -2627,6 +3056,20 @@ def grade_arm(
             expected_artifact=trace_artifact,
         )
         repeat_binding_errors.extend(trace_errors)
+        source_trace_descriptor, source_trace_errors = _validate_source_trace(
+            repeat_root=repeat_root,
+            descriptor=execution.get("source_trace"),
+            assignment=assignment,
+            trace_events=trace_events,
+            required=trace_descriptor.get("capture_source") == "codex_cli_jsonl",
+        )
+        repeat_binding_errors.extend(source_trace_errors)
+        if isinstance(source_trace_descriptor, dict):
+            source_artifact = source_trace_descriptor.get("artifact")
+            if isinstance(source_artifact, str):
+                source_path = _safe_artifact(repeat_root, source_artifact)
+                if source_path.is_file():
+                    artifacts.append(str(source_path.relative_to(workspace)))
         trace_event_ids = _trace_event_ids_by_artifact(trace_events)
         trace_provenance_errors: list[str] = []
         expected_artifacts = assignment.get("expected_artifacts")
@@ -2748,6 +3191,18 @@ def grade_arm(
                 "binding_errors": repeat_binding_errors,
                 "execution_digest": execution_digest,
                 "artifact_digests": actual_artifact_digests,
+                "dispatch": {
+                    **dispatch_descriptor,
+                    "valid": not dispatch_errors,
+                },
+                "source_trace": (
+                    {
+                        **source_trace_descriptor,
+                        "valid": not source_trace_errors,
+                    }
+                    if isinstance(source_trace_descriptor, dict)
+                    else None
+                ),
                 "trace": {
                     **trace_descriptor,
                     "valid": not trace_errors and not trace_provenance_errors,
@@ -2795,6 +3250,71 @@ def grade_arm(
     if persist:
         write_json(arm_root / "grading.json", result)
     return result
+
+
+def _apply_paired_dispatch_validation(
+    *, case: dict[str, Any], graded: dict[str, dict[str, Any]]
+) -> None:
+    arms = [str(arm) for arm in case.get("arms", [])]
+    repeats = int(case.get("repeats", 0))
+    for repeat in range(1, repeats + 1):
+        records: list[tuple[str, dict[str, Any]]] = []
+        for arm in arms:
+            arm_repeats = graded.get(arm, {}).get("repeats", [])
+            record = next(
+                (
+                    item
+                    for item in arm_repeats
+                    if isinstance(item, dict) and item.get("repeat") == repeat
+                ),
+                None,
+            )
+            if not isinstance(record, dict):
+                continue
+            dispatch = record.get("dispatch")
+            if not isinstance(dispatch, dict) or dispatch.get("valid") is not True:
+                continue
+            records.append((arm, record))
+        if len(records) != len(arms):
+            continue
+        batch_ids = {
+            str(record["dispatch"].get("batch_id")) for _arm, record in records
+        }
+        dispatch_times = [
+            _parse_trace_timestamp(record["dispatch"].get("dispatched_at"))
+            for _arm, record in records
+        ]
+        pairing_errors: list[str] = []
+        if len(batch_ids) != 1:
+            pairing_errors.append("paired dispatch batch_id mismatch")
+        if all(value is not None for value in dispatch_times):
+            normalized_times = [value for value in dispatch_times if value is not None]
+            skew_ms = int(
+                (max(normalized_times) - min(normalized_times)).total_seconds() * 1000
+            )
+            if skew_ms > MAX_PAIRED_DISPATCH_SKEW_MS:
+                pairing_errors.append(
+                    "paired dispatch start skew exceeds "
+                    f"{MAX_PAIRED_DISPATCH_SKEW_MS}ms: {skew_ms}ms"
+                )
+        if not pairing_errors:
+            continue
+        for arm, record in records:
+            repeat_errors = record.setdefault("binding_errors", [])
+            if isinstance(repeat_errors, list):
+                repeat_errors.extend(pairing_errors)
+            record["status"] = "invalid"
+            dispatch = record.get("dispatch")
+            if isinstance(dispatch, dict):
+                dispatch["valid"] = False
+            arm_result = graded[arm]
+            arm_result["complete"] = False
+            arm_result["passed"] = False
+            arm_errors = arm_result.setdefault("binding_errors", [])
+            if isinstance(arm_errors, list):
+                arm_errors.extend(
+                    f"repeat {repeat}: {error}" for error in pairing_errors
+                )
 
 
 def _semantic_judgment_binding(
@@ -3471,6 +3991,8 @@ def verify_locked_inputs(
                     "execution_profile_digest": expected_execution_profile["digest"],
                     "writable_root": str(repeat_root.resolve()),
                     "execution_artifact": "execution.json",
+                    "dispatch_artifact": "dispatch-receipt.json",
+                    "source_trace_artifact": "codex-events.jsonl",
                     "trace_artifact": "agent-trace.jsonl",
                     "expected_artifacts": expected_artifacts,
                 }
@@ -3556,10 +4078,21 @@ def grade_run(
                 arm=str(arm),
                 run_id=str(plan.get("run_id")),
                 assignment_digests=assignment_digests,
-                persist=persist,
+                execution_profile=plan.get("execution_profile", {}),
+                persist=False,
             )
             for arm in arms
         }
+        _apply_paired_dispatch_validation(case=case, graded=graded)
+        if persist:
+            for arm, arm_result in graded.items():
+                write_json(
+                    _safe_artifact(
+                        workspace,
+                        (Path("cases") / str(case["id"]) / str(arm) / "grading.json").as_posix(),
+                    ),
+                    arm_result,
+                )
         candidate = graded["with_skill"]
         declared_baseline = plan.get("baseline", {}).get("kind")
         baseline_arm = (
@@ -6468,6 +7001,43 @@ def project_dashboard(
                         for event in trace_events
                         if isinstance(event, dict)
                     ]
+                raw_dispatch = repeat.get("dispatch")
+                projected_dispatch = (
+                    {
+                        key: raw_dispatch.get(key)
+                        for key in (
+                            "artifact",
+                            "digest",
+                            "valid",
+                            "provider",
+                            "harness",
+                            "observation",
+                            "dispatch_id",
+                            "worker_id",
+                            "batch_id",
+                            "dispatched_at",
+                        )
+                    }
+                    if isinstance(raw_dispatch, dict)
+                    else None
+                )
+                raw_source_trace = repeat.get("source_trace")
+                projected_source_trace = (
+                    {
+                        key: raw_source_trace.get(key)
+                        for key in (
+                            "artifact",
+                            "digest",
+                            "valid",
+                            "source_stream_digest",
+                            "source_event_count",
+                            "retained_event_count",
+                            "redaction",
+                        )
+                    }
+                    if isinstance(raw_source_trace, dict)
+                    else None
+                )
                 execution_rows.append(
                     {
                         "repeat": repeat_number,
@@ -6494,6 +7064,8 @@ def project_dashboard(
                         "metrics": repeat.get("metrics", {})
                         if isinstance(repeat.get("metrics"), dict)
                         else {},
+                        "dispatch": projected_dispatch,
+                        "source_trace": projected_source_trace,
                         "trace": projected_trace,
                     }
                 )
@@ -6832,6 +7404,7 @@ def project_dashboard(
     )
     data = {
         "contract": DASHBOARD_CONTRACT,
+        "schema_version": 2,
         "generated_at": None,
         "refresh_interval_ms": 3000,
         "run": {
@@ -6931,6 +7504,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     grade_parser = subparsers.add_parser("grade")
     grade_parser.add_argument("--plan", type=Path, required=True)
     grade_parser.add_argument("--workspace", type=Path, required=True)
+    dispatch_parser = subparsers.add_parser(
+        "record-dispatch",
+        help="Record a harness-observed worker dispatch for one locked execution cell.",
+    )
+    dispatch_parser.add_argument("--workspace", type=Path, required=True)
+    dispatch_parser.add_argument("--assignment", type=Path, required=True)
+    dispatch_parser.add_argument("--dispatch-id", required=True)
+    dispatch_parser.add_argument("--worker-id", required=True)
+    dispatch_parser.add_argument("--batch-id")
     trace_parser = subparsers.add_parser(
         "trace-event",
         help="Append one observable Agent event to the bound execution trace.",
@@ -7020,6 +7602,14 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "grade":
             result = grade_run(plan_path=args.plan, workspace=args.workspace)
+        elif args.command == "record-dispatch":
+            result = record_dispatch_receipt(
+                assignment_path=args.assignment,
+                workspace=args.workspace,
+                dispatch_id=args.dispatch_id,
+                worker_id=args.worker_id,
+                batch_id=args.batch_id,
+            )
         elif args.command == "trace-event":
             result = record_trace_event(
                 assignment_path=args.assignment,

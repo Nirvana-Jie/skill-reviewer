@@ -2,9 +2,11 @@
 """Execute one locked skill eval assignment with the local Codex CLI.
 
 The adapter keeps the eval runtime agent-agnostic while turning Codex's
-observable JSONL stream into the append-only Agent Trace contract. It never
-records hidden reasoning. ``--full-access`` is explicit and is retained as
-``local-unattested`` provenance rather than being presented as sandbox proof.
+observable JSONL stream into the append-only Agent Trace contract. It records
+the spawned process in a dispatch receipt and digest-binds the redacted source
+stream. It never records hidden reasoning. ``--full-access`` is explicit and
+is retained as ``local-unattested`` provenance rather than being presented as
+sandbox proof.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ from skill_eval_runtime import (
     _trace_assignment_context,
     finalize_execution,
     load_json,
+    record_dispatch_receipt,
     record_trace_event,
     sha256_file,
 )
@@ -282,7 +285,17 @@ def _require_locked_assignment(
     if not isinstance(execution_artifact, str):
         raise ManifestError("assignment.execution_artifact is invalid")
     execution_path = _safe_artifact(repeat_root, execution_artifact)
-    for generated in [trace_path, execution_path, repeat_root / RAW_EVENT_ARTIFACT, repeat_root / STDERR_ARTIFACT]:
+    dispatch_artifact = assignment.get("dispatch_artifact")
+    if not isinstance(dispatch_artifact, str):
+        raise ManifestError("assignment.dispatch_artifact is invalid")
+    dispatch_path = _safe_artifact(repeat_root, dispatch_artifact)
+    for generated in [
+        trace_path,
+        execution_path,
+        dispatch_path,
+        repeat_root / RAW_EVENT_ARTIFACT,
+        repeat_root / STDERR_ARTIFACT,
+    ]:
         if generated.exists() or generated.is_symlink():
             raise ManifestError(f"executor output already exists: {generated.name}")
     expected = assignment.get("expected_artifacts")
@@ -700,6 +713,31 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
             capture_source=CAPTURE_SOURCE,
         )
 
+    try:
+        record_dispatch_receipt(
+            assignment_path=assignment_path,
+            workspace=workspace,
+            dispatch_id="dispatch-"
+            + _sha256_text(
+                "|".join(
+                    [
+                        str(assignment.get("run_id")),
+                        str(assignment.get("case_id")),
+                        str(assignment.get("arm")),
+                        str(assignment.get("repeat")),
+                        str(process.pid),
+                        str(time.time_ns()),
+                    ]
+                )
+            )[:20],
+            worker_id=f"pid:{process.pid}",
+            batch_id=args.batch_id,
+        )
+    except ManifestError:
+        _terminate_process_group(process)
+        process.wait()
+        raise
+
     def read_stderr() -> None:
         assert process.stderr is not None
         for line in process.stderr:
@@ -827,6 +865,9 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
     if stderr_text:
         stderr_path.write_text(stderr_text, encoding="utf-8")
     raw_digest = sha256_file(raw_path)
+    retained_event_count = sum(
+        1 for line in raw_path.read_text(encoding="utf-8").splitlines() if line.strip()
+    )
     _record(
         assignment_path=assignment_path,
         workspace=workspace,
@@ -839,6 +880,7 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
                 "digest": raw_digest,
                 "size": raw_path.stat().st_size,
                 "source_event_count": raw_count,
+                "retained_event_count": retained_event_count,
                 "source_stream_digest": source_stream_hasher.hexdigest(),
                 "redaction": "private-reasoning-fields-removed",
             },
@@ -913,6 +955,14 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
         forbidden_actions=forbidden_actions,
         side_effects=side_effects,
         capture_source=CAPTURE_SOURCE,
+        source_trace={
+            "artifact": RAW_EVENT_ARTIFACT,
+            "digest": raw_digest,
+            "source_stream_digest": source_stream_hasher.hexdigest(),
+            "source_event_count": raw_count,
+            "retained_event_count": retained_event_count,
+            "redaction": "private-reasoning-fields-removed",
+        },
     )
 
 
@@ -924,6 +974,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--assignment", type=Path, required=True)
     parser.add_argument("--codex-bin", default="codex")
     parser.add_argument("--model")
+    parser.add_argument(
+        "--batch-id",
+        help="Optional paired-dispatch batch identifier shared across arms for one repeat.",
+    )
     parser.add_argument(
         "--full-access",
         action="store_true",

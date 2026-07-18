@@ -27,7 +27,9 @@ export interface AgentTraceEvent {
   artifact_refs: string[];
 }
 
-export interface AgentExecutionTrace {
+export type AgentTraceDiagnosticEvent = Record<string, unknown>;
+
+interface ValidAgentExecutionTrace {
   artifact: string;
   digest: string;
   capture_source:
@@ -35,13 +37,86 @@ export interface AgentExecutionTrace {
     | "harness_native"
     | "lead_agent_observed";
   complete: boolean;
-  valid: boolean;
+  valid: true;
   event_count: number;
   started_at: string;
   finished_at: string;
   duration_ms: number;
   events: AgentTraceEvent[];
 }
+
+interface InvalidAgentExecutionTrace {
+  artifact?: string | null;
+  digest?: string | null;
+  capture_source?:
+    | "codex_cli_jsonl"
+    | "harness_native"
+    | "lead_agent_observed"
+    | null;
+  complete?: boolean | null;
+  valid: false;
+  event_count?: number | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  duration_ms?: number | null;
+  events: AgentTraceDiagnosticEvent[];
+}
+
+export type AgentExecutionTrace =
+  | ValidAgentExecutionTrace
+  | InvalidAgentExecutionTrace;
+
+interface ValidAgentDispatchReceipt {
+  artifact: string;
+  digest: string;
+  valid: true;
+  provider: string;
+  harness: string;
+  observation: "host_dispatch" | "process_spawn" | "external_harness";
+  dispatch_id: string;
+  worker_id: string;
+  batch_id: string;
+  dispatched_at: string;
+}
+
+interface InvalidAgentDispatchReceipt {
+  artifact?: string | null;
+  digest?: string | null;
+  valid: false;
+  provider?: string | null;
+  harness?: string | null;
+  observation?: "host_dispatch" | "process_spawn" | "external_harness" | null;
+  dispatch_id?: string | null;
+  worker_id?: string | null;
+  batch_id?: string | null;
+  dispatched_at?: string | null;
+}
+
+export type AgentDispatchReceipt =
+  | ValidAgentDispatchReceipt
+  | InvalidAgentDispatchReceipt;
+
+interface ValidAgentSourceTrace {
+  artifact: string;
+  digest: string;
+  valid: true;
+  source_stream_digest: string;
+  source_event_count: number;
+  retained_event_count: number;
+  redaction: "private-reasoning-fields-removed";
+}
+
+interface InvalidAgentSourceTrace {
+  artifact?: string | null;
+  digest?: string | null;
+  valid: false;
+  source_stream_digest?: string | null;
+  source_event_count?: number | null;
+  retained_event_count?: number | null;
+  redaction?: "private-reasoning-fields-removed" | null;
+}
+
+export type AgentSourceTrace = ValidAgentSourceTrace | InvalidAgentSourceTrace;
 
 export interface DashboardExecution {
   repeat: number;
@@ -52,6 +127,8 @@ export interface DashboardExecution {
   assertions: { passed: number; total: number };
   required_pass_rate: number | null;
   metrics: Record<string, number>;
+  dispatch?: AgentDispatchReceipt | null;
+  source_trace?: AgentSourceTrace | null;
   trace: AgentExecutionTrace | null;
 }
 
@@ -338,6 +415,7 @@ export interface DashboardDiffPayload {
 
 export interface DashboardData {
   contract: "skill-reviewer.dashboard-data";
+  schema_version?: number;
   generated_at: string | null;
   refresh_interval_ms: number;
   run: {
@@ -387,24 +465,24 @@ export interface DashboardData {
   };
   evolution: {
     active_query?: {
-      phase?: "selection" | "audit";
-      round?: number;
-      run_id?: string;
-      candidate_digest?: string;
-      holdout_visibility?: "public" | "opaque";
+      phase: "selection" | "audit";
+      round: number;
+      run_id: string;
+      candidate_digest: string;
+      holdout_visibility: "public" | "opaque" | null;
     } | null;
     selection_query_limit: number;
     audit_query_limit: number;
     candidate_lineage: Array<{
-      round?: number;
-      run_id?: string;
-      parent_digest?: string;
-      candidate_digest?: string;
-      change?: { added?: string[]; removed?: string[]; modified?: string[] };
-      change_digest?: string;
-      continuity?: "continue" | "reset";
-      continuity_epoch?: number;
-      training_trace_ids?: string[];
+      round: number;
+      run_id: string;
+      parent_digest: string;
+      candidate_digest: string;
+      change: { added: string[]; removed: string[]; modified: string[] };
+      change_digest: string;
+      continuity: "continue" | "reset";
+      continuity_epoch: number;
+      training_trace_ids: string[];
     }>;
     rejected_candidates: Array<Record<string, unknown>>;
   };

@@ -5,6 +5,7 @@ import {
   ChevronRight,
   CircleAlert,
   FileSearch,
+  GitCompareArrows,
   ListTree,
   ShieldCheck,
   X,
@@ -12,6 +13,7 @@ import {
 import type { ReactNode } from "react";
 
 import { nextActionMessageKey } from "./ActionCenter";
+import { buildTraceCaseIndex } from "./eval-execution-trace";
 import {
   describeAssertionDecision,
   describeDashboardCase,
@@ -110,11 +112,11 @@ function reviewDecisionCopy(
     return locale === "zh-CN"
       ? {
           title: "候选已通过，等待发布审计",
-          detail: "候选选拔已满足要求；自动完成一次性发布审计并保留结果后，才能进入发布确认。",
+          detail: "候选选拔已满足要求，但发布证据尚不完整，暂不可发布；自动完成一次性发布审计并保留结果后，才能进入发布确认。",
         }
       : {
           title: "Candidate passed; release audit pending",
-          detail: "Candidate selection passed. Complete and retain the one-shot release audit before requesting release confirmation.",
+          detail: "Candidate selection passed, but release evidence is incomplete and release is not ready. Complete and retain the one-shot release audit before requesting confirmation.",
         };
   }
   return locale === "zh-CN"
@@ -128,71 +130,13 @@ function reviewDecisionCopy(
       };
 }
 
-export function ReviewNavigationGuide({ data }: { data: DashboardData }) {
-  const { locale, t } = useUiPreferences();
-  const decision = reviewDecisionCopy(locale, data);
-  const nextActionKey = nextActionMessageKey(data.review.next_action);
-  const automaticContinuation =
-    data.action_center.continuation.mode === "automatic";
-  return (
-    <div className="review-navigation-guide">
-      <div className="review-navigation-state">
-        <span>{t("releaseState")}</span>
-        <strong>{decision.title}</strong>
-        <p>{decision.detail}</p>
-      </div>
-      <section>
-        <h3>
-          {t(
-            automaticContinuation
-              ? "automaticExecutionSteps"
-              : "reviewActionPanelTitle",
-          )}
-        </h3>
-        <p>
-          {t(
-            automaticContinuation
-              ? "automaticActionDescription"
-              : "reviewActionPanelDescription",
-          )}
-        </p>
-        <ol>
-          {automaticContinuation ? (
-            <>
-              <li>{t("automaticStepPrecondition")}</li>
-              <li>{t("automaticStepExecute")}</li>
-              <li>{t("automaticStepEvidence")}</li>
-              <li>{t("automaticStepProject")}</li>
-            </>
-          ) : (
-            <>
-              <li>{t("reviewActionStepTask")}</li>
-              <li>{t("reviewActionStepAgent")}</li>
-              <li>{t("reviewActionStepRefresh")}</li>
-            </>
-          )}
-        </ol>
-      </section>
-      <section className="review-navigation-next">
-        <span>{t("recommendedNextStep")}</span>
-        <strong>{t(nextActionKey ?? "nextActionReviewEvidence")}</strong>
-        <small>
-          {t(
-            automaticContinuation
-              ? "automaticLeadAgentOwnerDescription"
-              : "leadAgentOwnerDescription",
-          )}
-        </small>
-      </section>
-    </div>
-  );
-}
-
 export function ReviewOverview({
   data,
   archiveOpen,
   onToggleArchive,
   onOpenEvidence,
+  onOpenDiff,
+  onOpenTrace,
   onOpenActionCenter,
   children,
 }: {
@@ -200,6 +144,8 @@ export function ReviewOverview({
   archiveOpen: boolean;
   onToggleArchive: () => void;
   onOpenEvidence: (node: SpineNode) => void;
+  onOpenDiff: () => void;
+  onOpenTrace: () => void;
   onOpenActionCenter: () => void;
   children: ReactNode;
 }) {
@@ -214,6 +160,29 @@ export function ReviewOverview({
       : "warn";
   const automaticContinuation =
     data.action_center.continuation.mode === "automatic";
+  const noBlockersReady = data.review.decision.status === "ready";
+  const automaticNoBlockers =
+    automaticContinuation && data.review.decision.reason === "audit_required";
+  const noBlockersTitleKey = noBlockersReady
+    ? "releaseBlockerNone"
+    : "noKnownBlockerEvidenceIncomplete";
+  const configuredRatio = (passed: number, total: number) =>
+    total > 0 ? `${passed}/${total}` : t("notConfigured");
+  const traceIndex = buildTraceCaseIndex(data.cases);
+  const expectedTraces = traceIndex.reduce(
+    (total, item) => total + item.expectedExecutions,
+    0,
+  );
+  const capturedTraces = traceIndex.reduce(
+    (total, item) => total + item.capturedTraces,
+    0,
+  );
+  const traceCoverageComplete =
+    expectedTraces > 0 && capturedTraces === expectedTraces;
+  const primaryBlocker = data.review.blockers[0];
+  const primaryRiskEvidence = primaryBlocker?.evidence_ids
+    .map((id) => nodesById.get(id))
+    .find((node): node is SpineNode => Boolean(node));
 
   return (
     <div className="review-overview">
@@ -228,14 +197,90 @@ export function ReviewOverview({
         </div>
         <div className="review-decision-counts" aria-label={t("decisionCoverage")}>
           <div>
-            <strong>{data.summary.hard_gates_passed}/{data.summary.hard_gates_total}</strong>
+            <strong>
+              {configuredRatio(
+                data.summary.hard_gates_passed,
+                data.summary.hard_gates_total,
+              )}
+            </strong>
             <span>{t("hardGates")}</span>
           </div>
           <div>
-            <strong>{data.summary.candidate_passed}/{data.summary.case_count}</strong>
+            <strong>
+              {configuredRatio(
+                data.summary.candidate_passed,
+                data.summary.case_count,
+              )}
+            </strong>
             <span>{t("casesPassed")}</span>
           </div>
         </div>
+      </section>
+
+      <section
+        className="decision-evidence-spine"
+        aria-label={t("decisionEvidence")}
+      >
+        <button
+          type="button"
+          className={data.diffs.length > 0 ? "tone-neutral" : "tone-warn"}
+          aria-label={t("reviewChangeEvidence")}
+          onClick={onOpenDiff}
+        >
+          <GitCompareArrows size={17} aria-hidden="true" />
+          <span>
+            <small>{t("whatChanged")}</small>
+            <strong>
+              {data.diffs.length > 0
+                ? t("changeEvidenceCount", { count: data.diffs.length })
+                : t("noChangeEvidenceCaptured")}
+            </strong>
+          </span>
+          <ChevronRight size={15} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className={traceCoverageComplete ? "tone-good" : "tone-warn"}
+          aria-label={t("reviewExecutionEvidence")}
+          onClick={onOpenTrace}
+        >
+          <ShieldCheck size={17} aria-hidden="true" />
+          <span>
+            <small>{t("evidenceCoverage")}</small>
+            <strong>
+              {expectedTraces > 0
+                ? t("evidenceCoverageRatio", {
+                    captured: capturedTraces,
+                    expected: expectedTraces,
+                  })
+                : t("notConfigured")}
+            </strong>
+          </span>
+          <ChevronRight size={15} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className={primaryBlocker ? "tone-bad" : noBlockersReady ? "tone-good" : "tone-warn"}
+          aria-label={t("reviewPrimaryRiskEvidence")}
+          onClick={() =>
+            primaryRiskEvidence
+              ? onOpenEvidence(primaryRiskEvidence)
+              : onOpenActionCenter()
+          }
+        >
+          <CircleAlert size={17} aria-hidden="true" />
+          <span>
+            <small>{t("primaryRisk")}</small>
+            <strong>
+              {primaryBlocker
+                ? t("releaseBlockerCount", { count: data.review.blockers.length })
+                : noBlockersReady
+                  ? t("noKnownRisk")
+                  : t("evidenceIncomplete")}
+            </strong>
+          </span>
+          <ChevronRight size={15} aria-hidden="true" />
+        </button>
       </section>
 
       <div className="review-body-grid">
@@ -246,7 +291,11 @@ export function ReviewOverview({
               <h3 id="release-blockers-title">
                 {data.review.blockers.length > 0
                   ? t("releaseBlockerCount", { count: data.review.blockers.length })
-                  : t("releaseBlockerNone")}
+                  : t(
+                      noBlockersReady
+                        ? "releaseBlockerNone"
+                        : "noKnownBlockerEvidenceIncomplete",
+                    )}
               </h3>
             </div>
             <CircleAlert size={17} aria-hidden="true" />
@@ -430,16 +479,28 @@ export function ReviewOverview({
             );
           })}
           {data.review.blockers.length === 0 && (
-            <div className="review-no-blockers">
-              <Check size={16} aria-hidden="true" />
+            <div
+              className={`review-no-blockers tone-${
+                noBlockersReady ? "good" : "warn"
+              }`}
+              role="status"
+              aria-label={t(noBlockersTitleKey)}
+            >
+              {noBlockersReady ? (
+                <Check size={16} aria-hidden="true" />
+              ) : (
+                <CircleAlert size={16} aria-hidden="true" />
+              )}
               <div>
-                <strong>{t("releaseBlockerNone")}</strong>
+                <strong>
+                  {t(noBlockersTitleKey)}
+                </strong>
                 <p>
-                  {t(
-                    automaticContinuation
-                      ? "automaticNoBlockerSummary"
-                      : "readyForHumanConfirmation",
-                  )}
+                  {noBlockersReady
+                    ? t("readyForHumanConfirmation")
+                    : automaticNoBlockers
+                      ? t("automaticNoBlockerSummary")
+                      : t("evidenceIncompleteReleaseBlocked")}
                 </p>
               </div>
             </div>
@@ -466,7 +527,9 @@ export function ReviewOverview({
                   </span>
                   <div>
                     <strong>{t(`criterion_${criterion.id}`)}</strong>
-                    <small>{criterion.passed}/{criterion.total}</small>
+                    <small>
+                      {configuredRatio(criterion.passed, criterion.total)}
+                    </small>
                   </div>
                 </li>
               ))}

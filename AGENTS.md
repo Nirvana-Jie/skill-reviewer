@@ -25,7 +25,7 @@ For syntax-only checks in restricted macOS sandboxes, direct pycache to a writab
 directory:
 
 ```bash
-env PYTHONPYCACHEPREFIX=/private/tmp/skill-reviewer-pycache python3 -m py_compile skills/skill-reviewer/scripts/dashboard_bundle.py skills/skill-reviewer/scripts/lint_skill_package.py skills/skill-reviewer/scripts/run_codex_eval_executor.py skills/skill-reviewer/scripts/run_codex_skill_evals.py skills/skill-reviewer/scripts/skill_eval_runtime.py skills/skill-reviewer/scripts/serve_skill_dashboard.py skills/skill-reviewer/scripts/start_skill_dashboard.py skills/skill-reviewer/scripts/validate_local_snapshot.py tests/test_run_codex_skill_evals.py
+env PYTHONPYCACHEPREFIX=/private/tmp/skill-reviewer-pycache python3 -m py_compile skills/skill-reviewer/scripts/dashboard_bundle.py skills/skill-reviewer/scripts/lint_skill_package.py skills/skill-reviewer/scripts/run_codex_eval_executor.py skills/skill-reviewer/scripts/run_codex_eval_plan.py skills/skill-reviewer/scripts/run_codex_skill_evals.py skills/skill-reviewer/scripts/skill_eval_runtime.py skills/skill-reviewer/scripts/serve_skill_dashboard.py skills/skill-reviewer/scripts/start_skill_dashboard.py skills/skill-reviewer/scripts/validate_local_snapshot.py tests/test_run_codex_skill_evals.py
 ```
 
 ## Contribution Workflow
