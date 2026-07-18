@@ -38,6 +38,7 @@ import {
   buildTraceAttentionSummary,
   buildTraceExecutionMatrix,
   classifyTraceExecutor,
+  hasInspectableTraceExecution,
   isVerifiedTraceExecution,
   resolveTraceEventSemantics,
   type TraceSemanticTone,
@@ -177,7 +178,7 @@ function findTraceEventContexts(
     for (const execution of arm.executions ?? []) {
       if (expectedArm && arm.id !== expectedArm) continue;
       if (expectedRepeat && execution.repeat !== expectedRepeat) continue;
-      if (!isVerifiedTraceExecution(execution)) continue;
+      if (!hasInspectableTraceExecution(execution)) continue;
       const events = execution.trace?.events.filter(
         (item) =>
           wanted.has(item.event_id) &&
@@ -334,7 +335,7 @@ function TraceTimeline({
   const { locale, t } = useUiPreferences();
   const trace =
     execution &&
-    isVerifiedTraceExecution(execution) &&
+    hasInspectableTraceExecution(execution) &&
     execution.trace?.valid === true
       ? execution.trace
       : null;
@@ -499,7 +500,7 @@ export function EvalExecutionTraceView({
 
   useEffect(() => {
     const events =
-      selectedExecution && isVerifiedTraceExecution(selectedExecution)
+      selectedExecution && hasInspectableTraceExecution(selectedExecution)
         ? selectedExecution.trace.events
         : [];
     if (
@@ -829,12 +830,12 @@ export function EvalExecutionTraceView({
                             <span>
                               <strong>{localizeStatus(locale, execution.status)}</strong>
                               <small>
-                                {isVerifiedTraceExecution(execution)
+                                {hasInspectableTraceExecution(execution)
                                   ? t("traceCaptured")
                                   : t("traceNotCaptured")}
                                 {" · "}
                                 {formatDuration(
-                                  isVerifiedTraceExecution(execution)
+                                  hasInspectableTraceExecution(execution)
                                     ? execution.trace?.duration_ms
                                     : null,
                                 )}

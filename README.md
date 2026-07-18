@@ -136,7 +136,8 @@ trusted harness provenance, not cryptographic attestation.
 
 Real-provider canaries are opt-in because they may require local authentication,
 network access, and model spend. This launches the installed CLI through the
-complete compile → process → source → grade → Dashboard chain:
+complete compile → process → source → grade → Dashboard projection chain, then
+mounts the Trace view and expands the real marker event in the rendered UI:
 
 ```bash
 SKILL_REVIEWER_REAL_AGENT_E2E=codex,claude \

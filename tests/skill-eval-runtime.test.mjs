@@ -1685,8 +1685,6 @@ describe("skill_eval_runtime grade", () => {
           "Read the bound Skill instructions",
           "--details-json",
           JSON.stringify({ path: "SKILL.md", digest: "a".repeat(64) }),
-          "--capture-source",
-          "harness_native",
         ]);
         expect(observed.status, observed.stderr).toBe(0);
         const command = runtimeCommand([
@@ -1701,8 +1699,6 @@ describe("skill_eval_runtime grade", () => {
           "Validated the generated response",
           "--details-json",
           JSON.stringify({ argv: ["test", "-s", "outputs/response.md"], exit_code: 0 }),
-          "--capture-source",
-          "harness_native",
         ]);
         expect(command.status, command.stderr).toBe(0);
         const finalized = runtimeCommand([
@@ -1713,8 +1709,6 @@ describe("skill_eval_runtime grade", () => {
           assignment,
           "--status",
           "completed",
-          "--capture-source",
-          "harness_native",
         ]);
         expect(finalized.status, finalized.stderr).toBe(0);
       }
@@ -1887,6 +1881,14 @@ describe("skill_eval_runtime grade", () => {
       expect(evidence.cases[0].with_skill.complete).toBe(false);
       expect(evidence.cases[0].with_skill.binding_errors.join("\n")).toContain(
         "paired dispatch batch_id mismatch",
+      );
+      expect(evidence.cases[0].with_skill.repeats[0]).toEqual(
+        expect.objectContaining({
+          status: "completed",
+          binding_errors: expect.arrayContaining([
+            "paired dispatch batch_id mismatch",
+          ]),
+        }),
       );
       expect(evidence.cases[0][baselineArm].complete).toBe(false);
     });

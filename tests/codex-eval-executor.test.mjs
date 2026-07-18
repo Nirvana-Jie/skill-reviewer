@@ -193,9 +193,12 @@ events = [
     {"type": "item.completed", "item": {"id": "reason-1", "type": "reasoning", "text": "PRIVATE_CHAIN_OF_THOUGHT"}},
     {"type": "item.started", "item": {"id": "cmd-1", "type": "command_execution", "command": "/bin/zsh -lc 'printf PASS'", "status": "in_progress"}},
     {"type": "item.completed", "item": {"id": "cmd-1", "type": "command_execution", "command": "/bin/zsh -lc 'printf PASS'", "aggregated_output": "PASS", "exit_code": 0, "status": "completed"}},
+    {"type": "item.completed", "item": {"id": "provider-1", "type": "provider_observation", "status": "completed", "payload": {"thinking": "PRIVATE_NESTED_THINKING", "signature": "PRIVATE_SIGNATURE"}}},
     {"type": "item.completed", "item": {"id": "msg-1", "type": "agent_message", "text": "PASS"}},
     {"type": "turn.completed", "usage": {"input_tokens": 21, "cached_input_tokens": 3, "output_tokens": 2}},
 ]
+if os.environ.get("FAKE_CODEX_TURN_FAILED") == "1":
+    events[-1] = {"type": "turn.failed", "error": {"message": "provider reported failure"}}
 for event in events:
     print(json.dumps(event), flush=True)
 `,
@@ -402,12 +405,16 @@ describe("local Codex eval executor", () => {
       expect(trace).toContain("/bin/zsh -lc 'printf PASS'");
       expect(trace).toContain("thread-real-jsonl");
       expect(trace).not.toContain("PRIVATE_CHAIN_OF_THOUGHT");
+      expect(trace).not.toContain("PRIVATE_NESTED_THINKING");
+      expect(trace).not.toContain("PRIVATE_SIGNATURE");
       const observableWire = readFileSync(
         join(repeatRoot, "agent-source-events.jsonl"),
         "utf8",
       );
       expect(observableWire).toContain('"redacted":true');
       expect(observableWire).not.toContain("PRIVATE_CHAIN_OF_THOUGHT");
+      expect(observableWire).not.toContain("PRIVATE_NESTED_THINKING");
+      expect(observableWire).not.toContain("PRIVATE_SIGNATURE");
       expect(existsSync(join(repeatRoot, "dispatch-receipt.json"))).toBe(true);
 
       const baseline = run(
@@ -445,6 +452,47 @@ describe("local Codex eval executor", () => {
         evidence.cases[0].without_skill.passed,
         JSON.stringify(evidence.cases[0].without_skill, null, 2),
       ).toBe(true);
+    } finally {
+      makeWritable(root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("treats a provider-reported turn failure as failed even when the process exits zero", () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-codex-turn-failed-"));
+    try {
+      const { workspace } = compileRun({ root });
+      const result = run(
+        python,
+        [
+          executor,
+          "--workspace",
+          workspace,
+          "--assignment",
+          assignment(workspace, "with_skill"),
+          "--codex-bin",
+          makeFakeCodex(root),
+          "--full-access",
+        ],
+        { env: { FAKE_CODEX_TURN_FAILED: "1" } },
+      );
+
+      expect(result.status).not.toBe(0);
+      const repeatRoot = join(
+        workspace,
+        "cases/observable-cli-trace/with_skill/repeat-1",
+      );
+      const execution = JSON.parse(
+        readFileSync(join(repeatRoot, "execution.json"), "utf8"),
+      );
+      expect(execution.status).toBe("failed");
+      expect(execution.metrics.provider_failure_event_count).toBe(1);
+      expect(readFileSync(join(repeatRoot, "agent-trace.jsonl"), "utf8")).toContain(
+        '"source_event_type":"turn.failed"',
+      );
+      expect(
+        readFileSync(join(repeatRoot, "outputs/response.md"), "utf8"),
+      ).toContain("PASS");
     } finally {
       makeWritable(root);
       rmSync(root, { recursive: true, force: true });

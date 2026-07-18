@@ -1,4 +1,4 @@
-// @vitest-environment node
+// @vitest-environment jsdom
 
 import { spawnSync } from "node:child_process";
 import {
@@ -16,10 +16,20 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { createElement } from "react";
+import { cleanup, fireEvent, render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { validateAndMigrateDashboardData } from "./dashboard-schema";
-import { classifyTraceExecutor } from "./eval-execution-trace";
+import { EvalExecutionTraceView } from "./EvalExecutionTrace";
+import {
+  buildEvalExecutionTrace,
+  classifyTraceExecutor,
+} from "./eval-execution-trace";
+import {
+  preferenceStorageKeys,
+  UiPreferencesProvider,
+} from "./ui-preferences";
 
 const repoRoot = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -313,6 +323,43 @@ describe("real Agent Trace adapters", () => {
             target: agent.target,
             harness: agent.harness,
           });
+          const trace = buildEvalExecutionTrace(data, "real-agent-trace");
+          expect(trace).not.toBeNull();
+          const validExecutionTrace = execution?.trace?.valid
+            ? execution.trace
+            : null;
+          expect(validExecutionTrace).not.toBeNull();
+          const markerEvent = validExecutionTrace?.events.find((event) =>
+            JSON.stringify(event.details).includes("REAL_AGENT_TRACE_OK"),
+          );
+          expect(markerEvent).toBeDefined();
+          window.localStorage.setItem(preferenceStorageKeys.locale, "en");
+          const rendered = render(
+            createElement(
+              UiPreferencesProvider,
+              null,
+              createElement(EvalExecutionTraceView, {
+                trace: trace!,
+                cases: data.cases,
+                manifest: data.run.manifest,
+                planDigest: data.run.integrity?.plan_digest,
+                executionProfile: data.run.execution_profile,
+                onSelectCase: () => undefined,
+                onOpenEvidence: () => undefined,
+              }),
+            ),
+          );
+          expect(
+            rendered.getByRole("list", {
+              name: "Observable event timeline",
+            }),
+          ).toBeInstanceOf(HTMLOListElement);
+          const markerButton = rendered
+            .getAllByRole("button")
+            .find((button) => button.textContent?.includes(markerEvent!.summary));
+          expect(markerButton).toBeDefined();
+          fireEvent.click(markerButton!);
+          expect(rendered.container.textContent).toContain("REAL_AGENT_TRACE_OK");
           expect(
             readFileSync(
               join(
@@ -323,6 +370,7 @@ describe("real Agent Trace adapters", () => {
             ),
           ).toContain("REAL_AGENT_TRACE_OK");
         } finally {
+          cleanup();
           if (!retainedRoot) {
             makeWritable(root);
             rmSync(root, { recursive: true, force: true });

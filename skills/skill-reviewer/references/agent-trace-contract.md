@@ -152,8 +152,10 @@ mapping, redaction, failure handling, and digest binding. They are necessary
 but do not prove that an installed Agent can execute the end-to-end path.
 
 Run the opt-in Vitest canary to launch installed Agent CLIs through the real
-compile → dispatch → source retention → grade → projection → Dashboard schema
-chain:
+compile → dispatch → source retention → grade → projection chain. The canary
+then mounts `EvalExecutionTraceView`, finds the provider event containing the
+real output marker, expands it, and verifies that the marker is visible in the
+rendered Dashboard:
 
 ```bash
 SKILL_REVIEWER_REAL_AGENT_E2E=codex \

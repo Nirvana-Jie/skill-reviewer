@@ -241,6 +241,8 @@ TRACE_FORBIDDEN_DETAIL_KEYS = {
     "chain_of_thought",
     "private_reasoning",
     "reasoning",
+    "signature",
+    "thinking",
     "thought",
     "thoughts",
 }
@@ -2564,12 +2566,10 @@ def record_trace_event(
     status: str,
     details: dict[str, Any],
     artifact_refs: list[str],
-    capture_source: str,
+    capture_source: str | None,
 ) -> dict[str, Any]:
     if kind not in TRACE_EVENT_KINDS:
         raise ManifestError(f"unsupported Agent trace event kind: {kind}")
-    if TRACE_CAPTURE_SOURCE_PATTERN.fullmatch(capture_source) is None:
-        raise ManifestError(f"unsupported Agent trace capture source: {capture_source}")
     if not summary.strip():
         raise ManifestError("Agent trace event summary must not be empty")
     if not isinstance(details, dict):
@@ -2587,6 +2587,18 @@ def record_trace_event(
     assignment, _repeat_root, trace_path = _trace_assignment_context(
         assignment_path=assignment_path, workspace=workspace
     )
+    if capture_source is None:
+        execution_profile = _bound_execution_profile(
+            assignment_path=assignment_path.resolve(),
+            workspace=workspace.resolve(),
+            assignment=assignment,
+        )
+        capture_source = _require_string(
+            execution_profile.get("trace", {}).get("capture_source"),
+            "execution_profile.trace.capture_source",
+        )
+    if TRACE_CAPTURE_SOURCE_PATTERN.fullmatch(capture_source) is None:
+        raise ManifestError(f"unsupported Agent trace capture source: {capture_source}")
     events: list[dict[str, Any]] = []
     if trace_path.exists():
         events, errors = _read_trace_jsonl(trace_path)
@@ -2643,7 +2655,7 @@ def finalize_execution(
     metrics: dict[str, Any],
     forbidden_actions: list[str],
     side_effects: list[str],
-    capture_source: str,
+    capture_source: str | None,
     source_trace: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if status not in {"completed", "failed", "timed_out", "interrupted"}:
@@ -2663,6 +2675,8 @@ def finalize_execution(
         trace_profile.get("capture_source"),
         "execution_profile.trace.capture_source",
     )
+    if capture_source is None:
+        capture_source = expected_capture_source
     if capture_source != expected_capture_source:
         raise ManifestError(
             "execution capture source does not match the locked execution profile"
@@ -3317,9 +3331,10 @@ def grade_arm(
         repeat_results.append(
             {
                 "repeat": repeat,
-                "status": execution.get("status")
-                if not repeat_binding_errors
-                else "invalid",
+                # Lifecycle remains independent from evidence integrity. Binding
+                # failures stay in binding_errors instead of rewriting a real
+                # completed/failed/timed-out execution into a fake lifecycle.
+                "status": execution.get("status"),
                 "binding_errors": repeat_binding_errors,
                 "execution_digest": execution_digest,
                 "artifact_digests": actual_artifact_digests,
@@ -3435,7 +3450,6 @@ def _apply_paired_dispatch_validation(
             repeat_errors = record.setdefault("binding_errors", [])
             if isinstance(repeat_errors, list):
                 repeat_errors.extend(pairing_errors)
-            record["status"] = "invalid"
             dispatch = record.get("dispatch")
             if isinstance(dispatch, dict):
                 dispatch["valid"] = False
@@ -7667,8 +7681,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     trace_parser.add_argument(
         "--capture-source",
-        default="lead_agent_observed",
-        help="Lowercase adapter slug declared by execution_profile.trace.capture_source.",
+        help="Lowercase adapter slug; defaults to the locked execution profile.",
     )
     finalize_parser = subparsers.add_parser(
         "finalize-execution",
@@ -7690,8 +7703,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     finalize_parser.add_argument(
         "--capture-source",
-        default="lead_agent_observed",
-        help="Lowercase adapter slug declared by execution_profile.trace.capture_source.",
+        help="Lowercase adapter slug; defaults to the locked execution profile.",
     )
     decide_parser = subparsers.add_parser("decide")
     decide_parser.add_argument("--plan", type=Path, required=True)

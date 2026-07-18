@@ -7,6 +7,7 @@ import {
   buildTraceExecutionMatrix,
   classifyTraceExecutor,
   groupAssertionComparisons,
+  hasInspectableTraceExecution,
   resolveTraceEventSemantics,
 } from "./eval-execution-trace";
 import { agentDispatchReceiptFixture } from "./test-fixtures";
@@ -360,6 +361,23 @@ describe("buildEvalExecutionTrace", () => {
     expect(trace?.capturedTraces).toBe(0);
     expect(trace?.gaps).toContain("trace_integrity");
     expect(index[0]).toMatchObject({ capturedTraces: 0, needsAttention: true });
+  });
+
+  it("keeps a failed Agent event stream inspectable without calling it verified", () => {
+    const data = traceData();
+    const execution = data.cases[0]!.arms[0]!.executions![0]!;
+    execution.status = "failed";
+    execution.trace!.events[1]!.kind = "error";
+    execution.trace!.events[1]!.status = "failed";
+    execution.trace!.events[1]!.summary = "Provider authentication failed";
+    execution.trace!.events.at(-1)!.status = "failed";
+
+    const trace = buildEvalExecutionTrace(data, "quality");
+
+    expect(hasInspectableTraceExecution(execution)).toBe(true);
+    expect(trace).toMatchObject({ capturedTraces: 1, confidence: "partial" });
+    expect(trace?.gaps).toContain("execution_integrity");
+    expect(buildTraceAttentionSummary(trace!)).toMatchObject({ failedEvents: 2 });
   });
 
   it("never upgrades an execution summary into a real Agent trace", () => {

@@ -52,6 +52,7 @@ FORBIDDEN_DETAIL_KEYS = {
     "chain_of_thought",
     "private_reasoning",
     "reasoning",
+    "thinking",
     "thought",
     "thoughts",
 }
@@ -86,11 +87,18 @@ def _sanitize_observable(value: Any, *, depth: int = 0) -> Any:
     if depth > 8:
         return "<nested payload omitted>"
     if isinstance(value, dict):
+        if value.get("type") in {"thinking", "reasoning"}:
+            return {
+                "id": value.get("id"),
+                "type": value.get("type"),
+                "redacted": True,
+            }
         return {
             str(key): _sanitize_observable(item, depth=depth + 1)
             for key, item in value.items()
             if _normalized_key(key) not in FORBIDDEN_DETAIL_KEYS
-            and _normalized_key(key) not in {"encrypted_content", "encrypted_reasoning"}
+            and _normalized_key(key)
+            not in {"encrypted_content", "encrypted_reasoning", "signature"}
         }
     if isinstance(value, list):
         result = [
@@ -687,6 +695,7 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
     raw_count = 0
     normalized_count = 0
     parse_errors = 0
+    provider_failure_events = 0
     commands: list[tuple[str, int | None]] = []
     usage: dict[str, Any] = {}
     stderr_lines: list[str] = []
@@ -823,6 +832,8 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
                 )
                 raw_handle.flush()
                 continue
+            if event.get("type") in {"turn.failed", "error"}:
+                provider_failure_events += 1
             raw_handle.write(_compact_json(_redact_source_event(event)) + "\n")
             raw_handle.flush()
             if event.get("type") == "item.started" and isinstance(event.get("item"), dict):
@@ -948,7 +959,7 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
     )
     if timed_out.is_set():
         final_status = "timed_out"
-    elif return_code != 0 or parse_errors or missing_artifacts:
+    elif return_code != 0 or provider_failure_events or parse_errors or missing_artifacts:
         final_status = "failed"
     else:
         final_status = "completed"
@@ -958,6 +969,7 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
         "source_event_count": raw_count,
         "normalized_event_count": normalized_count,
         "jsonl_parse_error_count": parse_errors,
+        "provider_failure_event_count": provider_failure_events,
         "ambient_skills_disabled": skill_isolation["disabled_count"],
         "full_access_enabled": 1 if args.full_access else 0,
     }

@@ -132,7 +132,7 @@ dispatch ID 和 worker/thread ID。该凭据可以防止 profile-only 的界面�
 
 真实 provider canary 默认不运行，因为它可能需要本机认证、网络和模型费用。
 下面的命令会让已安装 CLI 走完整的“编译 → 进程 → 源事件 → 评分 →
-Dashboard”链路：
+Dashboard 投影”链路，并实际挂载 Trace 页面、展开包含真实 marker 的事件：
 
 ```bash
 SKILL_REVIEWER_REAL_AGENT_E2E=codex,claude \

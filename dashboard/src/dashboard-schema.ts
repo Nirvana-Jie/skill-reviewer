@@ -1141,10 +1141,15 @@ function validateExecution(
       executionStatus,
     });
     const trace = requireRecord(execution.trace, `${path}.trace`);
-    if (trace.valid === true && trace.source_trace_required === true && !validSourceTrace) {
+    if (
+      executionStatus === "completed" &&
+      trace.valid === true &&
+      trace.source_trace_required === true &&
+      !validSourceTrace
+    ) {
       throw new DashboardCompatibilityError(
         `${path}.source_trace`,
-        "a valid provider-stream trace requires a valid bound source trace",
+        "a completed provider-stream trace requires a valid bound source trace",
       );
     }
   }

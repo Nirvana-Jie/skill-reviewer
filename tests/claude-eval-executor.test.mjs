@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -59,6 +60,14 @@ function expectSuccess(result, label) {
     result.status,
     `${label} failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
   ).toBe(0);
+}
+
+function sha256File(path) {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function wait(milliseconds) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
 
 function makePackage(root) {
@@ -127,6 +136,7 @@ import json
 import os
 import pathlib
 import sys
+import time
 
 args = sys.argv[1:]
 if args == ["--version"]:
@@ -135,6 +145,12 @@ if args == ["--version"]:
 
 if os.environ.get("FAKE_CLAUDE_ARGV"):
     pathlib.Path(os.environ["FAKE_CLAUDE_ARGV"]).write_text(json.dumps(args), encoding="utf-8")
+if os.environ.get("FAKE_CLAUDE_STARTED"):
+    pathlib.Path(os.environ["FAKE_CLAUDE_STARTED"]).write_text(str(os.getpid()), encoding="utf-8")
+if os.environ.get("FAKE_CLAUDE_DELAY_SECONDS"):
+    time.sleep(float(os.environ["FAKE_CLAUDE_DELAY_SECONDS"]))
+if os.environ.get("FAKE_CLAUDE_COMPLETED"):
+    pathlib.Path(os.environ["FAKE_CLAUDE_COMPLETED"]).write_text("completed", encoding="utf-8")
 
 events = [
     {"type": "system", "subtype": "init", "session_id": "session-real-stream", "model": "claude-test", "tools": ["Read"]},
@@ -289,6 +305,92 @@ describe("local Claude Code eval executor", () => {
       expect(evidence.cases[0].with_skill.passed).toBe(true);
       expect(evidence.cases[0].without_skill.passed).toBe(true);
     } finally {
+      makeWritable(root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("rejects invalid locked artifact fields before starting the provider", () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-claude-artifact-lock-"));
+    try {
+      const { workspace } = compileRun(root);
+      const assignmentPath = assignment(workspace, "with_skill");
+      const lockedAssignment = JSON.parse(readFileSync(assignmentPath, "utf8"));
+      lockedAssignment.execution_artifact = 123;
+      writeFileSync(assignmentPath, JSON.stringify(lockedAssignment), "utf8");
+      const lockPath = join(workspace, "run-lock.json");
+      const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+      const relativeAssignment = "assignments/observable-agent-trace/with_skill/repeat-1.json";
+      lock.assignment_digests[relativeAssignment] = sha256File(assignmentPath);
+      writeFileSync(lockPath, JSON.stringify(lock), "utf8");
+      const started = join(root, "provider-started");
+
+      const result = run(
+        python,
+        [
+          executor,
+          "--workspace",
+          workspace,
+          "--assignment",
+          assignmentPath,
+          "--claude-bin",
+          makeFakeClaude(root),
+        ],
+        { env: { FAKE_CLAUDE_STARTED: started } },
+      );
+
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain("assignment.execution_artifact");
+      expect(existsSync(started)).toBe(false);
+    } finally {
+      makeWritable(root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("terminates the provider when dispatch receipt validation fails", () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-claude-dispatch-failure-"));
+    let providerPid = null;
+    try {
+      const { workspace } = compileRun(root);
+      const started = join(root, "provider-started");
+      const completed = join(root, "provider-completed");
+      const result = run(
+        python,
+        [
+          executor,
+          "--workspace",
+          workspace,
+          "--assignment",
+          assignment(workspace, "with_skill"),
+          "--claude-bin",
+          makeFakeClaude(root),
+          "--batch-id",
+          "x".repeat(257),
+        ],
+        {
+          env: {
+            FAKE_CLAUDE_STARTED: started,
+            FAKE_CLAUDE_DELAY_SECONDS: "0.8",
+            FAKE_CLAUDE_COMPLETED: completed,
+          },
+        },
+      );
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain("batch_id must not exceed 256 characters");
+      wait(1_000);
+      if (existsSync(started)) {
+        providerPid = Number(readFileSync(started, "utf8"));
+      }
+      expect(existsSync(completed)).toBe(false);
+    } finally {
+      if (Number.isInteger(providerPid)) {
+        try {
+          process.kill(providerPid, "SIGKILL");
+        } catch {
+          // The expected path already reaped the provider process.
+        }
+      }
       makeWritable(root);
       rmSync(root, { recursive: true, force: true });
     }

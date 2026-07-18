@@ -189,13 +189,13 @@ export function buildTraceAttentionSummary(
   const executions = trace.arms.flatMap((arm) =>
     (arm.executions ?? []).map((execution) => ({ arm, execution })),
   );
-  const verifiedExecutions = executions.filter(
+  const capturedExecutions = executions.filter(
     (
       item,
-    ): item is { arm: DashboardArm; execution: VerifiedTraceExecution } =>
-      isVerifiedTraceExecution(item.execution),
+    ): item is { arm: DashboardArm; execution: InspectableTraceExecution } =>
+      hasInspectableTraceExecution(item.execution),
   );
-  const durations = verifiedExecutions.map(
+  const durations = capturedExecutions.map(
     ({ execution }) => execution.trace.duration_ms,
   );
   // Use a robust relative threshold, capped by an absolute 5 s usability bound.
@@ -204,14 +204,14 @@ export function buildTraceAttentionSummary(
     1000,
     Math.min(5000, median(durations) * 2),
   );
-  const slowExecutions = verifiedExecutions
+  const slowExecutions = capturedExecutions
     .flatMap(({ arm, execution }) => {
       const durationMs = execution.trace.duration_ms;
       return durationMs >= slowThresholdMs
         ? [{ arm: arm.id, repeat: execution.repeat, durationMs }]
         : [];
     });
-  const failedEvents = verifiedExecutions.reduce(
+  const failedEvents = capturedExecutions.reduce(
     (count, { execution }) =>
       count +
       execution.trace.events.filter(
@@ -281,15 +281,15 @@ export function buildTraceCaseIndex(
   return cases.map((item) => {
     const executions = item.arms.flatMap((arm) => arm.executions ?? []);
     const expectedExecutions = item.repeats * item.arms.length;
-    const verifiedExecutions = executions.filter(isVerifiedTraceExecution);
-    const capturedTraces = verifiedExecutions.length;
+    const capturedExecutions = executions.filter(hasInspectableTraceExecution);
+    const capturedTraces = capturedExecutions.length;
     return {
       id: item.id,
       case: item,
       expectedExecutions,
       observedExecutions: executions.length,
       capturedTraces,
-      durationMs: verifiedExecutions.reduce(
+      durationMs: capturedExecutions.reduce(
         (total, execution) => total + (execution.trace?.duration_ms ?? 0),
         0,
       ),
@@ -460,6 +460,21 @@ export type VerifiedTraceExecution = DashboardExecution & {
   trace: ValidAgentExecutionTrace;
 };
 
+export type InspectableTraceExecution = DashboardExecution & {
+  trace: ValidAgentExecutionTrace;
+};
+
+export function hasInspectableTraceExecution(
+  execution: NonNullable<DashboardArm["executions"]>[number],
+): execution is InspectableTraceExecution {
+  return (
+    execution.trace?.complete === true &&
+    execution.trace.valid === true &&
+    execution.trace.events.length > 0 &&
+    /^[a-f0-9]{64}$/i.test(execution.trace.digest ?? "")
+  );
+}
+
 export function isVerifiedTraceExecution(
   execution: NonNullable<DashboardArm["executions"]>[number],
 ): execution is VerifiedTraceExecution {
@@ -591,7 +606,7 @@ export function buildEvalExecutionTrace(
     arms: selectedCase.arms,
     expectedExecutions,
     observedExecutions: executions.length,
-    capturedTraces: executions.filter(isVerifiedTraceExecution).length,
+    capturedTraces: executions.filter(hasInspectableTraceExecution).length,
     deterministicAssertions: selectedCase.arms.reduce(
       (summary, arm) => ({
         passed: summary.passed + arm.assertions.passed,

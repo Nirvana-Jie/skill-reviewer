@@ -373,6 +373,24 @@ describe("dashboard schema against runtime failure projections", () => {
         validateAndMigrateDashboardData(genericProcessAgent),
       ).not.toThrow();
 
+      const completedWithoutRequiredSource = structuredClone(genericProcessAgent);
+      completedWithoutRequiredSource.cases[0].arms[0].executions[0].source_trace =
+        null;
+      expect(() =>
+        validateAndMigrateDashboardData(completedWithoutRequiredSource),
+      ).toThrow(/completed provider-stream trace requires a valid bound source trace/);
+
+      const failedBeforeSourceCapture = structuredClone(
+        completedWithoutRequiredSource,
+      );
+      const failedExecution =
+        failedBeforeSourceCapture.cases[0].arms[0].executions[0];
+      failedExecution.status = "failed";
+      failedExecution.trace.events.at(-1).status = "failed";
+      expect(() =>
+        validateAndMigrateDashboardData(failedBeforeSourceCapture),
+      ).not.toThrow();
+
       const mutatedSequence = structuredClone(validData);
       mutatedSequence.cases[0].arms[0].executions[0].trace.events[1].sequence = 3;
       expect(() => validateAndMigrateDashboardData(mutatedSequence)).toThrow(

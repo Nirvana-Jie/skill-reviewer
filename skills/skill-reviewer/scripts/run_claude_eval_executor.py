@@ -179,10 +179,16 @@ def _require_locked_assignment(
         raise ManifestError(
             "Claude execution profile must declare source-event-stream"
         )
+    execution_artifact = assignment.get("execution_artifact")
+    if not isinstance(execution_artifact, str):
+        raise ManifestError("assignment.execution_artifact is invalid")
+    dispatch_artifact = assignment.get("dispatch_artifact")
+    if not isinstance(dispatch_artifact, str):
+        raise ManifestError("assignment.dispatch_artifact is invalid")
     generated = [
         trace_path,
-        _safe_artifact(repeat_root, str(assignment.get("execution_artifact"))),
-        _safe_artifact(repeat_root, str(assignment.get("dispatch_artifact"))),
+        _safe_artifact(repeat_root, execution_artifact),
+        _safe_artifact(repeat_root, dispatch_artifact),
         repeat_root / SOURCE_EVENT_ARTIFACT,
         repeat_root / STDERR_ARTIFACT,
     ]
@@ -514,25 +520,30 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
             capture_source=CAPTURE_SOURCE,
         )
 
-    record_dispatch_receipt(
-        assignment_path=assignment_path,
-        workspace=workspace,
-        dispatch_id="dispatch-"
-        + _sha256_text(
-            "|".join(
-                [
-                    str(assignment.get("run_id")),
-                    str(assignment.get("case_id")),
-                    str(assignment.get("arm")),
-                    str(assignment.get("repeat")),
-                    str(process.pid),
-                    str(time.time_ns()),
-                ]
-            )
-        )[:20],
-        worker_id=f"pid:{process.pid}",
-        batch_id=args.batch_id,
-    )
+    try:
+        record_dispatch_receipt(
+            assignment_path=assignment_path,
+            workspace=workspace,
+            dispatch_id="dispatch-"
+            + _sha256_text(
+                "|".join(
+                    [
+                        str(assignment.get("run_id")),
+                        str(assignment.get("case_id")),
+                        str(assignment.get("arm")),
+                        str(assignment.get("repeat")),
+                        str(process.pid),
+                        str(time.time_ns()),
+                    ]
+                )
+            )[:20],
+            worker_id=f"pid:{process.pid}",
+            batch_id=args.batch_id,
+        )
+    except ManifestError:
+        _terminate_process_group(process)
+        process.wait()
+        raise
 
     def read_stderr() -> None:
         assert process.stderr is not None
