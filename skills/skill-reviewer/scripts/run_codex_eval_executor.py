@@ -36,10 +36,11 @@ from skill_eval_runtime import (
 )
 
 
-CAPTURE_SOURCE = "codex_cli_jsonl"
+CAPTURE_SOURCE = "provider_stream"
 CODEX_TARGET = "codex-cli"
 CODEX_HARNESS = "codex-exec-jsonl"
-RAW_EVENT_ARTIFACT = "codex-events.jsonl"
+RAW_EVENT_ARTIFACT = "agent-source-events.jsonl"
+SOURCE_FORMAT = "codex-exec-jsonl-v1"
 STDERR_ARTIFACT = "codex-stderr.log"
 LAST_MESSAGE_FALLBACK = "codex-last-message.md"
 MAX_TRACE_STRING = 24_000
@@ -277,6 +278,20 @@ def _require_locked_assignment(
     capabilities = profile.get("capabilities")
     if not isinstance(capabilities, list) or "jsonl-agent-events" not in capabilities:
         raise ManifestError("Codex execution profile must declare jsonl-agent-events")
+    if profile.get("dispatch_observation") != "process_spawn":
+        raise ManifestError(
+            "Codex execution profile must declare dispatch_observation=process_spawn"
+        )
+    trace_profile = profile.get("trace")
+    if (
+        not isinstance(trace_profile, dict)
+        or trace_profile.get("capture_source") != CAPTURE_SOURCE
+        or trace_profile.get("source")
+        != {"artifact": RAW_EVENT_ARTIFACT, "format": SOURCE_FORMAT}
+    ):
+        raise ManifestError(
+            "Codex execution profile must bind the provider-stream source adapter"
+        )
     if full_access and "danger-full-access" not in capabilities:
         raise ManifestError(
             "--full-access requires danger-full-access in the locked execution profile"
@@ -883,6 +898,8 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
                 "retained_event_count": retained_event_count,
                 "source_stream_digest": source_stream_hasher.hexdigest(),
                 "redaction": "private-reasoning-fields-removed",
+                "adapter": CODEX_TARGET,
+                "format": SOURCE_FORMAT,
             },
             "artifact_refs": [RAW_EVENT_ARTIFACT],
         },
@@ -962,6 +979,8 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
             "source_event_count": raw_count,
             "retained_event_count": retained_event_count,
             "redaction": "private-reasoning-fields-removed",
+            "adapter": CODEX_TARGET,
+            "format": SOURCE_FORMAT,
         },
     )
 

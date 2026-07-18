@@ -131,10 +131,14 @@ OBJECTIVE_FIELDS = {
 EXECUTION_PROFILE_FIELDS = {
     "target",
     "harness",
+    "dispatch_observation",
+    "trace",
     "capabilities",
     "isolation",
     "sampling",
 }
+EXECUTION_PROFILE_TRACE_FIELDS = {"capture_source", "source"}
+EXECUTION_PROFILE_SOURCE_FIELDS = {"artifact", "format"}
 EXECUTION_FIELDS = {
     "contract",
     "run_id",
@@ -187,6 +191,8 @@ DISPATCH_OBSERVATIONS = {
 SOURCE_TRACE_DESCRIPTOR_FIELDS = {
     "artifact",
     "digest",
+    "adapter",
+    "format",
     "source_stream_digest",
     "source_event_count",
     "retained_event_count",
@@ -196,6 +202,7 @@ TRACE_DESCRIPTOR_FIELDS = {
     "artifact",
     "digest",
     "capture_source",
+    "source_trace_required",
     "complete",
     "event_count",
     "started_at",
@@ -228,11 +235,7 @@ TRACE_EVENT_KINDS = {
     "error",
     "execution_finished",
 }
-TRACE_CAPTURE_SOURCES = {
-    "codex_cli_jsonl",
-    "harness_native",
-    "lead_agent_observed",
-}
+TRACE_CAPTURE_SOURCE_PATTERN = re.compile(r"[a-z][a-z0-9_.-]{0,63}")
 TRACE_FORBIDDEN_DETAIL_KEYS = {
     "analysis",
     "chain_of_thought",
@@ -339,6 +342,63 @@ def _load_execution_profile(
         )
     target = _require_string(raw.get("target"), "execution_profile.target")
     harness = _require_string(raw.get("harness"), "execution_profile.harness")
+    dispatch_observation = _require_string(
+        raw.get("dispatch_observation"),
+        "execution_profile.dispatch_observation",
+    )
+    if dispatch_observation not in DISPATCH_OBSERVATIONS:
+        raise ManifestError(
+            "execution_profile.dispatch_observation must be host_dispatch, "
+            "process_spawn, or external_harness"
+        )
+    trace = raw.get("trace")
+    if not isinstance(trace, dict):
+        raise ManifestError("execution_profile.trace must be an object")
+    unknown_trace = sorted(set(trace) - EXECUTION_PROFILE_TRACE_FIELDS)
+    if unknown_trace:
+        raise ManifestError(
+            "execution_profile.trace contains unsupported fields: "
+            + ", ".join(unknown_trace)
+        )
+    missing_trace = sorted(EXECUTION_PROFILE_TRACE_FIELDS - set(trace))
+    if missing_trace:
+        raise ManifestError(
+            "execution_profile.trace is missing fields: " + ", ".join(missing_trace)
+        )
+    capture_source = _require_string(
+        trace.get("capture_source"), "execution_profile.trace.capture_source"
+    )
+    if TRACE_CAPTURE_SOURCE_PATTERN.fullmatch(capture_source) is None:
+        raise ManifestError(
+            "execution_profile.trace.capture_source must be a lowercase trace adapter slug"
+        )
+    source = trace.get("source")
+    normalized_source: dict[str, str] | None
+    if source is None:
+        normalized_source = None
+    elif isinstance(source, dict):
+        unknown_source = sorted(set(source) - EXECUTION_PROFILE_SOURCE_FIELDS)
+        if unknown_source:
+            raise ManifestError(
+                "execution_profile.trace.source contains unsupported fields: "
+                + ", ".join(unknown_source)
+            )
+        missing_source = sorted(EXECUTION_PROFILE_SOURCE_FIELDS - set(source))
+        if missing_source:
+            raise ManifestError(
+                "execution_profile.trace.source is missing fields: "
+                + ", ".join(missing_source)
+            )
+        normalized_source = {
+            "artifact": _validate_artifact_path(
+                source.get("artifact"), "execution_profile.trace.source.artifact"
+            ),
+            "format": _require_string(
+                source.get("format"), "execution_profile.trace.source.format"
+            ),
+        }
+    else:
+        raise ManifestError("execution_profile.trace.source must be an object or null")
     isolation = _require_string(
         raw.get("isolation"), "execution_profile.isolation"
     )
@@ -363,6 +423,11 @@ def _load_execution_profile(
     normalized = {
         "target": target,
         "harness": harness,
+        "dispatch_observation": dispatch_observation,
+        "trace": {
+            "capture_source": capture_source,
+            "source": normalized_source,
+        },
         "capabilities": sorted(capabilities),
         "isolation": isolation,
         "sampling": sampling,
@@ -1738,7 +1803,11 @@ def compile_manifest(
                     "writable_root": str(repeat_root.resolve()),
                     "execution_artifact": "execution.json",
                     "dispatch_artifact": "dispatch-receipt.json",
-                    "source_trace_artifact": "codex-events.jsonl",
+                    "source_trace_artifact": (
+                        execution_profile["trace"]["source"]["artifact"]
+                        if execution_profile["trace"]["source"] is not None
+                        else None
+                    ),
                     "trace_artifact": "agent-trace.jsonl",
                     "expected_artifacts": expected_artifacts,
                 }
@@ -1823,13 +1892,10 @@ def _parse_trace_timestamp(value: Any) -> datetime | None:
 
 
 def _expected_dispatch_observation(profile: dict[str, Any]) -> str:
-    target = profile.get("target")
-    harness = profile.get("harness")
-    if target == "codex-cli" and harness == "codex-exec-jsonl":
-        return "process_spawn"
-    if target == "native-agent" and harness == "lead-agent-dispatch":
-        return "host_dispatch"
-    return "external_harness"
+    observation = profile.get("dispatch_observation")
+    if observation not in DISPATCH_OBSERVATIONS:
+        raise ManifestError("execution profile dispatch_observation is invalid")
+    return str(observation)
 
 
 def _bound_execution_profile(
@@ -2039,16 +2105,27 @@ def _validate_source_trace(
     assignment: dict[str, Any],
     trace_events: list[dict[str, Any]],
     required: bool,
+    expected_adapter: str | None,
+    expected_format: str | None,
 ) -> tuple[dict[str, Any] | None, list[str]]:
     errors: list[str] = []
-    expected_artifact = _validate_artifact_path(
-        assignment.get("source_trace_artifact"),
-        "assignment.source_trace_artifact",
+    locked_artifact = assignment.get("source_trace_artifact")
+    expected_artifact = (
+        _validate_artifact_path(
+            locked_artifact,
+            "assignment.source_trace_artifact",
+        )
+        if locked_artifact is not None
+        else None
     )
     if descriptor is None:
-        return None, ["Codex source trace descriptor is missing"] if required else []
+        return None, ["required source trace descriptor is missing"] if required else []
     if not isinstance(descriptor, dict):
         return None, ["execution source_trace must be an object or null"]
+    if expected_artifact is None:
+        return dict(descriptor), [
+            "execution source_trace is present but the locked profile declares no source stream"
+        ]
     unsupported = sorted(set(descriptor) - SOURCE_TRACE_DESCRIPTOR_FIELDS)
     if unsupported:
         errors.append(
@@ -2062,10 +2139,14 @@ def _validate_source_trace(
         errors.append("execution source trace artifact does not match the locked assignment")
     source_path = _safe_artifact(repeat_root, expected_artifact)
     if not source_path.is_file():
-        return dict(descriptor), [*errors, "Codex source trace artifact is missing"]
+        return dict(descriptor), [*errors, "source trace artifact is missing"]
     actual_digest = sha256_file(source_path)
     if descriptor.get("digest") != actual_digest:
         errors.append("source trace digest is missing or mismatched")
+    if descriptor.get("adapter") != expected_adapter:
+        errors.append("source trace adapter does not match the locked execution profile")
+    if descriptor.get("format") != expected_format:
+        errors.append("source trace format does not match the locked execution profile")
     source_stream_digest = descriptor.get("source_stream_digest")
     if not isinstance(source_stream_digest, str) or not re.fullmatch(
         r"[a-f0-9]{64}", source_stream_digest
@@ -2121,6 +2202,11 @@ def _validate_source_trace(
                         f"source trace line {index} contains unredacted reasoning"
                     )
                     break
+                if value.get("type") == "thinking" and value.get("redacted") is not True:
+                    errors.append(
+                        f"source trace line {index} contains unredacted thinking"
+                    )
+                    break
                 pending.extend(value.values())
             elif isinstance(value, list):
                 pending.extend(value)
@@ -2152,6 +2238,8 @@ def _validate_source_trace(
         and event["details"].get("retained_event_count")
         == descriptor.get("retained_event_count")
         and event["details"].get("redaction") == descriptor.get("redaction")
+        and event["details"].get("adapter") == descriptor.get("adapter")
+        and event["details"].get("format") == descriptor.get("format")
         for event in matching_events
     ):
         errors.append("source trace descriptor is not bound to its artifact event")
@@ -2203,6 +2291,8 @@ def _validate_agent_trace(
     expected_identity: dict[str, Any],
     expected_status: Any,
     expected_artifact: str,
+    expected_capture_source: str,
+    source_trace_required: bool,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], list[str]]:
     errors: list[str] = []
     if not isinstance(descriptor, dict):
@@ -2217,8 +2307,14 @@ def _validate_agent_trace(
         errors.append("execution trace is missing fields: " + ", ".join(missing))
     if descriptor.get("artifact") != expected_artifact:
         errors.append("execution trace artifact does not match the locked assignment")
-    if descriptor.get("capture_source") not in TRACE_CAPTURE_SOURCES:
-        errors.append("execution trace capture_source is invalid")
+    if descriptor.get("capture_source") != expected_capture_source:
+        errors.append(
+            "execution trace capture_source does not match the locked execution profile"
+        )
+    if descriptor.get("source_trace_required") is not source_trace_required:
+        errors.append(
+            "execution trace source_trace_required does not match the locked execution profile"
+        )
     if descriptor.get("complete") is not True:
         errors.append("execution trace is not finalized")
     if not trace_path.is_file():
@@ -2472,7 +2568,7 @@ def record_trace_event(
 ) -> dict[str, Any]:
     if kind not in TRACE_EVENT_KINDS:
         raise ManifestError(f"unsupported Agent trace event kind: {kind}")
-    if capture_source not in TRACE_CAPTURE_SOURCES:
+    if TRACE_CAPTURE_SOURCE_PATTERN.fullmatch(capture_source) is None:
         raise ManifestError(f"unsupported Agent trace capture source: {capture_source}")
     if not summary.strip():
         raise ManifestError("Agent trace event summary must not be empty")
@@ -2555,6 +2651,25 @@ def finalize_execution(
     assignment, repeat_root, trace_path = _trace_assignment_context(
         assignment_path=assignment_path, workspace=workspace
     )
+    execution_profile = _bound_execution_profile(
+        assignment_path=assignment_path.resolve(),
+        workspace=workspace.resolve(),
+        assignment=assignment,
+    )
+    trace_profile = execution_profile.get("trace")
+    if not isinstance(trace_profile, dict):
+        raise ManifestError("execution profile trace contract is missing")
+    expected_capture_source = _require_string(
+        trace_profile.get("capture_source"),
+        "execution_profile.trace.capture_source",
+    )
+    if capture_source != expected_capture_source:
+        raise ManifestError(
+            "execution capture source does not match the locked execution profile"
+        )
+    source_profile = trace_profile.get("source")
+    if source_profile is not None and not isinstance(source_profile, dict):
+        raise ManifestError("execution profile trace source contract is invalid")
     execution_path = _safe_artifact(
         repeat_root,
         _validate_artifact_path(
@@ -2618,11 +2733,6 @@ def finalize_execution(
     events, trace_errors = _read_trace_jsonl(trace_path)
     if trace_errors or not events:
         raise ManifestError("unable to finalize Agent trace: " + "; ".join(trace_errors))
-    execution_profile = _bound_execution_profile(
-        assignment_path=assignment_path.resolve(),
-        workspace=workspace.resolve(),
-        assignment=assignment,
-    )
     dispatch = _dispatch_descriptor(assignment=assignment, repeat_root=repeat_root)
     _validated_dispatch, dispatch_errors = _validate_dispatch_receipt(
         repeat_root=repeat_root,
@@ -2642,7 +2752,13 @@ def finalize_execution(
         descriptor=source_trace,
         assignment=assignment,
         trace_events=events,
-        required=capture_source == "codex_cli_jsonl" and status == "completed",
+        required=source_profile is not None and status == "completed",
+        expected_adapter=str(execution_profile.get("target")),
+        expected_format=(
+            str(source_profile.get("format"))
+            if isinstance(source_profile, dict)
+            else None
+        ),
     )
     if source_trace_errors:
         raise ManifestError(
@@ -2652,6 +2768,7 @@ def finalize_execution(
         "artifact": str(assignment.get("trace_artifact")),
         "digest": sha256_file(trace_path),
         "capture_source": capture_source,
+        "source_trace_required": source_profile is not None,
         "complete": True,
         "event_count": len(events),
         "started_at": events[0]["occurred_at"],
@@ -3054,6 +3171,12 @@ def grade_arm(
             },
             expected_status=execution.get("status"),
             expected_artifact=trace_artifact,
+            expected_capture_source=str(
+                execution_profile.get("trace", {}).get("capture_source")
+            ),
+            source_trace_required=isinstance(
+                execution_profile.get("trace", {}).get("source"), dict
+            ),
         )
         repeat_binding_errors.extend(trace_errors)
         source_trace_descriptor, source_trace_errors = _validate_source_trace(
@@ -3061,7 +3184,16 @@ def grade_arm(
             descriptor=execution.get("source_trace"),
             assignment=assignment,
             trace_events=trace_events,
-            required=trace_descriptor.get("capture_source") == "codex_cli_jsonl",
+            required=(
+                isinstance(execution_profile.get("trace", {}).get("source"), dict)
+                and execution.get("status") == "completed"
+            ),
+            expected_adapter=str(execution_profile.get("target")),
+            expected_format=(
+                str(execution_profile["trace"]["source"].get("format"))
+                if isinstance(execution_profile.get("trace", {}).get("source"), dict)
+                else None
+            ),
         )
         repeat_binding_errors.extend(source_trace_errors)
         if isinstance(source_trace_descriptor, dict):
@@ -3992,7 +4124,11 @@ def verify_locked_inputs(
                     "writable_root": str(repeat_root.resolve()),
                     "execution_artifact": "execution.json",
                     "dispatch_artifact": "dispatch-receipt.json",
-                    "source_trace_artifact": "codex-events.jsonl",
+                    "source_trace_artifact": (
+                        expected_execution_profile["trace"]["source"]["artifact"]
+                        if expected_execution_profile["trace"]["source"] is not None
+                        else None
+                    ),
                     "trace_artifact": "agent-trace.jsonl",
                     "expected_artifacts": expected_artifacts,
                 }
@@ -6971,6 +7107,7 @@ def project_dashboard(
                             "artifact",
                             "digest",
                             "capture_source",
+                            "source_trace_required",
                             "complete",
                             "valid",
                             "event_count",
@@ -7029,6 +7166,8 @@ def project_dashboard(
                             "artifact",
                             "digest",
                             "valid",
+                            "adapter",
+                            "format",
                             "source_stream_digest",
                             "source_event_count",
                             "retained_event_count",
@@ -7528,8 +7667,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     trace_parser.add_argument(
         "--capture-source",
-        choices=sorted(TRACE_CAPTURE_SOURCES),
         default="lead_agent_observed",
+        help="Lowercase adapter slug declared by execution_profile.trace.capture_source.",
     )
     finalize_parser = subparsers.add_parser(
         "finalize-execution",
@@ -7551,8 +7690,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     finalize_parser.add_argument(
         "--capture-source",
-        choices=sorted(TRACE_CAPTURE_SOURCES),
         default="lead_agent_observed",
+        help="Lowercase adapter slug declared by execution_profile.trace.capture_source.",
     )
     decide_parser = subparsers.add_parser("decide")
     decide_parser.add_argument("--plan", type=Path, required=True)

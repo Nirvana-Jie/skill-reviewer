@@ -15,7 +15,7 @@
 `skill-reviewer` does three things:
 
 - **Review** — checks triggers, instructions, resources, scripts, safety, and maintainability, then returns actionable rewrites.
-- **Verify** — compiles a valid `evals/evals.json`, dispatches candidate and baseline through an available native harness or the paired local Codex runner, and retains dispatch, Trace, source, and output evidence.
+- **Verify** — compiles a valid `evals/evals.json`, dispatches candidate and baseline through a native or provider adapter, and retains dispatch, canonical Trace, source, and output evidence for the Dashboard.
 - **Evolve** — only on an explicit request, performs at most three bounded improvement rounds; Evals stay immutable during a run and a human always owns the final release decision.
 
 ## Quick start
@@ -98,8 +98,8 @@ The verdict is not a simple average. Safety and trigger red lines can block imme
 ## Real Evals and bounded evolution
 
 The strict Manifest lives at `<skill>/evals/evals.json`. Compilation alone does
-not start an Agent. The lead Agent uses a native host surface, or invokes the
-provider-specific local plan runner; each executor still receives exactly one
+not start an Agent. The lead Agent uses a native host surface or a
+provider adapter; each executor still receives exactly one
 Case, one arm, and one repeat:
 
 ```mermaid
@@ -118,7 +118,7 @@ flowchart TB
     P -- "Yes" --> A["One-shot Audit"]
 ```
 
-Real Trace contains only observable behavior: Agent messages, file reads, tool calls, commands, exit codes, errors, timing, and artifact references. It never records or displays private chain-of-thought.
+Real Trace contains only observable behavior: Agent messages, file reads, tool calls, commands, exit codes, errors, timing, and artifact references. It never records or displays private chain-of-thought. Provider-specific events are redacted and normalized before they reach the grader or Dashboard, so adding another Agent requires an adapter and execution profile—not a new Trace UI. Bundled paths cover native/external harnesses, Codex CLI, and Claude Code.
 
 For a compiled `codex-cli` profile, one command mechanically fans out paired
 arms and grades after all case/repeat batches finish:
@@ -133,6 +133,15 @@ Native subagents remain host-owned. Their harness must record the real host
 dispatch and worker/thread IDs before behavior events. The receipt detects
 drift and prevents profile-only UI claims; without a provider-signed API it is
 trusted harness provenance, not cryptographic attestation.
+
+Real-provider canaries are opt-in because they may require local authentication,
+network access, and model spend. This launches the installed CLI through the
+complete compile → process → source → grade → Dashboard chain:
+
+```bash
+SKILL_REVIEWER_REAL_AGENT_E2E=codex,claude \
+  pnpm exec vitest run dashboard/src/real-agent-trace.e2e.test.ts
+```
 
 Eval and grader authority is immutable during a run. The system may propose changes, but only explicit user confirmation and a fresh lock can establish new evaluation authority. See the [executable Eval contract](./skills/skill-reviewer/references/executable-evals.md) and [evolution protocol](./skills/skill-reviewer/references/evolution-workflow.md) for schemas, commands, and trust boundaries.
 
@@ -232,6 +241,7 @@ All changes enter `main` through a branch and pull request. `Static Checks` runs
 - [Review rubric](./skills/skill-reviewer/references/review-rubric.md)
 - [Review checklist](./skills/skill-reviewer/references/review-checklist.md)
 - [Executable Eval, Trace, and evidence contract](./skills/skill-reviewer/references/executable-evals.md)
+- [Provider-neutral Agent Trace contract](./skills/skill-reviewer/references/agent-trace-contract.md)
 - [Bounded continuous evolution](./skills/skill-reviewer/references/evolution-workflow.md)
 - [Dashboard and Action Center](./skills/skill-reviewer/references/action-center.md)
 - [Paired SubAgent verification](./skills/skill-reviewer/references/subagent-eval-workflow.md)

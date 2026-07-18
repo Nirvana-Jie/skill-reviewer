@@ -14,7 +14,7 @@
 `skill-reviewer` 解决三件事：
 
 - **Review**：检查触发条件、指令、资源、脚本、安全与可维护性，输出可直接修改的建议。
-- **Verify**：编译合法 `evals/evals.json`，通过可用的 native harness 或本地 Codex 成对执行器分发候选版与基线版，并保留调度、Trace、源事件和输出证据。
+- **Verify**：编译合法 `evals/evals.json`，通过 native 或 provider adapter 分发候选版与基线版，并为 Dashboard 保留调度、标准 Trace、源事件和输出证据。
 - **Evolve**：只有用户要求时，才进入最多三轮的有界改进；Eval 在运行中保持不可变，最终发布始终由人确认。
 
 ## 快速开始
@@ -96,8 +96,8 @@ flowchart LR
 ## 真实 Eval 与持续改进
 
 严格 Manifest 位于 `<skill>/evals/evals.json`。仅完成编译不会启动 Agent；
-主 Agent 必须使用 native host surface，或显式调用 provider-specific 的本地
-计划执行器。每个 executor 仍然只接收一个 Case、一个实验臂和一次 repeat：
+主 Agent 必须使用 native host surface 或 provider adapter。每个 executor
+仍然只接收一个 Case、一个实验臂和一次 repeat：
 
 ```mermaid
 flowchart TB
@@ -115,7 +115,7 @@ flowchart TB
     P -- "是" --> A["一次性 Audit"]
 ```
 
-真实 Trace 只记录可观察行为：Agent 消息、文件读取、工具调用、命令、退出码、错误、耗时和产物引用；不会记录或展示模型私有思维链。
+真实 Trace 只记录可观察行为：Agent 消息、文件读取、工具调用、命令、退出码、错误、耗时和产物引用；不会记录或展示模型私有思维链。Provider 事件会先脱敏并归一化，再进入 grader 和 Dashboard；因此接入新 Agent 只需增加 adapter 与 execution profile，不需要改 Trace UI。仓库内置 native/external harness、Codex CLI 和 Claude Code 路径。
 
 对于已编译的 `codex-cli` profile，可以用一个命令机械地成对分发全部
 实验臂，并在所有 case/repeat batch 完成后统一评分：
@@ -129,6 +129,15 @@ python3 skills/skill-reviewer/scripts/run_codex_eval_plan.py \
 Native subAgent 仍由 host 调度；harness 必须在行为事件之前记录真实的 host
 dispatch ID 和 worker/thread ID。该凭据可以防止 profile-only 的界面误判，
 但在没有 provider 签名 API 时仍属于可信 harness 证据，不是密码学证明。
+
+真实 provider canary 默认不运行，因为它可能需要本机认证、网络和模型费用。
+下面的命令会让已安装 CLI 走完整的“编译 → 进程 → 源事件 → 评分 →
+Dashboard”链路：
+
+```bash
+SKILL_REVIEWER_REAL_AGENT_E2E=codex,claude \
+  pnpm exec vitest run dashboard/src/real-agent-trace.e2e.test.ts
+```
 
 Eval 与 grader 在一次运行中不可变。系统可以提出修改建议，但只有用户确认并重新锁定后才能成为新的评测权威。完整字段、信任边界和运行命令见[可执行 Eval 协议](./skills/skill-reviewer/references/executable-evals.md)与[进化协议](./skills/skill-reviewer/references/evolution-workflow.md)。
 
@@ -225,6 +234,7 @@ python3 skills/skill-reviewer/scripts/validate_local_snapshot.py \
 - [评审评分规则](./skills/skill-reviewer/references/review-rubric.md)
 - [评审检查清单](./skills/skill-reviewer/references/review-checklist.md)
 - [可执行 Eval、Trace 与证据契约](./skills/skill-reviewer/references/executable-evals.md)
+- [Provider-neutral Agent Trace 契约](./skills/skill-reviewer/references/agent-trace-contract.md)
 - [有界持续进化](./skills/skill-reviewer/references/evolution-workflow.md)
 - [Dashboard 与行动中心](./skills/skill-reviewer/references/action-center.md)
 - [SubAgent 成对验证](./skills/skill-reviewer/references/subagent-eval-workflow.md)

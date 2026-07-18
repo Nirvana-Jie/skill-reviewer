@@ -17,6 +17,7 @@ function agentTrace() {
     artifact: "agent-trace.jsonl",
     digest: "e".repeat(64),
     capture_source: "harness_native" as const,
+    source_trace_required: false,
     complete: true,
     valid: true,
     event_count: 3,
@@ -582,26 +583,26 @@ describe("execution trace navigation", () => {
     expect(
       classifyTraceExecutor(
         {
-          target: "third-party-agent",
-          harness: "remote-eval-harness",
+          target: "claude-code",
+          harness: "claude-stream-json",
           capabilities: ["jsonl-agent-events"],
         },
         {
           dispatch: agentDispatchReceiptFixture({
-            provider: "third-party-agent",
-            harness: "remote-eval-harness",
-            observation: "external_harness",
+            provider: "claude-code",
+            harness: "claude-stream-json",
+            observation: "process_spawn",
           }),
         },
       ),
     ).toEqual({
-      kind: "external_agent_harness",
+      kind: "local_agent_process",
       role: "eval_executor",
       dispatchedBy: "lead_agent",
       dispatchBound: true,
       nestedAgentEvents: false,
-      target: "third-party-agent",
-      harness: "remote-eval-harness",
+      target: "claude-code",
+      harness: "claude-stream-json",
     });
     expect(
       classifyTraceExecutor(
@@ -623,15 +624,6 @@ describe("execution trace navigation", () => {
         kind: "declared_agent_profile",
         dispatchBound: false,
       }),
-    );
-    expect(
-      classifyTraceExecutor({
-        target: "native-agent",
-        harness: "codex-exec-jsonl",
-        capabilities: ["jsonl-agent-events"],
-      }),
-    ).toEqual(
-      expect.objectContaining({ kind: "unrecognized_profile" }),
     );
   });
 });

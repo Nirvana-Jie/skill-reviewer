@@ -32,10 +32,8 @@ export type AgentTraceDiagnosticEvent = Record<string, unknown>;
 interface ValidAgentExecutionTrace {
   artifact: string;
   digest: string;
-  capture_source:
-    | "codex_cli_jsonl"
-    | "harness_native"
-    | "lead_agent_observed";
+  capture_source: string;
+  source_trace_required: boolean;
   complete: boolean;
   valid: true;
   event_count: number;
@@ -48,11 +46,8 @@ interface ValidAgentExecutionTrace {
 interface InvalidAgentExecutionTrace {
   artifact?: string | null;
   digest?: string | null;
-  capture_source?:
-    | "codex_cli_jsonl"
-    | "harness_native"
-    | "lead_agent_observed"
-    | null;
+  capture_source?: string | null;
+  source_trace_required?: boolean | null;
   complete?: boolean | null;
   valid: false;
   event_count?: number | null;
@@ -100,6 +95,8 @@ interface ValidAgentSourceTrace {
   artifact: string;
   digest: string;
   valid: true;
+  adapter: string;
+  format: string;
   source_stream_digest: string;
   source_event_count: number;
   retained_event_count: number;
@@ -110,6 +107,8 @@ interface InvalidAgentSourceTrace {
   artifact?: string | null;
   digest?: string | null;
   valid: false;
+  adapter?: string | null;
+  format?: string | null;
   source_stream_digest?: string | null;
   source_event_count?: number | null;
   retained_event_count?: number | null;
@@ -430,6 +429,11 @@ export interface DashboardData {
     execution_profile?: {
       target?: string;
       harness?: string;
+      dispatch_observation?: "host_dispatch" | "process_spawn" | "external_harness";
+      trace?: {
+        capture_source: string;
+        source: { artifact: string; format: string } | null;
+      };
       capabilities?: string[];
       isolation?: string;
       sampling?: Record<string, unknown>;

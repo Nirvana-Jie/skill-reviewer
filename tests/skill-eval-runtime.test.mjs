@@ -107,10 +107,7 @@ function writeExecution({
     execution_profile_digest: plan.execution_profile.digest,
     provider: plan.execution_profile.target,
     harness: plan.execution_profile.harness,
-    observation:
-      plan.execution_profile.target === "native-agent"
-        ? "host_dispatch"
-        : "external_harness",
+    observation: plan.execution_profile.dispatch_observation,
     dispatch_id: `dispatch-${caseId}-${arm}-${repeat}`,
     worker_id: `worker-${caseId}-${arm}-${repeat}`,
     batch_id: `batch-${plan.run_id}-${caseId}-${repeat}`,
@@ -230,6 +227,7 @@ function writeExecution({
         artifact: "agent-trace.jsonl",
         digest: sha256(tracePath),
         capture_source: "harness_native",
+        source_trace_required: false,
         complete: true,
         event_count: traceEvents.length,
         started_at: startedAt,
@@ -327,6 +325,8 @@ function compile({
       JSON.stringify({
         target: "native-agent",
         harness: "lead-agent-dispatch",
+        dispatch_observation: "host_dispatch",
+        trace: { capture_source: "harness_native", source: null },
         capabilities: ["filesystem", "shell"],
         isolation: "trusted-orchestrator",
         sampling: { policy: "orchestrator-default" },
@@ -739,6 +739,66 @@ describe("skill_eval_runtime compile", () => {
     });
   });
 
+  it("locks provider-neutral dispatch and trace adapter metadata", () => {
+    fixture((root) => {
+      const { manifest, subject } = writeMinimalPackage(root);
+      const workspace = join(root, "run");
+      const executionProfile = write(
+        root,
+        "profiles/claude.json",
+        JSON.stringify({
+          target: "claude-code",
+          harness: "claude-stream-json",
+          dispatch_observation: "process_spawn",
+          trace: {
+            capture_source: "provider_stream",
+            source: {
+              artifact: "agent-source-events.jsonl",
+              format: "claude-stream-json-v1",
+            },
+          },
+          capabilities: ["filesystem-read", "source-event-stream"],
+          isolation: "local-unattested",
+          sampling: { mode: "claude-default", paired: true },
+        }),
+      );
+
+      const result = compile({
+        manifest,
+        subject,
+        workspace,
+        splits: ["development"],
+        executionProfile,
+      });
+
+      expect(result.status, result.stderr).toBe(0);
+      const plan = JSON.parse(result.stdout);
+      expect(plan.execution_profile).toEqual(
+        expect.objectContaining({
+          target: "claude-code",
+          harness: "claude-stream-json",
+          dispatch_observation: "process_spawn",
+          trace: {
+            capture_source: "provider_stream",
+            source: {
+              artifact: "agent-source-events.jsonl",
+              format: "claude-stream-json-v1",
+            },
+          },
+        }),
+      );
+      const assignment = JSON.parse(
+        readFileSync(
+          join(workspace, "assignments/safe-case/with_skill/repeat-1.json"),
+          "utf8",
+        ),
+      );
+      expect(assignment.source_trace_artifact).toBe(
+        "agent-source-events.jsonl",
+      );
+    });
+  });
+
   it("derives a distinct run id when the execution cell changes", () => {
     fixture((root) => {
       const { manifest, subject } = writeMinimalPackage(root);
@@ -748,6 +808,8 @@ describe("skill_eval_runtime compile", () => {
         JSON.stringify({
           target: "native-agent",
           harness: "lead-agent-dispatch",
+          dispatch_observation: "host_dispatch",
+          trace: { capture_source: "harness_native", source: null },
           capabilities: ["filesystem"],
           isolation: "trusted-orchestrator",
           sampling: { policy: "deterministic" },
@@ -759,6 +821,8 @@ describe("skill_eval_runtime compile", () => {
         JSON.stringify({
           target: "native-agent",
           harness: "lead-agent-dispatch",
+          dispatch_observation: "host_dispatch",
+          trace: { capture_source: "harness_native", source: null },
           capabilities: ["filesystem", "shell"],
           isolation: "trusted-orchestrator",
           sampling: { policy: "orchestrator-default" },

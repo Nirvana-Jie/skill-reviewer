@@ -92,6 +92,7 @@ function traceFixture(arm: string, repeat: number) {
     artifact: "agent-trace.jsonl",
     digest: String(repeat || 1).repeat(64),
     capture_source: "harness_native" as const,
+    source_trace_required: false,
     complete: true,
     valid: true,
     event_count: 3,
@@ -216,6 +217,8 @@ const data: DashboardData = {
     execution_profile: {
       target: "native-agent",
       harness: "lead-agent-dispatch",
+      dispatch_observation: "host_dispatch",
+      trace: { capture_source: "harness_native", source: null },
       capabilities: ["filesystem", "shell"],
       isolation: "trusted-orchestrator",
       sampling: { policy: "orchestrator-default" },

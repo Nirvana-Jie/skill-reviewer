@@ -261,7 +261,6 @@ export type TraceExecutorKind =
   | "local_agent_process"
   | "declared_agent_profile"
   | "external_agent_harness"
-  | "unrecognized_profile"
   | "unrecorded";
 
 export interface TraceExecutorContext {
@@ -335,25 +334,13 @@ export function classifyTraceExecutor(
   );
   let kind: TraceExecutorKind =
     target || harness ? "declared_agent_profile" : "unrecorded";
-  if (target === "codex-cli" && harness === "codex-exec-jsonl") {
+  if (dispatchBound) {
     kind =
-      dispatchBound && dispatch?.observation === "process_spawn"
+      dispatch?.observation === "process_spawn"
         ? "local_agent_process"
-        : "declared_agent_profile";
-  } else if (target === "native-agent" && harness === "lead-agent-dispatch") {
-    kind =
-      dispatchBound && dispatch?.observation === "host_dispatch"
-        ? "native_subagent"
-        : "declared_agent_profile";
-  } else if (
-    target === "codex-cli" ||
-    target === "native-agent" ||
-    harness === "codex-exec-jsonl" ||
-    harness === "lead-agent-dispatch"
-  ) {
-    kind = "unrecognized_profile";
-  } else if (dispatchBound && dispatch?.observation === "external_harness") {
-    kind = "external_agent_harness";
+        : dispatch?.observation === "host_dispatch"
+          ? "native_subagent"
+          : "external_agent_harness";
   }
   return {
     kind,
@@ -484,7 +471,7 @@ export function isVerifiedTraceExecution(
     /^[a-f0-9]{64}$/i.test(execution.dispatch.digest ?? "") &&
     execution.trace?.complete === true &&
     execution.trace.valid === true &&
-    (execution.trace.capture_source !== "codex_cli_jsonl" ||
+    (execution.trace.source_trace_required !== true ||
       (execution.source_trace?.valid === true &&
         /^[a-f0-9]{64}$/i.test(execution.source_trace.digest ?? ""))) &&
     /^[a-f0-9]{64}$/i.test(execution.trace.digest ?? "")
@@ -560,7 +547,7 @@ export function buildEvalExecutionTrace(
   if (
     executions.some(
       (execution) =>
-        execution.trace?.capture_source === "codex_cli_jsonl" &&
+        execution.trace?.source_trace_required === true &&
         execution.source_trace?.valid !== true,
     )
   ) {

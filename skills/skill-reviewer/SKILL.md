@@ -139,16 +139,26 @@ from the rubric.
   artifact snapshots; do not freeze full prose by default.
 - **Executable behavior verification:** read
   `references/executable-evals.md`, then read and follow
-  `references/subagent-eval-workflow.md` completely. For `semantic_pair`, also
+  `references/subagent-eval-workflow.md` and
+  `references/agent-trace-contract.md` completely. For `semantic_pair`, also
   read `references/semantic-grader-contract.md`. Compile the requested split
   into a fresh workspace, plan, run lock, answer-key-free case/arm/repeat skill
   snapshots, and arm/repeat-specific input copies. The lead agent launches
   native paired workers in the same turn; the runtime itself stays
   agent-agnostic. Compilation requires a canonical execution profile outside
-  the subject/baseline/workspace; bind its target, harness, capability,
-  isolation, and sampling digest to every assignment and executor response.
+  the subject/baseline/workspace; bind its target, harness, dispatch
+  observation, Trace adapter/source, capability, isolation, and sampling digest
+  to every assignment and executor response.
   Executor identity comes from that lead-supplied profile and the bound
-  artifacts; do not accept worker self-reported build fields.
+  artifacts; do not accept worker self-reported build fields. The profile also
+  locks `dispatch_observation` plus the provider-neutral Trace adapter and its
+  optional source stream; Dashboard code must never parse a provider format.
+- **Provider adapters:** any native Agent, local CLI, SDK, or external harness
+  may execute a locked assignment when it emits the contract in
+  `references/agent-trace-contract.md`. The Dashboard classifies the validated
+  dispatch observation and canonical events rather than target names. Bundled
+  Codex and Claude adapters are reference implementations, not a provider
+  whitelist.
 - **Local Codex executor:** when the local `codex` CLI is available, the lead
   should dispatch a complete locked plan through
   `scripts/run_codex_eval_plan.py`; it starts every arm for one case/repeat
@@ -167,6 +177,13 @@ from the rubric.
   assignments together when worker capacity allows. Full access produces real
   behavioral provenance, not proof that network or OS permissions were
   enforced; never relabel it as `trusted-orchestrator` evidence.
+- **Local Claude executor:** `scripts/run_claude_eval_executor.py` executes one
+  locked `claude-code` / `claude-stream-json` assignment, retains a redacted
+  `agent-source-events.jsonl`, and maps the observable stream into the same
+  canonical Trace. It records a process receipt only after a real spawn and
+  keeps provider errors as failed evidence. Authentication and model spend
+  remain environment-owned; do not initiate login or widen permissions merely
+  to make a canary pass.
 - **Trace ownership:** treat one execution cell as
   `Eval case × arm × repeat × actual Eval worker`. The lead Agent locks and
   dispatches the cell but is not the evaluated actor, so its planning and
@@ -280,8 +297,9 @@ without it the launcher exits before any UI download or server startup.
 
 Every configured `case × arm × repeat` still needs an independent, contiguous,
 digest-bound `dispatch-receipt.json`, `agent-trace.jsonl`, and `execution.json`.
-Local Codex executions additionally bind the reasoning-redacted
-`codex-events.jsonl` source stream. Follow
+Any profile that declares a source stream additionally binds the
+reasoning-redacted `agent-source-events.jsonl` artifact, its adapter, format,
+counts, and digests. Follow
 `references/executable-evals.md` and `references/subagent-eval-workflow.md` for
 Trace capture and artifact provenance. The Dashboard must show a missing Trace
 as missing; never reconstruct events, mix lead orchestration into a worker
@@ -399,6 +417,9 @@ consistent, and no claim exceeds the retained evidence.
   eval/snapshot questions.
 - `references/executable-evals.md` — normative manifest, plan, assertion,
   executor-artifact, and grader contract; read before behavior execution.
+- `references/agent-trace-contract.md` — provider-neutral dispatch, source
+  adapter, canonical Trace, Dashboard, and real-execution test contract; read
+  before changing an executor or Trace UI.
 - `references/subagent-eval-workflow.md` — runtime effect verification; read
   for full/readiness auto-verification and explicit effect verification.
 - `references/semantic-grader-contract.md` — normative blind comparison,
@@ -424,6 +445,9 @@ consistent, and no claim exceeds the retained evidence.
 - `scripts/run_codex_eval_executor.py` — execute one locked runtime assignment
   with the local Codex CLI and retain a real, reasoning-redacted JSONL Agent
   Trace plus process-dispatch and source-stream provenance.
+- `scripts/run_claude_eval_executor.py` — execute one locked runtime assignment
+  with Claude Code and normalize its reasoning-redacted stream into the same
+  provider-neutral Trace contract.
 - `scripts/run_codex_eval_plan.py` — validate and execute one complete local
   Codex plan in paired case/repeat batches, retain per-cell provenance, and
   grade after all cells finish.

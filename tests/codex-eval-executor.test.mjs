@@ -213,6 +213,14 @@ function compileRun({ root, profileOverrides = {} }) {
     JSON.stringify({
       target: "codex-cli",
       harness: "codex-exec-jsonl",
+      dispatch_observation: "process_spawn",
+      trace: {
+        capture_source: "provider_stream",
+        source: {
+          artifact: "agent-source-events.jsonl",
+          format: "codex-exec-jsonl-v1",
+        },
+      },
       capabilities: [
         "filesystem-read",
         "filesystem-write",
@@ -371,12 +379,18 @@ describe("local Codex eval executor", () => {
             worker_id: expect.stringMatching(/^pid:\d+$/),
           }),
           source_trace: expect.objectContaining({
-            artifact: "codex-events.jsonl",
+            artifact: "agent-source-events.jsonl",
             digest: expect.stringMatching(/^[a-f0-9]{64}$/),
+            adapter: "codex-cli",
+            format: "codex-exec-jsonl-v1",
             source_stream_digest: expect.stringMatching(/^[a-f0-9]{64}$/),
             redaction: "private-reasoning-fields-removed",
           }),
-          trace: expect.objectContaining({ capture_source: "codex_cli_jsonl", complete: true }),
+          trace: expect.objectContaining({
+            capture_source: "provider_stream",
+            source_trace_required: true,
+            complete: true,
+          }),
           metrics: expect.objectContaining({
             full_access_enabled: 1,
             ambient_skills_disabled: 1,
@@ -388,7 +402,10 @@ describe("local Codex eval executor", () => {
       expect(trace).toContain("/bin/zsh -lc 'printf PASS'");
       expect(trace).toContain("thread-real-jsonl");
       expect(trace).not.toContain("PRIVATE_CHAIN_OF_THOUGHT");
-      const observableWire = readFileSync(join(repeatRoot, "codex-events.jsonl"), "utf8");
+      const observableWire = readFileSync(
+        join(repeatRoot, "agent-source-events.jsonl"),
+        "utf8",
+      );
       expect(observableWire).toContain('"redacted":true');
       expect(observableWire).not.toContain("PRIVATE_CHAIN_OF_THOUGHT");
       expect(existsSync(join(repeatRoot, "dispatch-receipt.json"))).toBe(true);
@@ -454,7 +471,7 @@ describe("local Codex eval executor", () => {
       }
       const sourcePath = join(
         workspace,
-        "cases/observable-cli-trace/with_skill/repeat-1/codex-events.jsonl",
+        "cases/observable-cli-trace/with_skill/repeat-1/agent-source-events.jsonl",
       );
       writeFileSync(sourcePath, `${readFileSync(sourcePath, "utf8")}{}\n`, "utf8");
 

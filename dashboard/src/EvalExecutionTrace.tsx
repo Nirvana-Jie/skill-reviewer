@@ -490,13 +490,11 @@ export function EvalExecutionTraceView({
       ? "nativeSubagent"
       : executor.kind === "local_agent_process"
         ? "localAgentProcess"
-        : executor.kind === "declared_agent_profile"
-          ? "declaredAgentProfile"
+      : executor.kind === "declared_agent_profile"
+        ? "declaredAgentProfile"
         : executor.kind === "external_agent_harness"
           ? "externalAgentHarness"
-          : executor.kind === "unrecognized_profile"
-            ? "executorProfileUnrecognized"
-            : "executorNotRecorded",
+          : "executorNotRecorded",
   );
 
   useEffect(() => {
@@ -735,8 +733,8 @@ export function EvalExecutionTraceView({
             <div><LockKeyhole size={14} /><span><small>{t("planDigest")}</small><strong>{shortDigest(planDigest)}</strong></span></div>
             <div><Bot size={14} /><span><small>{t("harness")}</small><strong>{executionProfile?.harness ? localizeValue(locale, executionProfile.harness) : t("notRecorded")}</strong></span></div>
             <div><Route size={14} /><span><small>{t("dispatchReceipt")}</small><strong>{selectedExecution?.dispatch?.valid ? shortDigest(selectedExecution.dispatch.digest) : t("notRecorded")}</strong></span></div>
-            {selectedExecution?.trace?.capture_source === "codex_cli_jsonl" && (
-              <div><FileOutput size={14} /><span><small>{t("sourceTrace")}</small><strong>{selectedExecution.source_trace?.valid ? shortDigest(selectedExecution.source_trace.digest) : t("notRecorded")}</strong></span></div>
+            {selectedExecution?.trace?.source_trace_required === true && (
+              <div><FileOutput size={14} /><span><small>{t("sourceTrace")}</small><strong>{selectedExecution.source_trace?.valid ? `${localizeValue(locale, selectedExecution.source_trace.adapter)} · ${shortDigest(selectedExecution.source_trace.digest)}` : t("notRecorded")}</strong></span></div>
             )}
           </div>
 

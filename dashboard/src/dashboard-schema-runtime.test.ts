@@ -123,6 +123,8 @@ describe("dashboard schema against runtime failure projections", () => {
         JSON.stringify({
           target: "native-agent",
           harness: "lead-agent-dispatch",
+          dispatch_observation: "host_dispatch",
+          trace: { capture_source: "harness_native", source: null },
           capabilities: ["filesystem", "shell", "jsonl-agent-events"],
           isolation: "trusted-orchestrator",
           sampling: { policy: "orchestrator-default" },
@@ -297,6 +299,12 @@ describe("dashboard schema against runtime failure projections", () => {
       expect(validTrace.valid).toBe(true);
       expect(() => validateAndMigrateDashboardData(validData)).not.toThrow();
 
+      const missingOptionalEvidencePath = structuredClone(validData);
+      missingOptionalEvidencePath.spine[0].path = null;
+      expect(() =>
+        validateAndMigrateDashboardData(missingOptionalEvidencePath),
+      ).not.toThrow();
+
       const mutatedIdentity = structuredClone(validData);
       mutatedIdentity.cases[0].arms[0].executions[0].trace.events[1].arm =
         "old_skill";
@@ -314,6 +322,7 @@ describe("dashboard schema against runtime failure projections", () => {
       const codexProfile = structuredClone(validData);
       codexProfile.run.execution_profile.target = "codex-cli";
       codexProfile.run.execution_profile.harness = "codex-exec-jsonl";
+      codexProfile.run.execution_profile.dispatch_observation = "process_spawn";
       const codexDispatch =
         codexProfile.cases[0].arms[0].executions[0].dispatch;
       codexDispatch.provider = "codex-cli";
@@ -327,6 +336,42 @@ describe("dashboard schema against runtime failure projections", () => {
       expect(() =>
         validateAndMigrateDashboardData(wrongCodexObservation),
       ).toThrow(/expected process_spawn/);
+
+      const genericProcessAgent = structuredClone(validData);
+      genericProcessAgent.run.execution_profile.target = "claude-code";
+      genericProcessAgent.run.execution_profile.harness = "claude-stream-json";
+      genericProcessAgent.run.execution_profile.dispatch_observation =
+        "process_spawn";
+      genericProcessAgent.run.execution_profile.trace = {
+        capture_source: "provider_stream",
+        source: {
+          artifact: "agent-source-events.jsonl",
+          format: "claude-stream-json-v1",
+        },
+      };
+      const genericExecution =
+        genericProcessAgent.cases[0].arms[0].executions[0];
+      genericExecution.dispatch.provider = "claude-code";
+      genericExecution.dispatch.harness = "claude-stream-json";
+      genericExecution.dispatch.observation = "process_spawn";
+      genericExecution.trace.capture_source = "provider_stream";
+      genericExecution.trace.source_trace_required = true;
+      genericExecution.trace.events[0].details.capture_source =
+        "provider_stream";
+      genericExecution.source_trace = {
+        artifact: "agent-source-events.jsonl",
+        digest: "f".repeat(64),
+        valid: true,
+        adapter: "claude-code",
+        format: "claude-stream-json-v1",
+        source_stream_digest: "e".repeat(64),
+        source_event_count: 3,
+        retained_event_count: 3,
+        redaction: "private-reasoning-fields-removed",
+      };
+      expect(() =>
+        validateAndMigrateDashboardData(genericProcessAgent),
+      ).not.toThrow();
 
       const mutatedSequence = structuredClone(validData);
       mutatedSequence.cases[0].arms[0].executions[0].trace.events[1].sequence = 3;

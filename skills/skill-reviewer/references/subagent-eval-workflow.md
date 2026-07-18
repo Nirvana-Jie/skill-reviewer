@@ -3,7 +3,8 @@
 Read this workflow for full/readiness reviews that discover a valid executable
 manifest, and for explicit behavior or regression verification. Read
 `references/executable-evals.md` first for the manifest, assertion, and artifact
-contracts. If the user explicitly asks to improve the skill, also read
+contracts, then read `references/agent-trace-contract.md` for the
+provider-neutral adapter boundary. If the user explicitly asks to improve the skill, also read
 `references/evolution-workflow.md`.
 
 ## Boundary
@@ -22,12 +23,14 @@ Trace for every locked `case × arm × repeat` assignment even when the same
 subagent processes several assignments; never concatenate multiple repeats or
 mix lead-Agent planning events into a worker Trace.
 
-The bundled local Codex adapter is another dispatch surface, not a second
-grader. `scripts/run_codex_eval_executor.py` accepts exactly one sanitized,
-locked assignment and asks `codex exec --json` to execute it. The lead Agent
-still owns decisions and evolution state. For a complete local plan,
-`scripts/run_codex_eval_plan.py` mechanically owns paired case/repeat fan-out
-and invokes grading after all cells finish.
+Bundled provider adapters are dispatch surfaces, not second graders.
+`scripts/run_codex_eval_executor.py` and
+`scripts/run_claude_eval_executor.py` each accept exactly one sanitized, locked
+assignment and normalize observable provider events into the same Trace. The
+lead Agent still owns decisions and evolution state. For a complete local
+Codex plan, `scripts/run_codex_eval_plan.py` mechanically owns paired
+case/repeat fan-out and invokes grading after all cells finish. Other Agents
+integrate through the same contract without Dashboard changes.
 
 For local Codex execution, bind this profile shape before compile:
 
@@ -35,6 +38,14 @@ For local Codex execution, bind this profile shape before compile:
 {
   "target": "codex-cli",
   "harness": "codex-exec-jsonl",
+  "dispatch_observation": "process_spawn",
+  "trace": {
+    "capture_source": "provider_stream",
+    "source": {
+      "artifact": "agent-source-events.jsonl",
+      "format": "codex-exec-jsonl-v1"
+    }
+  },
   "capabilities": [
     "filesystem-read",
     "filesystem-write",
@@ -85,8 +96,9 @@ blocker and stops before worker launch.
 3. Choose `old_skill` for selection/audit revision comparison; development may
    use `without_skill`. Freeze the accepted baseline before candidate edits.
 4. Create or select a canonical execution profile outside subject, baseline,
-   and run roots. It declares target, harness, capabilities, isolation, and
-   sampling. Do not ask a worker to add self-reported identity or build fields.
+   and run roots. It declares target, harness, dispatch observation, Trace
+   adapter/source, capabilities, isolation, and sampling. Do not ask a worker
+   to add self-reported identity or build fields.
 5. Compile exactly one required split into a fresh, empty workspace. For an
    opaque audit, also pass the trusted holdout pack; never expose it to the
    optimizer or executor. Treat `execution-plan.json` and `run-lock.json` as
@@ -166,15 +178,15 @@ new locked run with its own workspace and Case matrix; retain round N unchanged
 and inspect it through that run's permalink/workspace rather than appending new
 events to an old Trace.
 
-The Codex adapter retains `codex-events.jsonl` as the observable source stream,
-plus its digest, retained/source event counts, and the digest of the source
-bytes. `execution.json` binds that descriptor and grading revalidates the file
-and its `artifact_written` event. Any reasoning item and any
-reasoning-named field is removed before that file or `agent-trace.jsonl` is
-written. `codex-stderr.log` is retained separately when the CLI emits
-diagnostics. These support artifacts explain how normalized Trace events map
-back to Codex; they are not assertion answers and do not replace required
-outputs.
+Any profile with a non-null `trace.source` retains the declared source artifact
+plus adapter, format, digest, retained/source event counts, and the digest of
+the observed source bytes. The bundled Codex and Claude adapters both use
+`agent-source-events.jsonl`. `execution.json` binds that descriptor and grading
+revalidates the file and its `artifact_written` event. Any reasoning item and
+reasoning-named field is removed before the source file or
+`agent-trace.jsonl` is written. Provider stderr may be retained separately.
+These support artifacts explain how normalized events map back to a provider;
+they are not assertion answers and do not replace required outputs.
 
 Use `skill_eval_runtime.py trace-event` when the native harness has no trace
 adapter, after `record-dispatch`; then use `finalize-execution` to append
@@ -206,7 +218,7 @@ with the lead and graders.
 │       │   ├── repeat-1/
 │       │   │   ├── dispatch-receipt.json
 │       │   │   ├── agent-trace.jsonl
-│       │   │   ├── codex-events.jsonl       # local Codex only
+│       │   │   ├── agent-source-events.jsonl # when declared by the profile
 │       │   │   ├── execution.json
 │       │   │   └── outputs/...
 │       │   └── grading.json

@@ -35,6 +35,10 @@ interface RunValidationContext {
   runId: string;
   profileTarget?: string;
   profileHarness?: string;
+  profileDispatchObservation?: "host_dispatch" | "process_spawn" | "external_harness";
+  profileTraceCaptureSource?: string;
+  profileSourceArtifact?: string | null;
+  profileSourceFormat?: string | null;
 }
 
 interface CaseValidationContext extends RunValidationContext {
@@ -282,6 +286,37 @@ function validateRun(value: unknown, path: string): void {
     );
     for (const key of ["target", "harness", "isolation", "digest"]) {
       validateOptionalString(profile, key, `${path}.execution_profile`);
+    }
+    if (profile.dispatch_observation !== undefined) {
+      requireOneOf(
+        profile.dispatch_observation,
+        `${path}.execution_profile.dispatch_observation`,
+        ["host_dispatch", "process_spawn", "external_harness"] as const,
+      );
+    }
+    if (profile.trace !== undefined) {
+      const trace = requireRecord(
+        profile.trace,
+        `${path}.execution_profile.trace`,
+      );
+      requireString(
+        trace.capture_source,
+        `${path}.execution_profile.trace.capture_source`,
+      );
+      if (trace.source !== null) {
+        const source = requireRecord(
+          trace.source,
+          `${path}.execution_profile.trace.source`,
+        );
+        requireString(
+          source.artifact,
+          `${path}.execution_profile.trace.source.artifact`,
+        );
+        requireString(
+          source.format,
+          `${path}.execution_profile.trace.source.format`,
+        );
+      }
     }
     if (profile.capabilities !== undefined) {
       requireStringArray(
@@ -717,12 +752,12 @@ function validateDispatch(
     "process_spawn",
     "external_harness",
   ] as const);
-  const expectedObservation =
-    provider === "codex-cli" && harness === "codex-exec-jsonl"
+  const expectedObservation = context.profileDispatchObservation ??
+    (provider === "codex-cli" && harness === "codex-exec-jsonl"
       ? "process_spawn"
       : provider === "native-agent" && harness === "lead-agent-dispatch"
         ? "host_dispatch"
-        : "external_harness";
+        : "external_harness");
   if (observation !== expectedObservation) {
     throw new DashboardCompatibilityError(
       `${path}.observation`,
@@ -731,11 +766,21 @@ function validateDispatch(
   }
 }
 
-function validateSourceTrace(value: unknown, path: string): void {
+function validateSourceTrace(
+  value: unknown,
+  path: string,
+  context: RunValidationContext,
+): boolean {
   const source = requireRecord(value, path);
   const valid = requireBoolean(source.valid, `${path}.valid`);
   if (!valid) {
-    for (const key of ["artifact", "digest", "source_stream_digest"]) {
+    for (const key of [
+      "artifact",
+      "digest",
+      "adapter",
+      "format",
+      "source_stream_digest",
+    ]) {
       if (source[key] !== undefined) {
         requireNullableString(source[key], `${path}.${key}`);
       }
@@ -752,10 +797,40 @@ function validateSourceTrace(value: unknown, path: string): void {
         "private-reasoning-fields-removed",
       );
     }
-    return;
+    return false;
   }
-  for (const key of ["artifact", "digest", "source_stream_digest"]) {
+  for (const key of [
+    "artifact",
+    "digest",
+    "adapter",
+    "format",
+    "source_stream_digest",
+  ]) {
     requireString(source[key], `${path}.${key}`);
+  }
+  if (
+    context.profileSourceArtifact &&
+    source.artifact !== context.profileSourceArtifact
+  ) {
+    throw new DashboardCompatibilityError(
+      `${path}.artifact`,
+      "must match run.execution_profile.trace.source.artifact",
+    );
+  }
+  if (context.profileTarget && source.adapter !== context.profileTarget) {
+    throw new DashboardCompatibilityError(
+      `${path}.adapter`,
+      "must match run.execution_profile.target",
+    );
+  }
+  if (
+    context.profileSourceFormat &&
+    source.format !== context.profileSourceFormat
+  ) {
+    throw new DashboardCompatibilityError(
+      `${path}.format`,
+      "must match run.execution_profile.trace.source.format",
+    );
   }
   requireNonNegativeInteger(
     source.source_event_count,
@@ -776,6 +851,7 @@ function validateSourceTrace(value: unknown, path: string): void {
     `${path}.redaction`,
     "private-reasoning-fields-removed",
   );
+  return true;
 }
 
 function validateAgentTrace(
@@ -792,11 +868,16 @@ function validateAgentTrace(
       }
     }
     if (trace.capture_source !== undefined && trace.capture_source !== null) {
-      requireOneOf(trace.capture_source, `${path}.capture_source`, [
-        "codex_cli_jsonl",
-        "harness_native",
-        "lead_agent_observed",
-      ] as const);
+      requireString(trace.capture_source, `${path}.capture_source`);
+    }
+    if (
+      trace.source_trace_required !== undefined &&
+      trace.source_trace_required !== null
+    ) {
+      requireBoolean(
+        trace.source_trace_required,
+        `${path}.source_trace_required`,
+      );
     }
     if (trace.complete !== undefined && trace.complete !== null) {
       requireBoolean(trace.complete, `${path}.complete`);
@@ -815,11 +896,32 @@ function validateAgentTrace(
   for (const key of ["artifact", "digest", "started_at", "finished_at"]) {
     requireString(trace[key], `${path}.${key}`);
   }
-  requireOneOf(trace.capture_source, `${path}.capture_source`, [
-    "codex_cli_jsonl",
-    "harness_native",
-    "lead_agent_observed",
-  ] as const);
+  const captureSource = requireString(
+    trace.capture_source,
+    `${path}.capture_source`,
+  );
+  if (
+    context.profileTraceCaptureSource &&
+    captureSource !== context.profileTraceCaptureSource
+  ) {
+    throw new DashboardCompatibilityError(
+      `${path}.capture_source`,
+      "must match run.execution_profile.trace.capture_source",
+    );
+  }
+  const sourceTraceRequired = requireBoolean(
+    trace.source_trace_required,
+    `${path}.source_trace_required`,
+  );
+  if (
+    context.profileSourceArtifact !== undefined &&
+    sourceTraceRequired !== (context.profileSourceArtifact !== null)
+  ) {
+    throw new DashboardCompatibilityError(
+      `${path}.source_trace_required`,
+      "must match run.execution_profile.trace.source",
+    );
+  }
   requireLiteral(trace.complete, `${path}.complete`, true);
   const eventCount = requireNonNegativeInteger(
     trace.event_count,
@@ -1024,8 +1126,13 @@ function validateExecution(
   if (execution.dispatch !== undefined && execution.dispatch !== null) {
     validateDispatch(execution.dispatch, `${path}.dispatch`, context);
   }
+  let validSourceTrace = false;
   if (execution.source_trace !== undefined && execution.source_trace !== null) {
-    validateSourceTrace(execution.source_trace, `${path}.source_trace`);
+    validSourceTrace = validateSourceTrace(
+      execution.source_trace,
+      `${path}.source_trace`,
+      context,
+    );
   }
   if (execution.trace !== null) {
     validateAgentTrace(execution.trace, `${path}.trace`, {
@@ -1033,6 +1140,13 @@ function validateExecution(
       repeat,
       executionStatus,
     });
+    const trace = requireRecord(execution.trace, `${path}.trace`);
+    if (trace.valid === true && trace.source_trace_required === true && !validSourceTrace) {
+      throw new DashboardCompatibilityError(
+        `${path}.source_trace`,
+        "a valid provider-stream trace requires a valid bound source trace",
+      );
+    }
   }
   return repeat;
 }
@@ -1259,15 +1373,11 @@ function validateSpineNode(value: unknown, path: string): void {
   validateOptionalNullableString(node, "detail", path);
   validateOptionalNullableString(node, "case_id", path);
   if (node.split !== undefined) requireOneOf(node.split, `${path}.split`, splits);
-  for (const key of [
-    "arm",
-    "assertion_type",
-    "path",
-    "artifact",
-    "content_url",
-    "content_digest",
-  ]) {
+  for (const key of ["arm", "assertion_type"]) {
     validateOptionalString(node, key, path);
+  }
+  for (const key of ["path", "artifact", "content_url", "content_digest"]) {
+    validateOptionalNullableString(node, key, path);
   }
   for (const key of ["repeat", "content_size"]) {
     validateOptionalNumber(node, key, path);
@@ -1539,6 +1649,28 @@ export function validateAndMigrateDashboardData(input: unknown): DashboardData {
       typeof profile?.target === "string" ? profile.target : undefined,
     profileHarness:
       typeof profile?.harness === "string" ? profile.harness : undefined,
+    profileDispatchObservation:
+      profile?.dispatch_observation === "host_dispatch" ||
+      profile?.dispatch_observation === "process_spawn" ||
+      profile?.dispatch_observation === "external_harness"
+        ? profile.dispatch_observation
+        : undefined,
+    profileTraceCaptureSource:
+      isRecord(profile?.trace) && typeof profile.trace.capture_source === "string"
+        ? profile.trace.capture_source
+        : undefined,
+    profileSourceArtifact:
+      isRecord(profile?.trace) && profile.trace.source === null
+        ? null
+        : isRecord(profile?.trace) && isRecord(profile.trace.source) &&
+            typeof profile.trace.source.artifact === "string"
+          ? profile.trace.source.artifact
+          : undefined,
+    profileSourceFormat:
+      isRecord(profile?.trace) && isRecord(profile.trace.source) &&
+      typeof profile.trace.source.format === "string"
+        ? profile.trace.source.format
+        : undefined,
   };
   const summary = requireRecord(root.summary, "summary");
   validateSummary(summary, "summary");

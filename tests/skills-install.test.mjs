@@ -28,6 +28,7 @@ const python = process.env.PYTHON ?? "python3";
 const REQUIRED_FILES = [
   "SKILL.md",
   "references/action-center.md",
+  "references/agent-trace-contract.md",
   "references/dashboard-ui-bundle.json",
   "references/evolution-workflow.md",
   "references/example-review-output.md",
@@ -42,6 +43,7 @@ const REQUIRED_FILES = [
   "scripts/dashboard_bundle.py",
   "scripts/lint_skill_package.py",
   "scripts/run_codex_eval_executor.py",
+  "scripts/run_claude_eval_executor.py",
   "scripts/run_codex_skill_evals.py",
   "scripts/serve_skill_dashboard.py",
   "scripts/start_skill_dashboard.py",

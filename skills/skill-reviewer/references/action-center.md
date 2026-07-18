@@ -164,9 +164,12 @@ The Agent Trace view also keeps declared configuration separate from observed
 execution provenance. `run.execution_profile` says which provider/harness was
 intended. A native-subagent, local-process, or external-harness label requires
 the selected execution's validated, profile-matching `dispatch` descriptor;
-otherwise the UI says only that the profile was declared. Local Codex cells
-additionally expose whether the digest-bound `source_trace` descriptor
-validated. Neither field creates a new grade or upgrades missing evidence.
+otherwise the UI says only that the profile was declared. Every profile that
+declares a source stream additionally exposes whether the digest-bound,
+adapter-and-format-matching `source_trace` descriptor validated. The client
+does not parse provider formats or keep a provider allowlist. Neither field
+creates a new grade or upgrades missing evidence. The normative adapter
+boundary is `agent-trace-contract.md`.
 
 Review Overview is the single primary verdict surface. Its decision-evidence
 spine routes a reviewer to immutable change evidence, observed execution
