@@ -5924,6 +5924,11 @@ def _dashboard_review_outline(
     """
 
     nodes_by_id = {str(node.get("id")): node for node in spine}
+    nodes_by_parent: dict[str, list[dict[str, Any]]] = {}
+    for node in spine:
+        parent_id = node.get("parent_id")
+        if parent_id is not None:
+            nodes_by_parent.setdefault(str(parent_id), []).append(node)
     scenario_rows: list[dict[str, Any]] = []
     blockers: list[dict[str, Any]] = []
     passed_gate_ids: list[str] = []
@@ -5947,9 +5952,7 @@ def _dashboard_review_outline(
     for case in case_rows:
         case_id = str(case.get("id"))
         case_node_id = f"case:{case_id}"
-        children = [
-            node for node in spine if node.get("parent_id") == case_node_id
-        ]
+        children = nodes_by_parent.get(case_node_id, [])
         gate_ids = [
             str(node.get("id")) for node in children if node.get("kind") == "gate"
         ]
@@ -6142,6 +6145,18 @@ def _dashboard_review_outline(
         "next_action": next_action,
         "attribution": primary_attribution,
     }
+
+
+def _dashboard_release_eligible(decision: dict[str, Any] | None) -> bool:
+    """Derive release readiness only from a validated audit acceptance decision."""
+
+    return bool(
+        isinstance(decision, dict)
+        and decision.get("phase") == "audit"
+        and decision.get("status") == "accepted"
+        and decision.get("accepted") is True
+        and decision.get("release_eligible") is True
+    )
 
 
 def project_dashboard(
@@ -6780,7 +6795,7 @@ def project_dashboard(
     )
     skill_diffs = _dashboard_skill_diffs(plan, workspace=workspace)
     spine = _dashboard_order_spine(spine, case_rows)
-    release_eligible = (evidence or {}).get("release_eligible", False) is True
+    release_eligible = _dashboard_release_eligible(latest_decision)
     summary = {
         "case_count": len(case_rows),
         "candidate_passed": sum(row["status"] == "passed" for row in case_rows),
