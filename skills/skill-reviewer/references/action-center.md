@@ -114,6 +114,13 @@ cleanup or manual deletion is intentionally terminal.
 `project-dashboard` projects `action_center` from validated state and retained
 decisions. The UI must not infer or overwrite these fields:
 
+`run.release_eligible` and `review.decision.release_eligible` are
+decision-level projections. They are true only for the current run when its
+validated decision has `phase: audit`, `status: accepted`, `accepted: true`,
+and decision-owned `release_eligible: true`. The similarly named field on
+verification evidence records an opaque-audit evidence precondition; it cannot
+make the Dashboard release-ready before a bound acceptance decision exists.
+
 - `next_action`: exact value from `evolution-state.json`; without validated
   state, use `review_evidence` and do not expose state-changing tasks.
 - `continuation`: explicit `automatic`, `human_required`, or `stopped` mode.
@@ -145,12 +152,19 @@ immutable `spine`:
   → failed candidate observation → source artifact.
 - Case-scoped gate nodes carry `case_id` and use the case node as `parent_id`;
   serialized array position is never a substitute for this parent graph.
+- The projector indexes spine nodes by `parent_id` once. For `V` nodes and `C`
+  cases, review projection is `O(V + C)` time with `O(V)` auxiliary references;
+  do not rescan all `V` nodes inside every case on the live-refresh path.
 - Candidate acceptance criteria remain visible together: hard gates, Pareto
   admissibility, and material improvement.
 - The complete `spine` is a secondary audit archive for reproduction. Reviewers
   should not need to expand it to understand the release conclusion.
 
 The Action Center explains conclusions; it is not a second grader.
+Review Overview, Evidence Trace, Diff, and Action Center may materialize
+different read views of the same bound artifacts because they answer different
+questions: decision posture, execution/provenance, immutable change, and next
+authorized owner/action. They must not become independent acceptance engines.
 
 ## Failure attribution
 

@@ -2903,6 +2903,29 @@ describe("skill_eval_runtime decide", () => {
         writeExecution({ workspace, plan, caseId: "opaque-audit", arm });
       }
 
+      const preDecisionProjection = runtimeCommand([
+        "project-dashboard",
+        "--workspace",
+        workspace,
+        "--output",
+        join(workspace, "dashboard-data.json"),
+      ]);
+      expect(preDecisionProjection.status, preDecisionProjection.stderr).toBe(0);
+      const preDecisionDashboard = JSON.parse(
+        readFileSync(join(workspace, "dashboard-data.json"), "utf8"),
+      );
+      expect(preDecisionDashboard.run.verification_level).toBe(
+        "regression-verified",
+      );
+      expect(preDecisionDashboard.run.release_eligible).toBe(false);
+      expect(preDecisionDashboard.review.decision).toEqual(
+        expect.objectContaining({
+          status: "inconclusive",
+          reason: "evidence_incomplete",
+          release_eligible: false,
+        }),
+      );
+
       const result = decide({
         plan: planPath,
         evidence: join(workspace, "verification-evidence.json"),
@@ -2975,6 +2998,14 @@ describe("skill_eval_runtime decide", () => {
       expect(JSON.stringify(dashboard)).not.toContain("PRIVATE_PROMPT");
       expect(JSON.stringify(dashboard)).not.toContain(
         "PRIVATE_EXPECTED_MARKER",
+      );
+      expect(dashboard.run.release_eligible).toBe(true);
+      expect(dashboard.review.decision).toEqual(
+        expect.objectContaining({
+          status: "ready",
+          reason: "release_conditions_met",
+          release_eligible: true,
+        }),
       );
       expect(dashboard.spine).toEqual(
         expect.arrayContaining([
