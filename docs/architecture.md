@@ -35,23 +35,23 @@ are not model references.
 
 The Runtime has two intentionally separate entry points:
 
-- `skill_eval_runtime.py` is the authority façade for compile, lock, grade,
+- `skill_eval_runtime.mjs` is the authority façade for compile, lock, grade,
   decide, evolve, and project operations;
 - `run_agent_eval.mjs` is the only local process-execution CLI. It exposes the
   source-neutral `runAgentCell` and `runAgentPlan` interfaces.
 
 Callers provide a manifest, subject, baseline when required, execution profile,
-and fresh workspace. Four Python domain modules still own frozen decision
+and fresh workspace. Native ESM domain modules own the frozen decision
 contracts:
 
-- `skill_eval_authority.py`: normalization, compilation, snapshots, and complete
+- `lib/skill-eval-authority.mjs`: normalization, compilation, snapshots, and complete
   Manifest-derived lock reconstruction;
-- `skill_eval_grading.py`: dispatch/Trace validation, finalization, typed
+- `lib/skill-eval-grading.mjs`: dispatch/Trace validation, finalization, typed
   assertions, paired measurement, and grading;
-- `skill_eval_decision.py`: acceptance gates and bounded evolution state;
-- `skill_eval_dashboard.py`: read-only Dashboard projection.
+- `lib/skill-eval-decision.mjs`: acceptance gates and bounded evolution state;
+- `lib/skill-eval-dashboard.mjs`: read-only Dashboard projection.
 
-Stable contract identities live in `skill_eval_contracts.py`. The MJS execution
+Stable contract identities live in `lib/skill-eval-contracts.mjs`. The execution
 slice has four boundaries:
 
 1. `assets/agent-adapter-registry.json` is a closed, first-party registry. It
@@ -78,12 +78,15 @@ Hooks remain source-specific supplemental channels and are never merged with a
 CLI stream unless the source exposes an exact correlation key. Researched Hook
 formats remain explicitly `not-implemented` until they have parsers and fixtures.
 
-The remaining Python authority code is not retained because Python is the
-preferred product language. It is a staged migration boundary: immutable plan,
-lock, grading, and snapshot digests must first gain byte-for-byte golden parity
-tests before each domain can move to MJS. A language-only big-bang rewrite would
-change the evidence authority and implementation simultaneously. Tests target
-observable CLI results rather than private helper shape.
+The complete Runtime uses one Node.js/ESM toolchain. Public CLIs stay thin;
+domain modules expose direct in-process seams so the generic Agent runner does
+not launch a second language runtime. Golden contract and end-to-end tests
+protect immutable plan, lock, grading, snapshot, and Dashboard behavior.
+
+The MJS authority is an explicit digest boundary, not a byte-compatible reader
+for workspaces frozen by the removed runtime. New plans record
+`canonical_json_contract` and `portable_regex_contract`; an older plan must be
+recompiled into a fresh workspace instead of being silently reinterpreted.
 
 Domain modules may depend only on another module's public interface. Private
 helpers remain local to their owner; the local `skill_eval_*` import graph must
@@ -110,11 +113,12 @@ is outside evidence authority and must be revalidated by a receiving Agent.
 | Mode selection and verification-level semantics | `SKILL.md` |
 | Review scores and verdict rules | `references/review-rubric.md` |
 | Response shape | `references/output-contract.md` |
-| Eval Manifest, compilation, and lock reconstruction | `skill_eval_authority.py` |
-| Evidence validation and grading | `skill_eval_grading.py` |
-| Acceptance and bounded evolution | `skill_eval_decision.py` |
-| Dashboard read-model projection | `skill_eval_dashboard.py` |
-| Machine contract identities | `skill_eval_contracts.py` |
+| Eval Manifest, compilation, and lock reconstruction | `lib/skill-eval-authority.mjs` |
+| Evidence validation and grading | `lib/skill-eval-grading.mjs` |
+| Acceptance and bounded evolution | `lib/skill-eval-decision.mjs` |
+| Dashboard read-model projection | `lib/skill-eval-dashboard.mjs` |
+| Machine contract identities | `lib/skill-eval-contracts.mjs` |
+| Canonical JSON and content digests | `lib/agent-digest.mjs` |
 | Agent registry and locked adapter profile | `assets/agent-adapter-registry.json` |
 | Generic local execution and paired fan-out | `run_agent_eval.mjs`, `lib/agent-execution.mjs` |
 | Child process safety and provenance | `lib/agent-process.mjs` |
@@ -122,8 +126,8 @@ is outside evidence authority and must be revalidated by a receiving Agent.
 | Atomic artifacts and immutable runtime binding | `lib/agent-artifacts.mjs`, `lib/agent-runtime-binding.mjs` |
 | Per-run executable and operational identity | generated `agent-runtime-binding.json` |
 | Source event mapping | `lib/agent-adapters/<source>.mjs` |
-| Measurement policy | `skill_eval_measurement.py` |
-| Artifact ownership | `skill_eval_evidence.py` |
+| Measurement policy | `lib/skill-eval-measurement.mjs` |
+| Artifact ownership | `lib/skill-eval-evidence.mjs` |
 | Semantic grader machine contract | `assets/semantic-grader-contract.md` |
 | Dashboard bundle identity | `assets/dashboard-ui-bundle.json` |
 | Dashboard presentation validation | `dashboard-schema.ts` and tests |
@@ -153,8 +157,8 @@ replaced by a pointer to its authority.
   support. Documentation must not collapse these states into “supported”.
 - Re-run the real canary and update the exact version policy before retaining
   `canary-verified` after an Agent CLI upgrade.
-- Port a Python authority domain only behind golden parity tests; switch one
-  writer at a time and delete the displaced implementation in the same change.
+- Change an authority domain only behind golden contract tests; keep one writer
+  per artifact and update the façade and direct-import seam in the same change.
 - A UI migration must fail closed; it cannot invent positive evidence.
 
 ## Acceptance
@@ -162,7 +166,7 @@ replaced by a pointer to its authority.
 A governance change is complete only after:
 
 1. Vitest, typecheck, and Dashboard build pass.
-2. Every Python script compiles and every MJS runtime file passes `node --check`.
+2. Every MJS runtime file passes `node --check`.
 3. The Skill linter and executable Eval Manifest JSON validation pass.
 4. The install contract produces a self-contained Skill.
 5. A prepared Dashboard projection validates.

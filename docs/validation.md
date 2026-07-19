@@ -7,7 +7,7 @@ is not installed as Agent context.
 ## Code under test
 
 - Branch: `codex/dashboard-decision-first-ui`
-- Date: 2026-07-19 (Asia/Shanghai)
+- Date: 2026-07-20 (Asia/Shanghai)
 - Execution API: `scripts/run_agent_eval.mjs`
 - Registry: `assets/agent-adapter-registry.json`
 
@@ -19,19 +19,18 @@ generated run workspaces.
 
 The worktree passed:
 
-- `pnpm test`: 30 files; 29 passed, 1 explicitly skipped; 360 tests; 358 passed,
+- `pnpm test`: 30 files; 29 passed, 1 explicitly skipped; 372 tests; 370 passed,
   2 explicitly skipped;
 - Dashboard TypeScript checking and production build;
-- all current Python scripts through `py_compile` and all MJS runtime files
-  through `node --check`;
+- all native ESM runtime files through `node --check`;
 - Skill package lint, Eval Manifest JSON parsing, and `git diff --check`;
 - deterministic Dashboard packaging and committed-manifest comparison.
 
-The repository contains no Python unittest cases and no local snapshot validator;
+The installable Skill contains one native ESM runtime and no language bridge;
 neither no-op nor deleted commands are represented as quality evidence.
 
 - Skill package lint digest:
-  `e54261fd81d26c4220ec7856f901d2dfb09608f7469dd59311f6360c793035c9`
+  `20706e3759092768c3843620b6c4d17823ab8f24441d160445530be7e86e3444`
 - Dashboard tree SHA-256:
   `fa8b1f1fad2a386b3fdb679ddf6df0918dff6a8f14387b8b59e630709b5997e5`
 - Dashboard archive SHA-256:

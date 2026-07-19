@@ -8,6 +8,13 @@ import { describe, expect, it } from "vitest";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const scriptsRoot = join(repoRoot, "skills/skill-reviewer/scripts");
 
+function recursiveFiles(root, current = root) {
+  return readdirSync(current, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(current, entry.name);
+    return entry.isDirectory() ? recursiveFiles(root, path) : [path.slice(root.length + 1)];
+  });
+}
+
 describe("agent execution architecture", () => {
   it("exposes one provider-neutral MJS runner and no provider-named top-level runner", () => {
     expect(existsSync(join(scriptsRoot, "run_agent_eval.mjs"))).toBe(true);
@@ -42,6 +49,18 @@ describe("agent execution architecture", () => {
 
     expect(execution.runAgentCell).toBeTypeOf("function");
     expect(execution.runAgentPlan).toBeTypeOf("function");
+  });
+
+  it("uses in-process MJS authority and grading instead of a language bridge", () => {
+    const bridge = readFileSync(
+      join(scriptsRoot, "lib/agent-runtime-bridge.mjs"),
+      "utf8",
+    );
+
+    expect(bridge).toContain('from "./skill-eval-authority.mjs"');
+    expect(bridge).toContain('from "./skill-eval-grading.mjs"');
+    expect(bridge).not.toContain("node:child_process");
+    expect(bridge).not.toMatch(/spawn(?:Sync)?\s*\(/);
   });
 
   it("documents the generic CLI without requiring provider knowledge", () => {
@@ -86,5 +105,37 @@ describe("agent execution architecture", () => {
     for (const source of [dashboardSchema, uiPreferences]) {
       expect(source).not.toMatch(/\b(?:codex|claude|gemini|copilot|opencode)\b/i);
     }
+  });
+
+  it("ships one JavaScript runtime without Python script fallbacks", () => {
+    const files = recursiveFiles(scriptsRoot).sort();
+    expect(files.filter((path) => path.endsWith(".py"))).toEqual([]);
+    for (const entrypoint of [
+      "dashboard_bundle.mjs",
+      "lint_skill_package.mjs",
+      "run_agent_eval.mjs",
+      "serve_skill_dashboard.mjs",
+      "skill_eval_runtime.mjs",
+      "start_skill_dashboard.mjs",
+    ]) {
+      expect(files, entrypoint).toContain(entrypoint);
+    }
+  });
+
+  it("documents only Node-based project script invocations", () => {
+    const documentation = [
+      "AGENTS.md",
+      "CONTRIBUTING.md",
+      "README.md",
+      "README.zh-CN.md",
+      "docs/architecture.md",
+      "skills/skill-reviewer/SKILL.md",
+      "skills/skill-reviewer/evals/fixtures/README.md",
+      "skills/skill-reviewer/references/evolution-workflow.md",
+      "skills/skill-reviewer/references/verification-workflow.md",
+    ].map((relative) => readFileSync(join(repoRoot, relative), "utf8")).join("\n");
+
+    expect(documentation).not.toMatch(/\bpython3?\b/i);
+    expect(documentation).not.toMatch(/scripts\/[A-Za-z0-9_/-]+\.py\b/);
   });
 });

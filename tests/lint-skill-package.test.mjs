@@ -8,8 +8,7 @@ import { describe, expect, it } from "vitest";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const skillRoot = join(repoRoot, "skills", "skill-reviewer");
-const linter = join(skillRoot, "scripts", "lint_skill_package.py");
-const python = process.env.PYTHON ?? "python3";
+const linter = join(skillRoot, "scripts", "lint_skill_package.mjs");
 
 function write(root, relative, content) {
   const path = join(root, relative);
@@ -19,7 +18,7 @@ function write(root, relative, content) {
 
 function run(target, ...args) {
   const result = spawnSync(
-    python,
+    process.execPath,
     [linter, target, "--format", "json", ...args],
     { cwd: repoRoot, encoding: "utf8" },
   );
@@ -82,7 +81,25 @@ function evalCase(overrides = {}) {
   };
 }
 
-describe("lint_skill_package.py", () => {
+describe("lint_skill_package.mjs", () => {
+  it("fails closed on invalid UTF-8 Markdown", () => {
+    fixture((root) => {
+      write(root, "SKILL.md", Buffer.from([0x23, 0x20, 0xff, 0x0a]));
+
+      const { status, report } = run(root, "--fail-on", "error");
+
+      expect(status).toBe(1);
+      expect(report.findings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            rule_id: "package.unreadable-skill-md",
+            severity: "error",
+          }),
+        ]),
+      );
+    });
+  });
+
   it("binds a nested install-ready Dashboard bundle into the package digest", () => {
     fixture((root) => {
       write(
@@ -125,7 +142,7 @@ description: Review demo inputs when the user requests a demo review.
 ## Source-of-truth map
 
 - \`references/rules.md\` — review authority.
-- \`scripts/check.py\` — deterministic package check.
+- \`scripts/check.mjs\` — deterministic package check.
 - \`dashboard/dist/\` — installed presentation surface.
 `,
       );
@@ -140,7 +157,7 @@ description: Review demo inputs when the user requests a demo review.
       ).toEqual([
         "referenced package resource does not exist: dashboard/dist/",
         "referenced package resource does not exist: references/rules.md",
-        "referenced package resource does not exist: scripts/check.py",
+        "referenced package resource does not exist: scripts/check.mjs",
       ]);
     });
   });

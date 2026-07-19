@@ -50,11 +50,6 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
-      - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: "3.x"
-
       - name: Set up Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
@@ -83,14 +78,14 @@ jobs:
           test -n "$(find dashboard/dist/assets -type f -name '*.css' -print -quit)"
           test -z "$(git ls-files -- dashboard/dist skills/skill-reviewer/dashboard/dist)"
           git check-ignore -q dashboard/dist/index.html
-          python3 skills/skill-reviewer/scripts/dashboard_bundle.py package \
+          node skills/skill-reviewer/scripts/dashboard_bundle.mjs package \
             --ui-dir dashboard/dist \
             --output-dir "$RUNNER_TEMP/dashboard-release" \
             --manifest-output "$RUNNER_TEMP/generated-dashboard-manifest.json"
           cmp skills/skill-reviewer/assets/dashboard-ui-bundle.json \
             "$RUNNER_TEMP/generated-dashboard-manifest.json"
           archive="$(find "$RUNNER_TEMP/dashboard-release" -maxdepth 1 -type f -name 'dashboard-ui-*.zip' -print -quit)"
-          python3 skills/skill-reviewer/scripts/dashboard_bundle.py verify \
+          node skills/skill-reviewer/scripts/dashboard_bundle.mjs verify \
             --manifest skills/skill-reviewer/assets/dashboard-ui-bundle.json \
             --archive "$archive" \
             --output-dir "$RUNNER_TEMP/verified-dashboard"
@@ -98,13 +93,10 @@ jobs:
           test ! -e "$RUNNER_TEMP/verified-dashboard/dashboard-data.json"
 
       - name: Self-lint the skill package
-        run: python3 skills/skill-reviewer/scripts/lint_skill_package.py skills/skill-reviewer --format text --fail-on error
+        run: node skills/skill-reviewer/scripts/lint_skill_package.mjs skills/skill-reviewer --format text --fail-on error
 
       - name: Validate behavior eval manifest
-        run: python3 -m json.tool skills/skill-reviewer/evals/evals.json > /dev/null
-
-      - name: Compile Python scripts
-        run: python3 -m py_compile skills/skill-reviewer/scripts/*.py
+        run: node -e 'JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(require("node:fs").readFileSync(process.argv[1])))' skills/skill-reviewer/evals/evals.json
 
       - name: Check MJS runtime syntax
         run: find skills/skill-reviewer/scripts -type f -name '*.mjs' -print0 | xargs -0 -n1 node --check

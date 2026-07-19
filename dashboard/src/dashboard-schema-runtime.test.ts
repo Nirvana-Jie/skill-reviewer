@@ -24,9 +24,9 @@ const runtime = join(
   "skills",
   "skill-reviewer",
   "scripts",
-  "skill_eval_runtime.py",
+  "skill_eval_runtime.mjs",
 );
-const python = process.env.PYTHON ?? "python3";
+const node = process.execPath;
 
 function write(root: string, relative: string, content: string): string {
   const path = join(root, relative);
@@ -48,7 +48,7 @@ function makeWritable(path: string): void {
 }
 
 function runRuntime(args: string[]) {
-  return spawnSync(python, [runtime, ...args], {
+  return spawnSync(node, [runtime, ...args], {
     cwd: repoRoot,
     encoding: "utf8",
   });

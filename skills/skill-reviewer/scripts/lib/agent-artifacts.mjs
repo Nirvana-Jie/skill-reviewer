@@ -7,10 +7,11 @@ import {
 import { basename, dirname, join } from "node:path";
 
 import { sha256 } from "./agent-digest.mjs";
+import { readUtf8File } from "./strict-utf8.mjs";
 
 export function readJson(path, label) {
   try {
-    return JSON.parse(readFileSync(path, "utf8"));
+    return JSON.parse(readUtf8File(path, label));
   } catch (error) {
     throw new Error(`${label} is not valid JSON: ${error.message}`);
   }

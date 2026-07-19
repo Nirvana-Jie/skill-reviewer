@@ -22,16 +22,16 @@ const server = join(
   "skills",
   "skill-reviewer",
   "scripts",
-  "serve_skill_dashboard.py",
+  "serve_skill_dashboard.mjs",
 );
 const launcher = join(
   repoRoot,
   "skills",
   "skill-reviewer",
   "scripts",
-  "start_skill_dashboard.py",
+  "start_skill_dashboard.mjs",
 );
-const python = process.env.PYTHON ?? "python3";
+const node = process.execPath;
 
 function write(root, relative, content) {
   const path = join(root, relative);
@@ -49,7 +49,7 @@ function bridgeFetch(report, path, init = {}) {
   return fetch(`${report.base_url}${path}`, { ...init, headers });
 }
 
-describe("serve_skill_dashboard.py", () => {
+describe("serve_skill_dashboard.mjs", () => {
   it("requires an explicit user-approval gate before starting any UI", () => {
     const root = mkdtempSync(join(tmpdir(), "skill-reviewer-dashboard-consent-"));
     try {
@@ -68,7 +68,7 @@ describe("serve_skill_dashboard.py", () => {
       );
 
       const result = spawnSync(
-        python,
+        node,
         [
           launcher,
           "--workspace",
@@ -109,7 +109,7 @@ describe("serve_skill_dashboard.py", () => {
       );
 
       child = spawn(
-        python,
+        node,
         [
           launcher,
           "--workspace",
@@ -251,7 +251,7 @@ describe("serve_skill_dashboard.py", () => {
       );
 
       const result = spawnSync(
-        python,
+        node,
         [
           server,
           "--workspace",
@@ -307,7 +307,7 @@ describe("serve_skill_dashboard.py", () => {
         }),
       );
       child = spawn(
-        python,
+        node,
         [
           server,
           "--workspace",
@@ -408,7 +408,7 @@ describe("serve_skill_dashboard.py", () => {
       };
       write(workspace, "dashboard-data.json", JSON.stringify(model));
       child = spawn(
-        python,
+        node,
         [
           server,
           "--workspace",
@@ -718,7 +718,7 @@ describe("serve_skill_dashboard.py", () => {
         }),
       );
       child = spawn(
-        python,
+        node,
         [
           server,
           "--workspace",
@@ -908,7 +908,7 @@ describe("serve_skill_dashboard.py", () => {
       );
 
       const result = spawnSync(
-        python,
+        node,
         [
           server,
           "--workspace",
@@ -941,7 +941,7 @@ describe("serve_skill_dashboard.py", () => {
       );
 
       const result = spawnSync(
-        python,
+        node,
         [server, "--workspace", workspace, "--host", "0.0.0.0", "--check"],
         { cwd: repoRoot, encoding: "utf8" },
       );

@@ -28,7 +28,7 @@ retained outputs instead of reproducing schemas in prose.
 Compile one split:
 
 ```bash
-python3 scripts/skill_eval_runtime.py compile \
+node scripts/skill_eval_runtime.mjs compile \
   --manifest <skill>/evals/evals.json \
   --subject <candidate> \
   --execution-profile <profile.json> \
@@ -98,15 +98,15 @@ disagreement or stale binding cannot support a preference.
 ## 4. Decide and project
 
 ```bash
-python3 scripts/skill_eval_runtime.py grade \
+node scripts/skill_eval_runtime.mjs grade \
   --plan <workspace>/execution-plan.json --workspace <workspace>
 
-python3 scripts/skill_eval_runtime.py decide \
+node scripts/skill_eval_runtime.mjs decide \
   --plan <workspace>/execution-plan.json \
   --evidence <workspace>/verification-evidence.json \
   --workspace <workspace> --iteration 1 --phase selection
 
-python3 scripts/skill_eval_runtime.py project-dashboard \
+node scripts/skill_eval_runtime.mjs project-dashboard \
   --workspace <workspace> \
   --output <workspace>/dashboard-data.json
 ```
@@ -119,7 +119,7 @@ projection is a read model, never the evidence of record.
 Start it only after an explicit user request:
 
 ```bash
-python3 scripts/start_skill_dashboard.py \
+node scripts/start_skill_dashboard.mjs \
   --workspace <workspace> \
   --state <optional-evolution-state.json> \
   --user-approved-control-plane --open

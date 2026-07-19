@@ -22,6 +22,10 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { validateAndMigrateDashboardData } from "../dashboard/src/dashboard-schema";
+import {
+  CANONICAL_JSON_CONTRACT,
+  canonicalJson,
+} from "../skills/skill-reviewer/scripts/lib/agent-digest.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const runtime = join(
@@ -29,16 +33,16 @@ const runtime = join(
   "skills",
   "skill-reviewer",
   "scripts",
-  "skill_eval_runtime.py",
+  "skill_eval_runtime.mjs",
 );
 const dashboardLauncher = join(
   repoRoot,
   "skills",
   "skill-reviewer",
   "scripts",
-  "start_skill_dashboard.py",
+  "start_skill_dashboard.mjs",
 );
-const python = process.env.PYTHON ?? "python3";
+const node = process.execPath;
 
 function write(root, relative, content) {
   const path = join(root, relative);
@@ -339,7 +343,7 @@ function compile({
   const splitArgs = splits.flatMap((split) => ["--split", split]);
   const caseArgs = caseIds.flatMap((caseId) => ["--case", caseId]);
   return spawnSync(
-    python,
+    node,
     [
       runtime,
       "compile",
@@ -364,7 +368,7 @@ function compile({
 
 function grade({ plan, workspace }) {
   return spawnSync(
-    python,
+    node,
     [runtime, "grade", "--plan", plan, "--workspace", workspace],
     { cwd: repoRoot, encoding: "utf8" },
   );
@@ -372,7 +376,7 @@ function grade({ plan, workspace }) {
 
 function decide({ plan, evidence, workspace, iteration = 1, phase = "selection" }) {
   return spawnSync(
-    python,
+    node,
     [
       runtime,
       "decide",
@@ -392,7 +396,7 @@ function decide({ plan, evidence, workspace, iteration = 1, phase = "selection" 
 }
 
 function runtimeCommand(args) {
-  return spawnSync(python, [runtime, ...args], {
+  return spawnSync(node, [runtime, ...args], {
     cwd: repoRoot,
     encoding: "utf8",
   });
@@ -607,7 +611,35 @@ function executeBoundRun({
   };
 }
 
+describe("MJS authority contracts", () => {
+  it("pins ECMAScript canonical JSON bytes for digest-bearing numbers", () => {
+    expect(CANONICAL_JSON_CONTRACT).toBe(
+      "skill-reviewer.ecmascript-canonical-json.safe-number.v1",
+    );
+    expect(canonicalJson({
+      whole: 1.0,
+      negative_zero: -0,
+      fraction: 1e-7,
+      decimal: 1.5,
+    })).toBe(
+      '{"decimal":1.5,"fraction":1e-7,"negative_zero":0,"whole":1}',
+    );
+    expect(() => canonicalJson(1e16)).toThrow(/safe integers/);
+  });
+});
+
 describe("skill_eval_runtime compile", () => {
+  it("rejects unknown and cross-command options", () => {
+    for (const args of [
+      ["grade", "--plan", "plan.json", "--workspace", "run", "--bogus", "value"],
+      ["grade", "--plan", "plan.json", "--workspace", "run", "--manifest", "evals.json"],
+    ]) {
+      const result = runtimeCommand(args);
+      expect(result.status).toBe(2);
+      expect(JSON.parse(result.stdout).error).toContain("unknown option for grade");
+    }
+  });
+
   it("opens a compiled run before execution and reprojects new Agent evidence", async () => {
     const root = mkdtempSync(join(tmpdir(), "skill-reviewer-live-dashboard-"));
     let child;
@@ -616,7 +648,7 @@ describe("skill_eval_runtime compile", () => {
       const ui = join(root, "ui");
       write(ui, "index.html", "<!doctype html><title>local test UI</title>");
       child = spawn(
-        python,
+        node,
         [
           dashboardLauncher,
           "--workspace",
@@ -1289,6 +1321,76 @@ describe("skill_eval_runtime compile", () => {
     });
   });
 
+  it("rejects a manifest containing invalid UTF-8 bytes", () => {
+    fixture((root) => {
+      const { manifest, subject } = writeMinimalPackage(root);
+      writeFileSync(manifest, Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0xff, 0x7d]));
+
+      const result = compile({
+        manifest,
+        subject,
+        workspace: join(root, "run"),
+        splits: ["development"],
+      });
+
+      expect(result.status).toBe(2);
+      expect(JSON.parse(result.stdout).error).toContain("not valid UTF-8");
+    });
+  });
+
+  it("rejects integers that cannot be represented exactly by the MJS runtime", () => {
+    fixture((root) => {
+      const { manifest, subject } = writeMinimalPackage(root);
+      const original = readFileSync(manifest, "utf8");
+      for (const [index, literal] of [
+        "9007199254740993",
+        "1e16",
+        "9007199254740993.0",
+      ].entries()) {
+        writeFileSync(
+          manifest,
+          original.replace('"case_timeout_seconds":30', `"case_timeout_seconds":${literal}`),
+          "utf8",
+        );
+
+        const result = compile({
+          manifest,
+          subject,
+          workspace: join(root, `run-${index}`),
+          splits: ["development"],
+        });
+
+        expect(result.status).toBe(2);
+        expect(JSON.parse(result.stdout).error).toContain("safe integer");
+      }
+    });
+  });
+
+  it("rejects regex constructs outside the declared ECMAScript subset", () => {
+    fixture((root) => {
+      const invalid = minimalCase({
+        assertions: [{
+          id: "non-portable-pattern",
+          type: "text_matches",
+          artifact: "outputs/response.md",
+          pattern: "\\Aready\\Z",
+          severity: "must_pass",
+        }],
+      });
+      const { manifest, subject } = writeMinimalPackage(root, { cases: [invalid] });
+
+      const result = compile({
+        manifest,
+        subject,
+        workspace: join(root, "run"),
+        splits: ["development"],
+      });
+
+      expect(result.status).toBe(2);
+      expect(JSON.parse(result.stdout).error).toContain("non-portable escape");
+    });
+  });
+
   it("requires a positive default timeout and carries it into assignments", () => {
     fixture((root) => {
       const { manifest, subject } = writeMinimalPackage(root);
@@ -1477,16 +1579,26 @@ description: Review demo inputs when asked.
       expect(plan.subject.digest).toMatch(/^[a-f0-9]{64}$/);
       const expectedGraderFiles = Object.fromEntries(
         [
-          "skill_eval_authority.py",
-          "skill_eval_contracts.py",
-          "skill_eval_decision.py",
-          "skill_eval_evidence.py",
-          "skill_eval_grading.py",
-          "skill_eval_measurement.py",
-        ].map((name) => [name, sha256(join(dirname(runtime), name))]),
+          "agent-digest.mjs",
+          "strict-utf8.mjs",
+          "skill-eval-authority.mjs",
+          "skill-eval-contracts.mjs",
+          "skill-eval-decision.mjs",
+          "skill-eval-evidence.mjs",
+          "skill-eval-grading.mjs",
+          "skill-eval-measurement.mjs",
+        ].map((name) => [name, sha256(join(dirname(runtime), "lib", name))]),
       );
       expect(plan.authority.grader_files).toEqual(expectedGraderFiles);
-      expect(plan.authority.grader_digest).toBe(sha256Value(expectedGraderFiles));
+      expect(plan.authority.grader_digest).toBe(
+        sha256Value(Object.fromEntries(Object.entries(expectedGraderFiles).sort())),
+      );
+      expect(plan.authority.canonical_json_contract).toBe(
+        "skill-reviewer.ecmascript-canonical-json.safe-number.v1",
+      );
+      expect(plan.authority.portable_regex_contract).toBe(
+        "skill-reviewer.ecmascript-regexp-subset.v1",
+      );
       expect(plan.cases).toEqual([
         expect.objectContaining({
           id: "writes-review",
@@ -2144,6 +2256,38 @@ describe("skill_eval_runtime grade", () => {
     });
   });
 
+  it("rejects timestamps that Date.parse accepts but RFC 3339 does not", () => {
+    fixture((root) => {
+      const { plan, planPath, workspace } = compiledPlanFixture(root, [
+        minimalCase({ id: "strict-timestamp" }),
+      ]);
+      for (const arm of plan.cases[0].arms) {
+        write(
+          workspace,
+          `cases/strict-timestamp/${arm}/repeat-1/outputs/response.md`,
+          `done by ${arm}\n`,
+        );
+        writeExecution({ workspace, plan, caseId: "strict-timestamp", arm });
+      }
+      const receiptPath = join(
+        workspace,
+        "cases/strict-timestamp/with_skill/repeat-1/dispatch-receipt.json",
+      );
+      const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+      receipt.dispatched_at = "0";
+      writeFileSync(receiptPath, JSON.stringify(receipt), "utf8");
+
+      const result = grade({ plan: planPath, workspace });
+
+      expect(result.status, result.stderr).toBe(0);
+      const evidence = JSON.parse(result.stdout);
+      expect(evidence.level).toBe("inconclusive");
+      expect(evidence.cases[0].with_skill.binding_errors.join("\n")).toContain(
+        "dispatch receipt dispatched_at is invalid",
+      );
+    });
+  });
+
   it("rejects individually valid arms that were not retained in one paired dispatch batch", () => {
     fixture((root) => {
       const { plan, planPath, workspace } = compiledPlanFixture(root, [
@@ -2471,6 +2615,32 @@ describe("skill_eval_runtime grade", () => {
       expect(result.status).toBe(2);
       expect(JSON.parse(result.stdout).error).toContain(
         "cases do not match the pinned manifest",
+      );
+    });
+  });
+
+  it("rejects a workspace frozen before the MJS authority contracts were recorded", () => {
+    fixture((root) => {
+      const { planPath, workspace } = compiledPlanFixture(root, [
+        minimalCase({ id: "legacy-authority", split: "selection" }),
+      ]);
+      const plan = JSON.parse(readFileSync(planPath, "utf8"));
+      delete plan.authority.canonical_json_contract;
+      delete plan.authority.portable_regex_contract;
+      writeFileSync(planPath, JSON.stringify(plan), "utf8");
+
+      const lockPath = join(workspace, "run-lock.json");
+      const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+      delete lock.authority.canonical_json_contract;
+      delete lock.authority.portable_regex_contract;
+      lock.plan_digest = sha256(planPath);
+      writeFileSync(lockPath, JSON.stringify(lock), "utf8");
+
+      const result = grade({ plan: planPath, workspace });
+
+      expect(result.status).toBe(2);
+      expect(JSON.parse(result.stdout).error).toContain(
+        "locked eval or grader authority changed after compilation",
       );
     });
   });
@@ -3083,7 +3253,7 @@ describe("skill_eval_runtime grade", () => {
     });
   });
 
-  it("turns non-finite derived metric aggregates into inconclusive evidence", () => {
+  it("rejects unsafe integer-valued metrics before aggregation", () => {
     fixture((root) => {
       const testCase = minimalCase({
         id: "overflow-metric",
@@ -3125,12 +3295,12 @@ describe("skill_eval_runtime grade", () => {
       expect(evidence.level).toBe("inconclusive");
       expect(evidence.cases[0].with_skill.complete).toBe(false);
       expect(evidence.cases[0].with_skill.binding_errors.join("\n")).toContain(
-        "aggregate must be finite",
+        "safe integer range",
       );
     });
   });
 
-  it("treats an overflowing paired delta as stochastic direction uncertainty", () => {
+  it("does not infer a paired direction from exponent-encoded unsafe integers", () => {
     fixture((root) => {
       const testCase = minimalCase({
         id: "overflow-direction",
@@ -3175,7 +3345,11 @@ describe("skill_eval_runtime grade", () => {
       expect(result.status, result.stderr).toBe(0);
       const evidence = JSON.parse(result.stdout);
       expect(evidence.level).toBe("inconclusive");
-      expect(evidence.cases[0].direction_disagreement).toBe(true);
+      expect(evidence.cases[0].direction_disagreement).toBe(false);
+      expect(evidence.cases[0].with_skill.complete).toBe(false);
+      expect(evidence.cases[0].with_skill.binding_errors.join("\n")).toContain(
+        "safe integer range",
+      );
     });
   });
 });

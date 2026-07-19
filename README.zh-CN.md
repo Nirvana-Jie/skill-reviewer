@@ -181,7 +181,7 @@ Dashboard 是只读投影，唯一任务是让发布决策容易核查。它按�
 只有用户明确要求时才启动 Dashboard：
 
 ```bash
-python3 skills/skill-reviewer/scripts/start_skill_dashboard.py \
+node skills/skill-reviewer/scripts/start_skill_dashboard.mjs \
   --workspace /tmp/skill-reviewer-run \
   --state /tmp/skill-reviewer-control/evolution-state.json \
   --user-approved-control-plane \
@@ -225,9 +225,10 @@ pnpm install --frozen-lockfile
 
 pnpm test
 pnpm dashboard:build
-python3 skills/skill-reviewer/scripts/lint_skill_package.py \
+node skills/skill-reviewer/scripts/lint_skill_package.mjs \
   skills/skill-reviewer --format text --fail-on error
-python3 -m json.tool skills/skill-reviewer/evals/evals.json >/dev/null
+node -e 'JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(require("node:fs").readFileSync(process.argv[1])))' \
+  skills/skill-reviewer/evals/evals.json
 ```
 
 所有变更通过分支和 PR 进入 `main`。`Static Checks` 只运行确定性测试，不保存 API Key 或模型产物。Dashboard 由独立工作流构建为内容寻址的 GitHub Release asset；仓库不发布 npm 包，也不部署 GitHub Pages。
@@ -244,7 +245,7 @@ python3 -m json.tool skills/skill-reviewer/evals/evals.json >/dev/null
 │   └── evals/               # 单一可执行 Manifest 及其 fixture
 ├── dashboard/               # React / TypeScript / Vite 源码，dist 不入库
 ├── docs/                    # 维护者架构，不进入模型上下文
-├── tests/                   # Python + Vitest
+├── tests/                   # Vitest 单元与端到端测试
 └── assets/readme/           # README 正式视觉资产
 ```
 

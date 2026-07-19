@@ -31,7 +31,7 @@ an external release effect.
 Initialize a fresh control workspace outside all run and Skill roots:
 
 ```bash
-python3 scripts/skill_eval_runtime.py evolution-init \
+node scripts/skill_eval_runtime.mjs evolution-init \
   --plan <round-1-workspace>/execution-plan.json \
   --workspace <control-workspace>
 ```
@@ -45,7 +45,7 @@ For each round:
 4. After round one, bind the exact plan before dispatch:
 
 ```bash
-python3 scripts/skill_eval_runtime.py evolution-authorize \
+node scripts/skill_eval_runtime.mjs evolution-authorize \
   --state <control-workspace>/evolution-state.json \
   --plan <round-workspace>/execution-plan.json \
   --parent-digest <accepted-baseline-digest> \
@@ -60,7 +60,7 @@ still branches from the accepted baseline.
 6. Advance only with the retained decision:
 
 ```bash
-python3 scripts/skill_eval_runtime.py evolution-advance \
+node scripts/skill_eval_runtime.mjs evolution-advance \
   --state <control-workspace>/evolution-state.json \
   --decision <round-workspace>/iteration-1/acceptance-decision.json
 ```

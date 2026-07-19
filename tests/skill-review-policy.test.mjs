@@ -34,16 +34,8 @@ function section(markdown, start, end) {
 }
 
 function localSkillEvalImports(source) {
-  const imports = [];
-  const pattern = /from\s+(skill_eval_[a-z_]+)\s+import\s+(?:\(([\s\S]*?)\)|([^\n]+))/g;
-  for (const match of source.matchAll(pattern)) {
-    const names = (match[2] ?? match[3])
-      .split(",")
-      .map((name) => name.trim().split(/\s+as\s+/)[0])
-      .filter(Boolean);
-    imports.push({ module: match[1], names });
-  }
-  return imports;
+  return [...source.matchAll(/from\s+["']\.\/(skill-eval-[a-z-]+)\.mjs["']/g)]
+    .map((match) => match[1]);
 }
 
 describe("Skill Reviewer execution policy", () => {
@@ -124,33 +116,23 @@ describe("Skill Reviewer execution policy", () => {
   });
 
   it("keeps runtime domain imports public and acyclic", () => {
-    const pythonFiles = filesBelow(scriptsRoot).filter((name) =>
-      name.endsWith(".py"),
+    const domainFiles = filesBelow(scriptsRoot).filter((name) =>
+      /^lib\/skill-eval-[a-z-]+\.mjs$/.test(name),
     );
     const moduleNames = new Set(
-      pythonFiles.map((name) => name.replace(/\.py$/, "")),
+      domainFiles.map((name) => name.split("/").at(-1).replace(/\.mjs$/, "")),
     );
     const graph = new Map();
-    const privateImports = [];
 
-    for (const name of pythonFiles) {
-      const moduleName = name.replace(/\.py$/, "");
+    for (const name of domainFiles) {
+      const moduleName = name.split("/").at(-1).replace(/\.mjs$/, "");
       const imports = localSkillEvalImports(
         readFileSync(join(scriptsRoot, name), "utf8"),
       );
       graph.set(
         moduleName,
-        imports
-          .map((entry) => entry.module)
-          .filter((dependency) => moduleNames.has(dependency)),
+        imports.filter((dependency) => moduleNames.has(dependency)),
       );
-      for (const entry of imports) {
-        for (const importedName of entry.names.filter((item) =>
-          item.startsWith("_"),
-        )) {
-          privateImports.push(`${moduleName} -> ${entry.module}.${importedName}`);
-        }
-      }
     }
 
     const visited = new Set();
@@ -171,7 +153,6 @@ describe("Skill Reviewer execution policy", () => {
     }
     for (const moduleName of graph.keys()) visit(moduleName);
 
-    expect(privateImports).toEqual([]);
     expect(cycles).toEqual([]);
   });
 

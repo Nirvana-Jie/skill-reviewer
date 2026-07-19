@@ -37,9 +37,8 @@ const repoRoot = resolve(
 );
 const runtime = join(
   repoRoot,
-  "skills/skill-reviewer/scripts/skill_eval_runtime.py",
+  "skills/skill-reviewer/scripts/skill_eval_runtime.mjs",
 );
-const python = process.env.PYTHON ?? "python3";
 const node = process.execPath;
 const requestedAgents = new Set(
   (process.env.SKILL_REVIEWER_REAL_AGENT_E2E ?? "")
@@ -200,7 +199,7 @@ function createRun(agent: RealAgentCase, root: string) {
     }),
   );
   const workspace = join(root, "run");
-  const compiled = run(python, [
+  const compiled = run(node, [
     runtime,
     "compile",
     "--manifest",
@@ -260,7 +259,7 @@ describe("real Agent Trace adapters", () => {
           );
           expectSuccess(executed, `${agent.id} real Agent execution`);
 
-          const graded = run(python, [
+          const graded = run(node, [
             runtime,
             "grade",
             "--plan",
@@ -269,7 +268,7 @@ describe("real Agent Trace adapters", () => {
             workspace,
           ]);
           expectSuccess(graded, `${agent.id} grade`);
-          const projected = run(python, [
+          const projected = run(node, [
             runtime,
             "project-dashboard",
             "--workspace",

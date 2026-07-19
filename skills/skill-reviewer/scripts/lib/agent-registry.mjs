@@ -1,8 +1,8 @@
-import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { canonicalJson, sha256 } from "./agent-digest.mjs";
+import { readUtf8File } from "./strict-utf8.mjs";
 
 const REGISTRY_CONTRACT = "skill-reviewer.agent-adapter-registry";
 const REGISTRY_SCHEMA_VERSION = "1.0.0";
@@ -209,7 +209,14 @@ export function loadAgentRegistry({
   registryPath = builtInAgentRegistryPath,
   value,
 } = {}) {
-  const raw = value ?? JSON.parse(readFileSync(registryPath, "utf8"));
+  let raw = value;
+  if (raw === undefined) {
+    try {
+      raw = JSON.parse(readUtf8File(registryPath, "agent adapter registry"));
+    } catch (error) {
+      fail(`source is not valid JSON: ${error.message}`);
+    }
+  }
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
     fail("root must be an object");
   }

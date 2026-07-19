@@ -23,7 +23,7 @@ const runtime = join(
   "skills",
   "skill-reviewer",
   "scripts",
-  "skill_eval_runtime.py",
+  "skill_eval_runtime.mjs",
 );
 const executor = join(
   repoRoot,
@@ -33,8 +33,7 @@ const executor = join(
   "run_agent_eval.mjs",
 );
 const planExecutor = executor;
-const python = process.execPath;
-const runtimePython = process.env.PYTHON ?? "python3";
+const node = process.execPath;
 
 function write(root, relative, content) {
   const path = join(root, relative);
@@ -56,7 +55,6 @@ function makeWritable(path) {
 }
 
 function run(command, args, options = {}) {
-  if (command === python && args[0] === runtime) command = runtimePython;
   return spawnSync(command, args, {
     cwd: repoRoot,
     encoding: "utf8",
@@ -150,85 +148,70 @@ function makePackage(root) {
 function makeFakeCodex(root) {
   const path = write(
     root,
-    "fake-codex.py",
-    String.raw`#!/usr/bin/env python3
-import json
-import os
-import pathlib
-import sys
-import time
+    "fake-codex.mjs",
+    String.raw`#!/usr/bin/env node
+import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
-args = sys.argv[1:]
-if args == ["--version"]:
-    print(os.environ.get("FAKE_CODEX_VERSION", "codex-cli 0.144.5"))
-    raise SystemExit(0)
+const args = process.argv.slice(2);
+const wait = (milliseconds) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+if (args.length === 1 && args[0] === "--version") {
+  process.stdout.write((process.env.FAKE_CODEX_VERSION ?? "codex-cli 0.144.5") + "\n");
+  process.exit(0);
+}
 
-if args[:2] == ["debug", "prompt-input"]:
-    disabled = any("skills.config=" in arg and "enabled=false" in arg for arg in args)
-    text = "skills disabled"
-    if not disabled:
-        tick = chr(96)
-        text = f"""<skills_instructions>
-### Skill roots
-- {tick}r0{tick} = {tick}/tmp/codex-ambient-skills{tick}
-### Available skills
-- ambient-fixture: Must never reach an eval arm. (file: r0/ambient-fixture/SKILL.md)
-</skills_instructions>"""
-    print(json.dumps([{"role": "developer", "content": [{"type": "input_text", "text": text}]}]))
-    raise SystemExit(0)
+if (args[0] === "debug" && args[1] === "prompt-input") {
+  const disabled = args.some((arg) => arg.includes("skills.config=") && arg.includes("enabled=false"));
+  const tick = String.fromCharCode(96);
+  const text = disabled
+    ? "skills disabled"
+    : "<skills_instructions>\n### Skill roots\n- " + tick + "r0" + tick + " = " + tick + "/tmp/codex-ambient-skills" + tick + "\n### Available skills\n- ambient-fixture: Must never reach an eval arm. (file: r0/ambient-fixture/SKILL.md)\n</skills_instructions>";
+  process.stdout.write(JSON.stringify([{ role: "developer", content: [{ type: "input_text", text }] }]) + "\n");
+  process.exit(0);
+}
 
-arm = pathlib.Path.cwd().parent.name
-barrier_dir = os.environ.get("FAKE_CODEX_BARRIER_DIR")
-if barrier_dir:
-    barrier = pathlib.Path(barrier_dir)
-    barrier.mkdir(parents=True, exist_ok=True)
-    (barrier / f"{arm}.started").write_text(str(os.getpid()), encoding="utf-8")
-    deadline = time.monotonic() + 10
-    while len(list(barrier.glob("*.started"))) < 2 and time.monotonic() < deadline:
-        time.sleep(0.02)
-    if len(list(barrier.glob("*.started"))) < 2:
-        print("paired arms were serialized", file=sys.stderr)
-        raise SystemExit(41)
+const arm = dirname(process.cwd()).split("/").at(-1);
+if (process.env.FAKE_CODEX_BARRIER_DIR) {
+  const barrier = process.env.FAKE_CODEX_BARRIER_DIR;
+  mkdirSync(barrier, { recursive: true });
+  writeFileSync(join(barrier, arm + ".started"), String(process.pid));
+  const deadline = Date.now() + 10_000;
+  while (readdirSync(barrier).filter((name) => name.endsWith(".started")).length < 2 && Date.now() < deadline) wait(20);
+  if (readdirSync(barrier).filter((name) => name.endsWith(".started")).length < 2) {
+    process.stderr.write("paired arms were serialized\n");
+    process.exit(41);
+  }
+}
 
-delay_seconds = float(os.environ.get("FAKE_CODEX_DELAY_SECONDS", "0"))
-if delay_seconds:
-    time.sleep(delay_seconds)
-if os.environ.get("FAKE_CODEX_SLOW_ARM") == arm:
-    time.sleep(float(os.environ.get("FAKE_CODEX_SLOW_SECONDS", "10")))
-
-argv_log = os.environ.get("FAKE_CODEX_ARGV")
-if argv_log:
-    pathlib.Path(argv_log).write_text(json.dumps(args, ensure_ascii=False), encoding="utf-8")
-output_index = args.index("--output-last-message") + 1
-output = pathlib.Path(args[output_index])
-output.parent.mkdir(parents=True, exist_ok=True)
-credential = os.environ.get("SKILL_REVIEWER_TEST_CREDENTIAL")
-output.write_text("PASS\n" + ((credential + "\n") if credential else ""), encoding="utf-8")
-if os.environ.get("FAKE_CODEX_FRAMEWORK_ERROR_ARM") == arm:
-    pathlib.Path("agent-source-events.jsonl").write_text("preexisting\n", encoding="utf-8")
-if os.environ.get("FAKE_CODEX_INVALID_UTF8") == "1":
-    sys.stdout.buffer.write(b'{"type":"thread.started","thread_id":"' + bytes([255]) + b'"}\\n')
-    sys.stdout.buffer.flush()
-    raise SystemExit(0)
-events = [
-    {"type": "thread.started", "thread_id": "thread-real-jsonl"},
-    {"type": "turn.started"},
-    {"type": "item.completed", "item": {"id": "reason-1", "type": "reasoning", "text": "PRIVATE_CHAIN_OF_THOUGHT"}},
-    {"type": "item.started", "item": {"id": "cmd-1", "type": "command_execution", "command": "/bin/zsh -lc 'printf PASS'", "status": "in_progress"}},
-    {"type": "item.completed", "item": {"id": "cmd-1", "type": "command_execution", "command": "/bin/zsh -lc 'printf PASS'", "aggregated_output": "PASS", "exit_code": 0, "status": "completed"}},
-    {"type": "item.completed", "item": {"id": "provider-1", "type": "provider_observation", "status": "completed", "payload": {"thinking": "PRIVATE_NESTED_THINKING", "signature": "PRIVATE_SIGNATURE"}}},
-    {"type": "item.completed", "item": {"id": "msg-1", "type": "agent_message", "text": credential or "PASS"}},
-    {"type": "turn.completed", "usage": {"input_tokens": 21, "cached_input_tokens": 3, "output_tokens": 2}},
-]
-if os.environ.get("FAKE_CODEX_TURN_FAILED") == "1":
-    events[-1] = {"type": "turn.failed", "error": {"message": "provider reported failure"}}
-for event in events:
-    print(json.dumps(event), flush=True)
-completed_dir = os.environ.get("FAKE_CODEX_COMPLETED_DIR")
-if completed_dir:
-    completed = pathlib.Path(completed_dir)
-    completed.mkdir(parents=True, exist_ok=True)
-    (completed / f"{arm}.completed").write_text("completed\n", encoding="utf-8")
+const delaySeconds = Number(process.env.FAKE_CODEX_DELAY_SECONDS ?? 0);
+if (delaySeconds) wait(delaySeconds * 1_000);
+if (process.env.FAKE_CODEX_SLOW_ARM === arm) wait(Number(process.env.FAKE_CODEX_SLOW_SECONDS ?? 10) * 1_000);
+if (process.env.FAKE_CODEX_ARGV) writeFileSync(process.env.FAKE_CODEX_ARGV, JSON.stringify(args));
+const output = args[args.indexOf("--output-last-message") + 1];
+mkdirSync(dirname(output), { recursive: true });
+const credential = process.env.SKILL_REVIEWER_TEST_CREDENTIAL;
+writeFileSync(output, "PASS\n" + (credential ? credential + "\n" : ""));
+if (process.env.FAKE_CODEX_FRAMEWORK_ERROR_ARM === arm) writeFileSync("agent-source-events.jsonl", "preexisting\n");
+if (process.env.FAKE_CODEX_INVALID_UTF8 === "1") {
+  process.stdout.write(Buffer.concat([Buffer.from('{"type":"thread.started","thread_id":"'), Buffer.from([255]), Buffer.from('"}\n')]));
+  process.exit(0);
+}
+const events = [
+  { type: "thread.started", thread_id: "thread-real-jsonl" },
+  { type: "turn.started" },
+  { type: "item.completed", item: { id: "reason-1", type: "reasoning", text: "PRIVATE_CHAIN_OF_THOUGHT" } },
+  { type: "item.started", item: { id: "cmd-1", type: "command_execution", command: "/bin/zsh -lc 'printf PASS'", status: "in_progress" } },
+  { type: "item.completed", item: { id: "cmd-1", type: "command_execution", command: "/bin/zsh -lc 'printf PASS'", aggregated_output: "PASS", exit_code: 0, status: "completed" } },
+  { type: "item.completed", item: { id: "provider-1", type: "provider_observation", status: "completed", payload: { thinking: "PRIVATE_NESTED_THINKING", signature: "PRIVATE_SIGNATURE" } } },
+  { type: "item.completed", item: { id: "msg-1", type: "agent_message", text: credential ?? "PASS" } },
+  { type: "turn.completed", usage: { input_tokens: 21, cached_input_tokens: 3, output_tokens: 2 } },
+];
+if (process.env.FAKE_CODEX_TURN_FAILED === "1") events[events.length - 1] = { type: "turn.failed", error: { message: "provider reported failure" } };
+for (const event of events) process.stdout.write(JSON.stringify(event) + "\n");
+if (process.env.FAKE_CODEX_COMPLETED_DIR) {
+  mkdirSync(process.env.FAKE_CODEX_COMPLETED_DIR, { recursive: true });
+  writeFileSync(join(process.env.FAKE_CODEX_COMPLETED_DIR, arm + ".completed"), "completed\n");
+}
 `,
   );
   chmodSync(path, 0o755);
@@ -265,7 +248,7 @@ function compileRun({ root, profileOverrides = {} }) {
       ...profileOverrides,
     }),
   );
-  const result = run(python, [
+  const result = run(node, [
     runtime,
     "compile",
     "--manifest",
@@ -303,7 +286,7 @@ describe("local Codex eval executor", () => {
       const fakeCodex = makeFakeCodex(root);
 
       const result = run(
-        python,
+        node,
         [
           planExecutor,
           "--workspace",
@@ -389,7 +372,7 @@ describe("local Codex eval executor", () => {
         const barrierDir = join(root, "paired-start-barrier");
         const completedDir = join(root, "provider-completed");
         const child = spawn(
-          python,
+          node,
           [
             planExecutor,
             "--workspace",
@@ -472,7 +455,7 @@ describe("local Codex eval executor", () => {
         const completedDir = join(root, "paired-framework-completed");
         const startedAt = Date.now();
         const result = run(
-          python,
+          node,
           [
             planExecutor,
             "--workspace",
@@ -530,7 +513,7 @@ describe("local Codex eval executor", () => {
       const fakeCodex = makeFakeCodex(root);
       const argvLog = join(root, "codex-argv.json");
       const candidate = run(
-        python,
+        node,
         [
           executor,
           "--workspace",
@@ -620,7 +603,7 @@ describe("local Codex eval executor", () => {
       expect(existsSync(join(repeatRoot, "dispatch-receipt.json"))).toBe(true);
 
       const baseline = run(
-        python,
+        node,
         [
           executor,
           "--workspace",
@@ -637,7 +620,7 @@ describe("local Codex eval executor", () => {
       expectSuccess(baseline, "baseline Codex execution");
       expect(JSON.parse(readFileSync(argvLog, "utf8")).at(-1)).toContain("未使用 Skill");
 
-      const graded = run(python, [
+      const graded = run(node, [
         runtime,
         "grade",
         "--plan",
@@ -667,7 +650,7 @@ describe("local Codex eval executor", () => {
     try {
       const { workspace } = compileRun({ root });
       const result = run(
-        python,
+        node,
         [
           executor,
           "--workspace",
@@ -706,7 +689,7 @@ describe("local Codex eval executor", () => {
     try {
       const { workspace } = compileRun({ root });
       const result = run(
-        python,
+        node,
         [
           executor,
           "--workspace",
@@ -755,7 +738,7 @@ describe("local Codex eval executor", () => {
     try {
       const { workspace } = compileRun({ root });
       const result = run(
-        python,
+        node,
         [
           executor,
           "--workspace",
@@ -792,7 +775,7 @@ describe("local Codex eval executor", () => {
       const { workspace } = compileRun({ root });
       const fakeAgent = makeFakeCodex(root);
       const result = run(
-        python,
+        node,
         [
           executor,
           "--workspace",
@@ -830,7 +813,7 @@ describe("local Codex eval executor", () => {
     try {
       const { workspace } = compileRun({ root });
       const result = run(
-        python,
+        node,
         [
           executor,
           "--workspace",
@@ -889,7 +872,7 @@ describe("local Codex eval executor", () => {
       const argvLog = join(root, "provider-argv.json");
 
       const result = run(
-        python,
+        node,
         [
           executor,
           "--workspace",
@@ -921,7 +904,7 @@ describe("local Codex eval executor", () => {
     try {
       const { workspace } = compileRun({ root });
       const result = run(
-        python,
+        node,
         [
           executor,
           "--workspace",
@@ -959,7 +942,7 @@ describe("local Codex eval executor", () => {
     try {
       const { workspace } = compileRun({ root });
       const result = run(
-        python,
+        node,
         [
           executor,
           "--workspace",
@@ -1002,7 +985,7 @@ describe("local Codex eval executor", () => {
       const { workspace } = compileRun({ root });
       const fakeCodex = makeFakeCodex(root);
       for (const arm of ["with_skill", "without_skill"]) {
-        const result = run(python, [
+        const result = run(node, [
           executor,
           "--workspace",
           workspace,
@@ -1019,7 +1002,7 @@ describe("local Codex eval executor", () => {
       );
       writeFileSync(sourcePath, `${readFileSync(sourcePath, "utf8")}{}\n`, "utf8");
 
-      const graded = run(python, [
+      const graded = run(node, [
         runtime,
         "grade",
         "--plan",
@@ -1048,7 +1031,7 @@ describe("local Codex eval executor", () => {
         root,
         profileOverrides: { isolation: "trusted-orchestrator" },
       });
-      const result = run(python, [
+      const result = run(node, [
         executor,
         "--workspace",
         workspace,
@@ -1071,7 +1054,7 @@ describe("local Codex eval executor", () => {
       const { workspace } = compileRun({ root });
       const fakeAgent = makeFakeCodex(root);
       for (const arm of ["with_skill", "without_skill"]) {
-        const result = run(python, [
+        const result = run(node, [
           executor,
           "--workspace",
           workspace,
@@ -1111,7 +1094,7 @@ describe("local Codex eval executor", () => {
       execution.trace.digest = sha256File(tracePath);
       writeFileSync(executionPath, `${JSON.stringify(execution, null, 2)}\n`, "utf8");
 
-      const graded = run(python, [
+      const graded = run(node, [
         runtime,
         "grade",
         "--plan",

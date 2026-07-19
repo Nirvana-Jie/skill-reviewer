@@ -18,15 +18,13 @@ Run these before proposing changes:
 pnpm test
 pnpm typecheck
 pnpm dashboard:build
-python3 skills/skill-reviewer/scripts/lint_skill_package.py skills/skill-reviewer --format text --fail-on error
-python3 -m json.tool skills/skill-reviewer/evals/evals.json >/dev/null
+node skills/skill-reviewer/scripts/lint_skill_package.mjs skills/skill-reviewer --format text --fail-on error
+node -e 'JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(require("node:fs").readFileSync(process.argv[1])))' skills/skill-reviewer/evals/evals.json
 ```
 
-For syntax-only checks in restricted macOS sandboxes, direct pycache to a writable
-directory:
+Run a syntax-only check across the native ESM runtime:
 
 ```bash
-env PYTHONPYCACHEPREFIX=/private/tmp/skill-reviewer-pycache python3 -m py_compile skills/skill-reviewer/scripts/*.py
 find skills/skill-reviewer/scripts -type f -name '*.mjs' -print0 | xargs -0 -n1 node --check
 ```
 

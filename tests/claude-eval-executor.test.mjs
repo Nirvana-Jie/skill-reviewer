@@ -18,11 +18,10 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const python = process.execPath;
-const runtimePython = process.env.PYTHON ?? "python3";
+const node = process.execPath;
 const runtime = join(
   repoRoot,
-  "skills/skill-reviewer/scripts/skill_eval_runtime.py",
+  "skills/skill-reviewer/scripts/skill_eval_runtime.mjs",
 );
 const executor = join(
   repoRoot,
@@ -49,7 +48,6 @@ function makeWritable(path) {
 }
 
 function run(command, args, options = {}) {
-  if (command === python && args[0] === runtime) command = runtimePython;
   return spawnSync(command, args, {
     cwd: repoRoot,
     encoding: "utf8",
@@ -132,47 +130,39 @@ function makePackage(root) {
 function makeFakeClaude(root) {
   const path = write(
     root,
-    "fake-claude.py",
-    String.raw`#!/usr/bin/env python3
-import json
-import os
-import pathlib
-import sys
-import time
+    "fake-claude.mjs",
+    String.raw`#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
 
-args = sys.argv[1:]
-if args == ["--version"]:
-    print("2.1.215 (Claude Code)")
-    raise SystemExit(0)
+const args = process.argv.slice(2);
+const wait = (milliseconds) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+if (args.length === 1 && args[0] === "--version") {
+  process.stdout.write("2.1.215 (Claude Code)\n");
+  process.exit(0);
+}
+if (process.env.FAKE_CLAUDE_ARGV) writeFileSync(process.env.FAKE_CLAUDE_ARGV, JSON.stringify(args));
+if (process.env.FAKE_CLAUDE_STARTED) writeFileSync(process.env.FAKE_CLAUDE_STARTED, String(process.pid));
+if (process.env.FAKE_CLAUDE_DELAY_SECONDS) wait(Number(process.env.FAKE_CLAUDE_DELAY_SECONDS) * 1_000);
+if (process.env.FAKE_CLAUDE_COMPLETED) writeFileSync(process.env.FAKE_CLAUDE_COMPLETED, "completed");
 
-if os.environ.get("FAKE_CLAUDE_ARGV"):
-    pathlib.Path(os.environ["FAKE_CLAUDE_ARGV"]).write_text(json.dumps(args), encoding="utf-8")
-if os.environ.get("FAKE_CLAUDE_STARTED"):
-    pathlib.Path(os.environ["FAKE_CLAUDE_STARTED"]).write_text(str(os.getpid()), encoding="utf-8")
-if os.environ.get("FAKE_CLAUDE_DELAY_SECONDS"):
-    time.sleep(float(os.environ["FAKE_CLAUDE_DELAY_SECONDS"]))
-if os.environ.get("FAKE_CLAUDE_COMPLETED"):
-    pathlib.Path(os.environ["FAKE_CLAUDE_COMPLETED"]).write_text("completed", encoding="utf-8")
-
-credential = os.environ.get("SKILL_REVIEWER_TEST_CREDENTIAL")
-events = [
-    {"type": "system", "subtype": "init", "session_id": "session-real-stream", "model": "claude-test", "tools": ["Read"]},
-    {"type": "assistant", "message": {"content": [
-        {"type": "thinking", "thinking": "PRIVATE_CHAIN_OF_THOUGHT"},
-        {"type": "tool_use", "id": "tool-1", "name": "Read", "input": {"file_path": "SKILL.md"}},
-        {"type": "text", "text": credential or "PASS"}
-    ]}},
-    {"type": "user", "message": {"content": [
-        {"type": "tool_result", "tool_use_id": "tool-1", "content": "fixture", "is_error": False}
-    ]}},
-    {"type": "result", "subtype": "success", "is_error": False, "session_id": "session-real-stream", "result": credential or "PASS", "duration_ms": 12, "total_cost_usd": 0.001, "usage": {"input_tokens": 10, "output_tokens": 2}}
-]
-if os.environ.get("FAKE_CLAUDE_ORPHAN_RESULT") == "1":
-    events.insert(-1, {"type": "user", "message": {"content": [
-        {"type": "tool_result", "tool_use_id": "orphan-tool", "content": "unexpected", "is_error": False}
-    ]}})
-for event in events:
-    print(json.dumps(event), flush=True)
+const credential = process.env.SKILL_REVIEWER_TEST_CREDENTIAL;
+const events = [
+  { type: "system", subtype: "init", session_id: "session-real-stream", model: "claude-test", tools: ["Read"] },
+  { type: "assistant", message: { content: [
+    { type: "thinking", thinking: "PRIVATE_CHAIN_OF_THOUGHT" },
+    { type: "tool_use", id: "tool-1", name: "Read", input: { file_path: "SKILL.md" } },
+    { type: "text", text: credential ?? "PASS" },
+  ] } },
+  { type: "user", message: { content: [
+    { type: "tool_result", tool_use_id: "tool-1", content: "fixture", is_error: false },
+  ] } },
+  { type: "result", subtype: "success", is_error: false, session_id: "session-real-stream", result: credential ?? "PASS", duration_ms: 12, total_cost_usd: 0.001, usage: { input_tokens: 10, output_tokens: 2 } },
+];
+if (process.env.FAKE_CLAUDE_ORPHAN_RESULT === "1") events.splice(events.length - 1, 0, {
+  type: "user",
+  message: { content: [{ type: "tool_result", tool_use_id: "orphan-tool", content: "unexpected", is_error: false }] },
+});
+for (const event of events) process.stdout.write(JSON.stringify(event) + "\n");
 `,
   );
   chmodSync(path, 0o755);
@@ -202,7 +192,7 @@ function compileRun(root) {
       sampling: { mode: "claude-default", paired: true },
     }),
   );
-  const result = run(python, [
+  const result = run(node, [
     runtime,
     "compile",
     "--manifest",
@@ -237,7 +227,7 @@ describe("local Claude Code eval executor", () => {
     try {
       const { workspace } = compileRun(root);
       const result = run(
-        python,
+        node,
         [
           executor,
           "--workspace",
@@ -279,7 +269,7 @@ describe("local Claude Code eval executor", () => {
       const argvLog = join(root, "claude-argv.json");
       for (const arm of ["with_skill", "without_skill"]) {
         const result = run(
-          python,
+          node,
           [
             executor,
             "--workspace",
@@ -341,7 +331,7 @@ describe("local Claude Code eval executor", () => {
         ]),
       );
 
-      const graded = run(python, [
+      const graded = run(node, [
         runtime,
         "grade",
         "--plan",
@@ -365,7 +355,7 @@ describe("local Claude Code eval executor", () => {
     try {
       const { workspace } = compileRun(root);
       const result = run(
-        python,
+        node,
         [
           executor,
           "--workspace",
@@ -402,7 +392,7 @@ describe("local Claude Code eval executor", () => {
     try {
       const { workspace } = compileRun(root);
       const result = run(
-        python,
+        node,
         [
           executor,
           "--workspace",
@@ -462,7 +452,7 @@ describe("local Claude Code eval executor", () => {
       const started = join(root, "provider-started");
 
       const result = run(
-        python,
+        node,
         [
           executor,
           "--workspace",
@@ -505,7 +495,7 @@ describe("local Claude Code eval executor", () => {
       const started = join(root, "provider-started");
 
       const result = run(
-        python,
+        node,
         [
           executor,
           "--workspace",
@@ -539,7 +529,7 @@ describe("local Claude Code eval executor", () => {
       const started = join(root, "provider-started");
       const completed = join(root, "provider-completed");
       const result = run(
-        python,
+        node,
         [
           executor,
           "--workspace",
@@ -593,7 +583,7 @@ describe("local Claude Code eval executor", () => {
       const started = join(root, "provider-started");
       const completed = join(root, "provider-completed");
       const result = run(
-        python,
+        node,
         [
           executor,
           "--workspace",

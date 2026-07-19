@@ -196,7 +196,7 @@ grading and release truth.
 Start the Dashboard only when the user explicitly requests it:
 
 ```bash
-python3 skills/skill-reviewer/scripts/start_skill_dashboard.py \
+node skills/skill-reviewer/scripts/start_skill_dashboard.mjs \
   --workspace /tmp/skill-reviewer-run \
   --state /tmp/skill-reviewer-control/evolution-state.json \
   --user-approved-control-plane \
@@ -241,9 +241,10 @@ pnpm install --frozen-lockfile
 
 pnpm test
 pnpm dashboard:build
-python3 skills/skill-reviewer/scripts/lint_skill_package.py \
+node skills/skill-reviewer/scripts/lint_skill_package.mjs \
   skills/skill-reviewer --format text --fail-on error
-python3 -m json.tool skills/skill-reviewer/evals/evals.json >/dev/null
+node -e 'JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(require("node:fs").readFileSync(process.argv[1])))' \
+  skills/skill-reviewer/evals/evals.json
 ```
 
 All changes enter `main` through a branch and pull request. `Static Checks` runs deterministic tests only; it stores no API key or model output. A separate workflow builds the Dashboard as a content-addressed GitHub Release asset. The repository publishes neither an npm package nor GitHub Pages.
@@ -260,7 +261,7 @@ All changes enter `main` through a branch and pull request. `Static Checks` runs
 │   └── evals/               # One executable Manifest and its fixtures
 ├── dashboard/               # React / TypeScript / Vite source; dist ignored
 ├── docs/                    # maintainer architecture; not model context
-├── tests/                   # Python + Vitest
+├── tests/                   # Vitest unit and end-to-end coverage
 └── assets/readme/           # canonical README visuals
 ```
 

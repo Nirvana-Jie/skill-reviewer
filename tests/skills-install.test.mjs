@@ -23,7 +23,7 @@ const skillsBin = join(
   ".bin",
   process.platform === "win32" ? "skills.cmd" : "skills",
 );
-const python = process.env.PYTHON ?? "python3";
+const node = process.execPath;
 
 const REQUIRED_FILES = [
   "SKILL.md",
@@ -41,8 +41,6 @@ const REQUIRED_FILES = [
 ];
 
 const FORBIDDEN_FILES = [
-  "scripts/run_codex_skill_evals.py",
-  "scripts/validate_local_snapshot.py",
   "evals/local-skill-review-snapshot.json",
   "evals/fixtures/ready-csv-column-renamer/expected.md",
   "evals/fixtures/needs-revision-meeting-note/expected.md",
@@ -204,9 +202,9 @@ describe("skills CLI installation contract", () => {
         );
 
         const lint = run(
-          python,
+          node,
           [
-            join(installed, "scripts", "lint_skill_package.py"),
+            join(installed, "scripts", "lint_skill_package.mjs"),
             installed,
             "--format",
             "json",
@@ -220,16 +218,16 @@ describe("skills CLI installation contract", () => {
 
         expectSuccess(
           run(
-            python,
-            ["-m", "json.tool", join(installed, "evals", "evals.json")],
+            node,
+            ["-e", "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8'))", join(installed, "evals", "evals.json")],
             installed,
           ),
           "installed eval manifest validation",
         );
         expectSuccess(
           run(
-            python,
-            [join(installed, "scripts", "skill_eval_runtime.py"), "--help"],
+            node,
+            [join(installed, "scripts", "skill_eval_runtime.mjs"), "--help"],
             installed,
           ),
           "installed eval runtime",
@@ -248,9 +246,9 @@ describe("skills CLI installation contract", () => {
           }),
         );
         const dashboard = run(
-          python,
+          node,
           [
-            join(installed, "scripts", "serve_skill_dashboard.py"),
+            join(installed, "scripts", "serve_skill_dashboard.mjs"),
             "--workspace",
             workspace,
             "--check",
@@ -268,9 +266,9 @@ describe("skills CLI installation contract", () => {
         );
 
         const launcher = run(
-          python,
+          node,
           [
-            join(installed, "scripts", "start_skill_dashboard.py"),
+            join(installed, "scripts", "start_skill_dashboard.mjs"),
             "--workspace",
             workspace,
             "--serve-existing",

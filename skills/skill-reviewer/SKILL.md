@@ -65,7 +65,7 @@ For a readable local package, run the bundled read-only linter when command
 execution is available:
 
 ```bash
-python3 scripts/lint_skill_package.py <skill-dir-or-SKILL.md> \
+node scripts/lint_skill_package.mjs <skill-dir-or-SKILL.md> \
   --format json --fail-on never
 ```
 
@@ -148,7 +148,7 @@ evidence, or authorize release.
 Use the verified launcher; do not invent another server or upload run data:
 
 ```bash
-python3 scripts/start_skill_dashboard.py \
+node scripts/start_skill_dashboard.mjs \
   --workspace <locked-workspace> \
   --user-approved-control-plane --open
 ```
@@ -181,7 +181,7 @@ Before returning, ensure that:
   optional Dashboard launch.
 - `references/evolution-workflow.md` — bounded candidate search and audit.
 - `evals/evals.json` — executable cases and objectives.
-- `scripts/skill_eval_runtime.py` — compile, grade, decide, evolve, and project.
+- `scripts/skill_eval_runtime.mjs` — compile, grade, decide, evolve, and project.
 - `assets/agent-adapter-registry.json` — source identity, protocol evidence,
   executable support, and locked adapter profiles.
 - `scripts/run_agent_eval.mjs` — generic local Agent plan/cell execution.

@@ -29,6 +29,6 @@ Manifest and grading boundary.
 From the Skill package root, validate the deterministic package boundary with:
 
 ```bash
-python3 -m json.tool evals/evals.json >/dev/null
-python3 scripts/lint_skill_package.py . --format text --fail-on error
+node -e 'JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(require("node:fs").readFileSync(process.argv[1])))' evals/evals.json
+node scripts/lint_skill_package.mjs . --format text --fail-on error
 ```

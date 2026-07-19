@@ -26,7 +26,10 @@ Run these before opening a pull request:
 
 ```bash
 pnpm test
-python3 skills/skill-reviewer/scripts/lint_skill_package.py \
+pnpm typecheck
+pnpm dashboard:build
+node skills/skill-reviewer/scripts/lint_skill_package.mjs \
   skills/skill-reviewer --format text --fail-on error
-python3 -m json.tool skills/skill-reviewer/evals/evals.json >/dev/null
+node -e 'JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(require("node:fs").readFileSync(process.argv[1])))' \
+  skills/skill-reviewer/evals/evals.json
 ```
