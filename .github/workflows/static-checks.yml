@@ -96,7 +96,9 @@ jobs:
         run: node skills/skill-reviewer/scripts/lint_skill_package.mjs skills/skill-reviewer --format text --fail-on error
 
       - name: Validate behavior eval manifest
-        run: node -e 'JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(require("node:fs").readFileSync(process.argv[1])))' skills/skill-reviewer/evals/evals.json
+        run: >-
+          node -e 'JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(require("node:fs").readFileSync(process.argv[1])))'
+          skills/skill-reviewer/evals/evals.json
 
       - name: Check MJS runtime syntax
         run: find skills/skill-reviewer/scripts -type f -name '*.mjs' -print0 | xargs -0 -n1 node --check
