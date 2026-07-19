@@ -162,12 +162,17 @@ function createRun(agent: RealAgentCase, root: string) {
             "Read the locked Skill instructions and return the exact marker REAL_AGENT_TRACE_OK.",
           files: [],
           determinism: "deterministic",
+          sampling: { repeats: 1, pairing: "paired" },
           assertions: [
             {
               id: "real-agent-marker",
               type: "text_contains",
               artifact: "outputs/response.md",
               expected: ["REAL_AGENT_TRACE_OK"],
+              calibration: {
+                pass_examples: ["REAL_AGENT_TRACE_OK"],
+                fail_examples: ["REAL_AGENT_TRACE_FAILED"],
+              },
               severity: "must_pass",
             },
           ],
@@ -292,6 +297,7 @@ describe("real Agent Trace adapters", () => {
             readFileSync(join(workspace, "dashboard-data.json"), "utf8"),
           );
           const data = validateAndMigrateDashboardData(rawData);
+          expect(data.run.measurement?.status).toBe("valid");
           const execution = data.cases[0]?.arms
             .find((arm) => arm.id === "with_skill")
             ?.executions?.[0];

@@ -23,6 +23,16 @@ import tempfile
 from pathlib import Path
 from typing import Any, Iterable
 
+from skill_eval_evidence import build_artifact_ownership
+from skill_eval_measurement import (
+    CALIBRATION_FIELDS,
+    TEXT_ASSERTION_TYPES,
+    assess_oracle,
+    assess_runtime_measurement,
+    evaluate_text_assertion,
+    normalize_sampling,
+)
+
 
 MANIFEST_CONTRACT = "skill-reviewer.evals"
 PLAN_CONTRACT = "skill-reviewer.execution-plan"
@@ -97,6 +107,7 @@ PUBLIC_EVAL_FIELDS = {
     "holdout",
     "timeout_seconds",
     "permissions",
+    "sampling",
 }
 OPAQUE_EVAL_FIELDS = {
     "id",
@@ -106,14 +117,15 @@ OPAQUE_EVAL_FIELDS = {
     "holdout",
     "timeout_seconds",
     "permissions",
+    "sampling",
 }
 ASSERTION_COMMON_FIELDS = {"id", "type", "artifact", "severity"}
 ASSERTION_FIELDS = {
     "file_exists": ASSERTION_COMMON_FIELDS,
-    "text_contains": ASSERTION_COMMON_FIELDS | {"expected"},
-    "text_not_contains": ASSERTION_COMMON_FIELDS | {"expected"},
-    "text_matches": ASSERTION_COMMON_FIELDS | {"pattern"},
-    "text_not_matches": ASSERTION_COMMON_FIELDS | {"pattern"},
+    "text_contains": ASSERTION_COMMON_FIELDS | {"expected", "calibration"},
+    "text_not_contains": ASSERTION_COMMON_FIELDS | {"expected", "calibration"},
+    "text_matches": ASSERTION_COMMON_FIELDS | {"pattern", "calibration"},
+    "text_not_matches": ASSERTION_COMMON_FIELDS | {"pattern", "calibration"},
     "json_path": ASSERTION_COMMON_FIELDS | {"path", "operator", "expected"},
     "event_absent": ASSERTION_COMMON_FIELDS | {"event"},
     "digest_equals": ASSERTION_COMMON_FIELDS | {"expected_sha256"},
@@ -1007,6 +1019,49 @@ def _validate_assertions(assertions: Any, label: str) -> list[dict[str, Any]]:
                 "rubric": rubric,
                 "inputs": normalized_inputs,
             }
+        if assertion_type in TEXT_ASSERTION_TYPES and "calibration" in assertion:
+            calibration = assertion.get("calibration")
+            if not isinstance(calibration, dict):
+                raise ManifestError(
+                    f"{assertion_label}.calibration must be an object"
+                )
+            _reject_unsupported_fields(
+                calibration, CALIBRATION_FIELDS, f"{assertion_label}.calibration"
+            )
+            normalized_calibration: dict[str, list[str]] = {}
+            for field in ("pass_examples", "fail_examples"):
+                examples = calibration.get(field)
+                if not isinstance(examples, list) or not examples or not all(
+                    isinstance(example, str) and example for example in examples
+                ):
+                    raise ManifestError(
+                        f"{assertion_label}.calibration.{field} must be a non-empty string array"
+                    )
+                normalized_calibration[field] = list(examples)
+            assertion = {**assertion, "calibration": normalized_calibration}
+            failed_pass = [
+                index
+                for index, example in enumerate(
+                    normalized_calibration["pass_examples"]
+                )
+                if not evaluate_text_assertion(assertion, example)
+            ]
+            failed_fail = [
+                index
+                for index, example in enumerate(
+                    normalized_calibration["fail_examples"]
+                )
+                if evaluate_text_assertion(assertion, example)
+            ]
+            if failed_pass or failed_fail:
+                failures = [
+                    *(f"pass_examples[{index}]" for index in failed_pass),
+                    *(f"fail_examples[{index}]" for index in failed_fail),
+                ]
+                raise ManifestError(
+                    f"{assertion_label}.calibration failed the declared predicate: "
+                    + ", ".join(failures)
+                )
         normalized.append({**assertion, "artifact": artifact, "severity": severity})
     return normalized
 
@@ -1177,6 +1232,14 @@ def validate_manifest(manifest: dict[str, Any], subject: Path) -> list[dict[str,
             raise ManifestError(
                 f"{label}.determinism must be deterministic or stochastic"
             )
+        try:
+            sampling = normalize_sampling(
+                item.get("sampling"),
+                legacy_repeats=int(repeats[determinism]),
+                determinism=str(determinism),
+            )
+        except ValueError as error:
+            raise ManifestError(f"{label}.{error}") from error
         _require_string(item.get("purpose"), f"{label}.purpose")
         raw_holdout = item.get("holdout", {"visibility": "public"})
         if not isinstance(raw_holdout, dict):
@@ -1260,6 +1323,14 @@ def validate_manifest(manifest: dict[str, Any], subject: Path) -> list[dict[str,
             objectives = _validate_objectives(
                 item.get("objectives"), f"{label}.objectives"
             )
+        oracle = assess_oracle(assertions)
+        if split in {"selection", "audit"} and visibility == "public" and oracle[
+            "status"
+        ] != "valid":
+            raise ManifestError(
+                f"{label}.assertions must calibrate every must_pass text predicate before {split}: "
+                + ", ".join(oracle["reasons"])
+            )
         timeout_seconds = item.get("timeout_seconds", default_timeout)
         if (
             not isinstance(timeout_seconds, int)
@@ -1281,7 +1352,9 @@ def validate_manifest(manifest: dict[str, Any], subject: Path) -> list[dict[str,
                 "holdout": holdout,
                 "assertions": assertions,
                 "objectives": objectives,
-                "repeats": repeats[determinism],
+                "sampling": sampling,
+                "oracle": oracle,
+                "repeats": sampling["repeats"],
                 "timeout_seconds": timeout_seconds,
                 "permissions": resolved_permissions,
             }
@@ -1395,6 +1468,12 @@ def _resolve_holdout_cases(
             asset.get("objectives"),
             f"holdout_pack.assets.{asset_id}.objectives",
         )
+        oracle = assess_oracle(assertions)
+        if oracle["status"] != "valid":
+            raise ManifestError(
+                f"holdout_pack.assets.{asset_id}.assertions must calibrate every must_pass text predicate: "
+                + ", ".join(oracle["reasons"])
+            )
         resolved_records: list[dict[str, Any]] = []
         for logical_path in logical_paths:
             source_value = asset_files.get(logical_path)
@@ -1430,6 +1509,7 @@ def _resolve_holdout_cases(
                 "files": resolved_records,
                 "assertions": assertions,
                 "objectives": objectives,
+                "oracle": oracle,
             }
         )
     pack_identity = {
@@ -1482,20 +1562,15 @@ def _cases_with_execution_arms(
     return cases_with_arms
 
 
-def _declared_executor_artifacts(case: dict[str, Any]) -> list[str]:
-    return list(
-        dict.fromkeys(
-            artifact
-            for assertion in case.get("assertions", [])
-            for artifact in (
-                [str(assertion["artifact"])]
-                if assertion.get("type") in DETERMINISTIC_ASSERTION_TYPES
-                else [str(value) for value in assertion.get("inputs", [])]
-                if assertion.get("type") in SEMANTIC_ASSERTION_TYPES
-                else []
-            )
-        )
-    )
+def _artifact_ownership(
+    case: dict[str, Any], execution_profile: dict[str, Any]
+) -> dict[str, Any]:
+    ownership = build_artifact_ownership(case, execution_profile)
+    if not isinstance(ownership.get("worker"), list) or not isinstance(
+        ownership.get("framework"), list
+    ):
+        raise ManifestError("artifact ownership contract is invalid")
+    return ownership
 
 
 def _runtime_skill_file_digests(source: Path) -> dict[str, str]:
@@ -1712,7 +1787,8 @@ def compile_manifest(
     input_copy_digests: dict[str, str] = {}
     assignment_digests: dict[str, str] = {}
     for case in cases_with_arms:
-        expected_artifacts = _declared_executor_artifacts(case)
+        artifact_ownership = _artifact_ownership(case, execution_profile)
+        expected_artifacts = artifact_ownership["worker"]
         for arm in case["arms"]:
             for repeat in range(1, int(case["repeats"]) + 1):
                 if arm == "without_skill":
@@ -1811,6 +1887,7 @@ def compile_manifest(
                         else None
                     ),
                     "trace_artifact": "agent-trace.jsonl",
+                    "artifact_ownership": artifact_ownership,
                     "expected_artifacts": expected_artifacts,
                 }
                 assignment_path = workspace / relative_path
@@ -2698,6 +2775,14 @@ def finalize_execution(
         isinstance(value, str) for value in expected_artifacts
     ):
         raise ManifestError("assignment.expected_artifacts must be an array of paths")
+    artifact_ownership = assignment.get("artifact_ownership")
+    if (
+        not isinstance(artifact_ownership, dict)
+        or artifact_ownership.get("worker") != expected_artifacts
+        or not isinstance(artifact_ownership.get("framework"), list)
+        or not isinstance(artifact_ownership.get("asserted_framework"), list)
+    ):
+        raise ManifestError("assignment artifact ownership does not match expected artifacts")
     existing_events, existing_errors = (
         _read_trace_jsonl(trace_path) if trace_path.is_file() else ([], [])
     )
@@ -2896,11 +2981,11 @@ def grade_assertion(assertion: dict[str, Any], repeat_root: Path) -> dict[str, A
             raise ManifestError(f"assertion {assertion_id} has invalid expected text")
         if assertion_type == "text_contains":
             missing = [value for value in expected if value not in content]
-            passed = not missing
+            passed = evaluate_text_assertion(assertion, content)
             evidence = {"artifact": artifact, "missing": missing}
         else:
             present = [value for value in expected if value in content]
-            passed = not present
+            passed = evaluate_text_assertion(assertion, content)
             evidence = {"artifact": artifact, "unexpected": present}
     elif assertion_type in {"text_matches", "text_not_matches"}:
         try:
@@ -2918,7 +3003,7 @@ def grade_assertion(assertion: dict[str, Any], repeat_root: Path) -> dict[str, A
             raise ManifestError(
                 f"assertion {assertion_id} has invalid pattern: {error}"
             ) from error
-        passed = matched if assertion_type == "text_matches" else not matched
+        passed = evaluate_text_assertion(assertion, content)
         evidence = {"artifact": artifact, "pattern": pattern, "matched": matched}
     elif assertion_type in {"json_path", "numeric_range"}:
         try:
@@ -3718,8 +3803,6 @@ def _repeat_metric(repeat: dict[str, Any], metric: str) -> float | None:
 def _paired_direction_disagreement(
     *, case: dict[str, Any], candidate: dict[str, Any], baseline: dict[str, Any]
 ) -> bool:
-    if case.get("determinism") != "stochastic":
-        return False
     candidate_repeats = candidate.get("repeats", [])
     baseline_repeats = baseline.get("repeats", [])
     for objective in case.get("objectives", []):
@@ -4057,7 +4140,8 @@ def verify_locked_inputs(
     input_copy_digests: dict[str, str] = {}
     expected_assignment_files: dict[str, str] = {}
     for case in expected_cases:
-        expected_artifacts = _declared_executor_artifacts(case)
+        artifact_ownership = _artifact_ownership(case, expected_execution_profile)
+        expected_artifacts = artifact_ownership["worker"]
         for arm in case["arms"]:
             for repeat in range(1, int(case["repeats"]) + 1):
                 if arm == "without_skill":
@@ -4144,6 +4228,7 @@ def verify_locked_inputs(
                         else None
                     ),
                     "trace_artifact": "agent-trace.jsonl",
+                    "artifact_ownership": artifact_ownership,
                     "expected_artifacts": expected_artifacts,
                 }
                 if not assignment_path.is_file() or load_json(
@@ -4211,11 +4296,9 @@ def grade_run(
         raise ManifestError("run lock assignment_digests must be an object")
     case_results: list[dict[str, Any]] = []
     any_incomplete = False
-    all_with_skill_passed = True
-    any_regression = False
-    any_direction_disagreement = False
     any_semantic_problem = False
-    any_safety_violation = False
+    any_baseline_safety_violation = False
+    measurement_cases: list[dict[str, Any]] = []
     limitations: list[str] = []
     for case in plan.get("cases", []):
         arms = case.get("arms", [])
@@ -4279,6 +4362,19 @@ def grade_run(
                 case=case, candidate=candidate, baseline=baseline
             )
         )
+        measurement = assess_runtime_measurement(
+            oracle=case.get("oracle", {"status": "unverified", "reasons": []}),
+            sampling=case.get(
+                "sampling",
+                {
+                    "repeats": case.get("repeats"),
+                    "pairing": "paired",
+                    "source": "legacy-determinism",
+                },
+            ),
+            direction_disagreement=direction_disagreement,
+        )
+        measurement_cases.append({"case_id": case["id"], **measurement})
         semantic_assertions = [
             grade_semantic_assertion(
                 run_id=str(plan.get("run_id")),
@@ -4305,19 +4401,18 @@ def grade_run(
                 limitations.append(
                     f"forbidden action recorded for case {case['id']} arm {arm}"
                 )
-                any_safety_violation = True
+                if arm != "with_skill":
+                    any_baseline_safety_violation = True
             if arm_result["side_effects"]:
                 limitations.append(
                     f"external side effect recorded for case {case['id']} arm {arm}"
                 )
-                any_safety_violation = True
+                if arm != "with_skill":
+                    any_baseline_safety_violation = True
             if arm_result["binding_errors"]:
                 limitations.append(
                     f"execution binding invalid for case {case['id']} arm {arm}"
                 )
-        all_with_skill_passed = all_with_skill_passed and candidate["passed"]
-        any_regression = any_regression or regressed
-        any_direction_disagreement = any_direction_disagreement or direction_disagreement
         any_semantic_problem = any_semantic_problem or semantic_problem
         if missing_objective_metrics:
             any_incomplete = True
@@ -4325,6 +4420,10 @@ def grade_run(
         if direction_disagreement:
             limitations.append(
                 f"paired stochastic directions disagree in case {case['id']}"
+            )
+        for reason in measurement.get("reasons", []):
+            limitations.append(
+                f"measurement validity failed in case {case['id']}: {reason}"
             )
         for semantic_result in semantic_assertions:
             if semantic_result["passed"]:
@@ -4352,6 +4451,7 @@ def grade_run(
             "regressed": regressed,
             "direction_disagreement": direction_disagreement,
             "missing_objective_metrics": sorted(set(missing_objective_metrics)),
+            "measurement": measurement,
             "semantic_assertions": semantic_assertions,
             **graded,
         }
@@ -4366,13 +4466,18 @@ def grade_run(
     holdout_visibility = (
         holdout.get("visibility") if isinstance(holdout, dict) else None
     )
+    measurement_status = (
+        "invalid"
+        if any(item.get("status") == "invalid" for item in measurement_cases)
+        else "unverified"
+        if any(item.get("status") != "valid" for item in measurement_cases)
+        else "valid"
+    )
     if (
         any_incomplete
-        or not all_with_skill_passed
-        or any_regression
-        or any_direction_disagreement
         or any_semantic_problem
-        or any_safety_violation
+        or any_baseline_safety_violation
+        or measurement_status != "valid"
         or (is_audit and holdout_visibility != "opaque")
     ):
         level = "inconclusive"
@@ -4387,6 +4492,17 @@ def grade_run(
         "baseline": plan.get("baseline"),
         "level": level,
         "cases": case_results,
+        "measurement": {
+            "status": measurement_status,
+            "cases": measurement_cases,
+            "reasons": sorted(
+                {
+                    str(reason)
+                    for item in measurement_cases
+                    for reason in item.get("reasons", [])
+                }
+            ),
+        },
         "limitations": limitations,
         "integrity": integrity,
         "execution_profile": plan.get("execution_profile"),
@@ -4395,7 +4511,10 @@ def grade_run(
             "opaque-holdout" if holdout_visibility == "opaque" else "public-calibration"
         ),
         "release_eligible": bool(
-            is_audit and holdout_visibility == "opaque" and level != "inconclusive"
+            is_audit
+            and holdout_visibility == "opaque"
+            and measurement_status == "valid"
+            and level != "inconclusive"
         ),
     }
     if is_audit and holdout_visibility != "opaque":
@@ -4431,6 +4550,24 @@ def _compute_decision_core(
     }
     hard_gates: list[dict[str, Any]] = []
     objective_results: list[dict[str, Any]] = []
+    measurement = evidence.get("measurement")
+    measurement_status = (
+        str(measurement.get("status"))
+        if isinstance(measurement, dict)
+        else "unverified"
+    )
+    measurement_valid = measurement_status == "valid"
+    hard_gates.append(
+        {
+            "id": "measurement:valid",
+            "passed": measurement_valid,
+            "reason": (
+                "oracle calibration and paired sampling are valid"
+                if measurement_valid
+                else f"measurement is {measurement_status}; candidate quality cannot be attributed"
+            ),
+        }
+    )
     opaque_holdout = (
         phase == "audit"
         and isinstance(plan.get("holdout"), dict)
@@ -4577,10 +4714,17 @@ def _compute_decision_core(
         item["primary"] and item["materially_improved"] for item in objective_results
     )
     evidence_inconclusive = evidence.get("level") == "inconclusive"
-    accepted = not evidence_inconclusive and hard_gates_passed and pareto_admissible
+    accepted = (
+        measurement_valid
+        and not evidence_inconclusive
+        and hard_gates_passed
+        and pareto_admissible
+    )
     if phase == "selection":
         accepted = accepted and material_improvement
-    if evidence_inconclusive:
+    if not measurement_valid:
+        status = "invalid"
+    elif evidence_inconclusive:
         status = "inconclusive"
     elif not hard_gates_passed or not pareto_admissible:
         status = "rejected"
@@ -4599,6 +4743,7 @@ def _compute_decision_core(
         "pareto_admissible": pareto_admissible,
         "material_improvement": material_improvement,
         "release_eligible": bool(phase == "audit" and accepted and opaque_holdout),
+        "measurement_validity": measurement_status,
         "hard_gates": hard_gates,
         "objectives": objective_results,
         "reason": {
@@ -4606,6 +4751,7 @@ def _compute_decision_core(
             "rejected": "candidate failed a hard gate or regressed on a declared objective",
             "no-change": "candidate produced no material primary-objective improvement",
             "inconclusive": "retained evidence cannot support an acceptance decision",
+            "invalid": "the oracle or paired sampling is invalid, so this experiment cannot judge candidate quality",
         }[status]
         if phase == "selection" or status != "accepted"
         else "candidate passed the one-shot audit hard gates without regression",
@@ -5084,6 +5230,7 @@ def initialize_evolution(*, plan_path: Path, workspace: Path) -> dict[str, Any]:
         "candidate_lineage": [initial_authorization],
         "rejected_candidates": [],
         "optimizer_rejected_buffer": [],
+        "invalid_experiments": [],
         "seen_run_ids": [],
         "history": [],
         "journal_head_digest": None,
@@ -5297,11 +5444,36 @@ def advance_evolution(*, state_path: Path, decision_path: Path) -> dict[str, Any
             "authorization": dict(authorized_query),
         }
     )
+    experiment_invalid = decision.get("status") == "invalid"
+    if experiment_invalid:
+        invalid_experiments = state.get("invalid_experiments")
+        if not isinstance(invalid_experiments, list):
+            raise ManifestError("invalid_experiments must be an array")
+        state["invalid_experiments"] = [
+            *invalid_experiments,
+            {
+                "phase": phase,
+                "round": iteration,
+                "run_id": run_id,
+                "candidate_digest": plan.get("subject", {}).get("digest"),
+                "measurement_validity": decision.get("measurement_validity"),
+                "reason": decision.get("reason"),
+                "decision_digest": sha256_file(decision_path),
+            },
+        ]
 
     if phase == "selection":
         if state.get("status") != "optimizing":
             raise ManifestError("selection decisions are allowed only while optimizing")
-        if decision.get("accepted") is True:
+        if experiment_invalid:
+            state.update(
+                {
+                    "status": "measurement-invalid",
+                    "next_action": "propose_eval_change",
+                    "terminal": True,
+                }
+            )
+        elif decision.get("accepted") is True:
             state.update(
                 {
                     "status": "awaiting-audit",
@@ -5323,7 +5495,7 @@ def advance_evolution(*, state_path: Path, decision_path: Path) -> dict[str, Any
                     "terminal": False,
                 }
             )
-        if decision.get("accepted") is not True:
+        if decision.get("accepted") is not True and not experiment_invalid:
             rejected_record = {
                 "round": iteration,
                 "run_id": run_id,
@@ -5362,9 +5534,19 @@ def advance_evolution(*, state_path: Path, decision_path: Path) -> dict[str, Any
         audit_passed = decision.get("accepted") is True
         state.update(
             {
-                "status": "audit-passed" if audit_passed else "audit-failed",
+                "status": (
+                    "measurement-invalid"
+                    if experiment_invalid
+                    else "audit-passed"
+                    if audit_passed
+                    else "audit-failed"
+                ),
                 "next_action": (
-                    "request_user_release" if audit_passed else "stop"
+                    "propose_eval_change"
+                    if experiment_invalid
+                    else "request_user_release"
+                    if audit_passed
+                    else "stop"
                 ),
                 "terminal": True,
                 "audit_consumed": True,
@@ -5696,15 +5878,19 @@ def _validate_evolution_state(
     candidate_lineage = state.get("candidate_lineage")
     rejected_candidates = state.get("rejected_candidates")
     optimizer_rejected_buffer = state.get("optimizer_rejected_buffer")
+    invalid_experiments = state.get("invalid_experiments")
     if not all(
         isinstance(value, list)
         for value in (
             candidate_lineage,
             rejected_candidates,
             optimizer_rejected_buffer,
+            invalid_experiments,
         )
     ):
-        raise ManifestError("evolution lineage and rejected buffers must be arrays")
+        raise ManifestError(
+            "evolution lineage, rejected buffers, and invalid experiments must be arrays"
+        )
     if (
         state.get("selection_query_count") != len(candidate_lineage)
         or not 1 <= len(candidate_lineage) <= 3
@@ -5802,8 +5988,12 @@ def _validate_evolution_state(
     selection_history_run_ids: list[str] = []
     audit_history_count = 0
     reconstructed_rejected: list[dict[str, Any]] = []
+    reconstructed_invalid: list[dict[str, Any]] = []
     state_projection = dict(projection) if state_history_length == 0 else None
     rejected_projection: list[dict[str, Any]] | None = (
+        [] if state_history_length == 0 else None
+    )
+    invalid_projection: list[dict[str, Any]] | None = (
         [] if state_history_length == 0 else None
     )
     for index, record in enumerate(history):
@@ -5881,10 +6071,19 @@ def _validate_evolution_state(
         if decision.get("iteration") != projection["current_round"]:
             raise ManifestError("dashboard history iteration is out of sequence")
         phase = decision.get("phase")
+        experiment_invalid = decision.get("status") == "invalid"
         if phase == "selection":
             if projection["status"] != "optimizing":
                 raise ManifestError("dashboard history contains an invalid selection transition")
-            if decision.get("accepted") is True:
+            if experiment_invalid:
+                projection.update(
+                    {
+                        "status": "measurement-invalid",
+                        "next_action": "propose_eval_change",
+                        "terminal": True,
+                    }
+                )
+            elif decision.get("accepted") is True:
                 projection.update(
                     {
                         "status": "awaiting-audit",
@@ -5902,7 +6101,7 @@ def _validate_evolution_state(
             else:
                 projection["current_round"] += 1
                 projection["next_action"] = "propose_candidate"
-            if decision.get("accepted") is not True:
+            if decision.get("accepted") is not True and not experiment_invalid:
                 reconstructed_rejected.append(
                     {
                         "round": decision.get("iteration"),
@@ -5935,11 +6134,17 @@ def _validate_evolution_state(
                 raise ManifestError("dashboard history contains an invalid audit transition")
             projection.update(
                 {
-                    "status": "audit-passed"
-                    if decision.get("accepted") is True
-                    else "audit-failed",
+                    "status": (
+                        "measurement-invalid"
+                        if experiment_invalid
+                        else "audit-passed"
+                        if decision.get("accepted") is True
+                        else "audit-failed"
+                    ),
                     "next_action": (
-                        "request_user_release"
+                        "propose_eval_change"
+                        if experiment_invalid
+                        else "request_user_release"
                         if decision.get("accepted") is True
                         else "stop"
                     ),
@@ -5949,11 +6154,28 @@ def _validate_evolution_state(
             )
         else:
             raise ManifestError("dashboard history decision phase is invalid")
+        if experiment_invalid:
+            reconstructed_invalid.append(
+                {
+                    "phase": phase,
+                    "round": decision.get("iteration"),
+                    "run_id": run_id,
+                    "candidate_digest": decision_plan.get("subject", {}).get(
+                        "digest"
+                    ),
+                    "measurement_validity": decision.get(
+                        "measurement_validity"
+                    ),
+                    "reason": decision.get("reason"),
+                    "decision_digest": sha256_file(decision_path),
+                }
+            )
         history_run_ids.append(run_id)
         validated.append((decision_path, decision))
         if index + 1 == state_history_length:
             state_projection = dict(projection)
             rejected_projection = list(reconstructed_rejected)
+            invalid_projection = list(reconstructed_invalid)
 
     if history and history_run_ids[0] != initialized_plan.get("run_id"):
         raise ManifestError("dashboard state history does not start from its initialization run")
@@ -6034,6 +6256,8 @@ def _validate_evolution_state(
         raise ManifestError("audit query accounting is invalid")
     if rejected_projection is None or rejected_candidates != rejected_projection:
         raise ManifestError("rejected candidate history does not match decisions")
+    if invalid_projection is None or invalid_experiments != invalid_projection:
+        raise ManifestError("invalid experiment history does not match decisions")
     expected_optimizer_buffer = [
         item
         for item in rejected_projection
@@ -6055,6 +6279,7 @@ def _validate_evolution_state(
     state["seen_run_ids"] = history_run_ids
     state["journal_head_digest"] = journal_digests[-1] if journal_digests else None
     state["rejected_candidates"] = reconstructed_rejected
+    state["invalid_experiments"] = reconstructed_invalid
     current_epoch = int(state.get("continuity_epoch", 1))
     state["optimizer_rejected_buffer"] = [
         item
@@ -6268,13 +6493,26 @@ def _dashboard_action_center(
             None,
         )
         arms = [arm for arm in case.get("arms", []) if isinstance(arm, dict)]
+        measurement = case.get("measurement")
+        measurement_valid = (
+            isinstance(measurement, dict)
+            and measurement.get("status") == "valid"
+        )
+        if not measurement_valid:
+            status = (
+                str(measurement.get("status"))
+                if isinstance(measurement, dict)
+                else "unverified"
+            )
+            signals["eval"].append(f"measurement_{status}")
+            evidence_ids["eval"].add(f"case:{case_id}")
         if any(arm.get("binding_errors") for arm in arms):
             signals["execution_environment"].append("binding_error")
             evidence_ids["execution_environment"].add(f"case:{case_id}")
         if not isinstance(candidate, dict) or candidate.get("complete") is not True:
             signals["evidence"].append("candidate_evidence_incomplete")
             evidence_ids["evidence"].add(f"case:{case_id}")
-        elif candidate.get("passed") is not True:
+        elif candidate.get("passed") is not True and measurement_valid:
             signals["skill"].append("required_assertion_failed")
             evidence_ids["skill"].add(f"case:{case_id}")
         if isinstance(candidate, dict) and (
@@ -6282,12 +6520,12 @@ def _dashboard_action_center(
         ):
             signals["skill"].append("unsafe_behavior_observed")
             evidence_ids["skill"].add(f"case:{case_id}")
-        if case.get("regressed") is True:
+        if case.get("regressed") is True and measurement_valid:
             signals["skill"].append("objective_regressed")
             evidence_ids["skill"].add(f"case:{case_id}")
         if case.get("direction_disagreement") is True:
-            signals["skill"].append("stochastic_direction_disagreement")
-            evidence_ids["skill"].add(f"case:{case_id}")
+            signals["eval"].append("paired_sampling_direction_disagreement")
+            evidence_ids["eval"].add(f"case:{case_id}")
         if case.get("missing_objective_metrics"):
             signals["eval"].append("objective_metric_unavailable")
             evidence_ids["eval"].add(f"case:{case_id}")
@@ -6297,13 +6535,21 @@ def _dashboard_action_center(
                 evidence_ids["evidence"].add(f"case:{case_id}")
 
     if isinstance(selection_decision, dict):
-        if selection_decision.get("pareto_admissible") is False and objectives:
+        decision_measurement_valid = (
+            selection_decision.get("measurement_validity") == "valid"
+        )
+        if (
+            decision_measurement_valid
+            and selection_decision.get("pareto_admissible") is False
+            and objectives
+        ):
             signals["skill"].append("pareto_regression")
             evidence_ids["skill"].update(
                 f"case:{objective.get('case_id')}" for objective in objectives
             )
         if (
-            selection_decision.get("material_improvement") is False
+            decision_measurement_valid
+            and selection_decision.get("material_improvement") is False
             and primary_objectives
         ):
             signals["skill"].append("material_improvement_missing")
@@ -6317,7 +6563,10 @@ def _dashboard_action_center(
             if gate.get("passed") is True:
                 continue
             gate_id = str(gate.get("id"))
-            if gate_id.endswith(":metric-present"):
+            if gate_id == "measurement:valid":
+                signals["eval"].append("measurement_gate_failed")
+                evidence_ids["eval"].add(f"gate:{gate_id}")
+            elif gate_id.endswith(":metric-present"):
                 signals["eval"].append("declared_metric_missing")
                 evidence_ids["eval"].add(f"gate:{gate_id}")
             elif ":paired-" in gate_id or gate_id.endswith(":evidence-present"):
@@ -6380,7 +6629,10 @@ def _dashboard_action_center(
         "rerun_execution": next_action
         in {"run_authorized_selection", "run_authorized_audit"},
         "propose_eval_change": bool(signals["eval"])
-        and decision_status in {"rejected", "inconclusive", "no-change"},
+        and (
+            decision_status in {"rejected", "inconclusive", "no-change", "invalid"}
+            or next_action == "propose_eval_change"
+        ),
         "request_release_confirmation": next_action == "request_user_release",
     }
     recommended_action = {
@@ -6389,6 +6641,7 @@ def _dashboard_action_center(
         "run_authorized_selection": "rerun_execution",
         "run_authorized_audit": "rerun_execution",
         "request_user_release": "request_release_confirmation",
+        "propose_eval_change": "propose_eval_change",
     }.get(next_action)
     if primary_attribution == "eval" and action_requirements["propose_eval_change"]:
         recommended_action = "propose_eval_change"
@@ -6785,10 +7038,18 @@ def _dashboard_review_outline(
     criterion_blockers = [
         blocker for blocker in blockers if blocker.get("kind") == "criterion"
     ]
+    measurement_invalid = any(
+        not isinstance(case.get("measurement"), dict)
+        or case["measurement"].get("status") != "valid"
+        for case in case_rows
+    )
 
     if release_eligible:
         decision_status = "ready"
         decision_reason = "release_conditions_met"
+    elif measurement_invalid:
+        decision_status = "inconclusive"
+        decision_reason = "measurement_invalid"
     elif any(blocker["gate_ids"] for blocker in blockers):
         decision_status = "blocked"
         decision_reason = "release_gate_failed"
@@ -7047,6 +7308,23 @@ def project_dashboard(
         }
         result = evidence_cases.get(case_id, {})
         candidate = result.get("with_skill")
+        result_measurement = result.get("measurement")
+        case_measurement = (
+            result_measurement
+            if isinstance(result_measurement, dict)
+            else {
+                "status": "unverified" if evidence is not None else "pending",
+                "oracle": planned_case.get(
+                    "oracle", {"status": "unverified", "reasons": []}
+                ),
+                "sampling": {
+                    **planned_case.get("sampling", {}),
+                    "status": "pending",
+                    "direction_disagreement": False,
+                },
+                "reasons": [],
+            }
+        )
         semantic_assertions = result.get("semantic_assertions", [])
         semantic_blocked = any(
             isinstance(assertion, dict) and assertion.get("passed") is not True
@@ -7063,6 +7341,8 @@ def project_dashboard(
         )
         if not isinstance(candidate, dict):
             case_status = "pending"
+        elif case_measurement.get("status") != "valid":
+            case_status = "measurement-invalid"
         elif candidate.get("complete") is not True:
             case_status = "incomplete"
         elif (
@@ -7436,6 +7716,7 @@ def project_dashboard(
                 "repeats": planned_case.get("repeats"),
                 "holdout_visibility": holdout_visibility,
                 "status": case_status,
+                "measurement": case_measurement,
                 "regressed": result.get("regressed") is True,
                 "direction_disagreement": result.get("direction_disagreement") is True,
                 "missing_objective_metrics": result.get(
@@ -7553,6 +7834,9 @@ def project_dashboard(
         "rejected_candidates": len(state.get("rejected_candidates", []))
         if state
         else 0,
+        "invalid_experiments": len(state.get("invalid_experiments", []))
+        if state
+        else 0,
         "continuity_epoch": state.get("continuity_epoch") if state else None,
     }
     action_center = _dashboard_action_center(
@@ -7568,7 +7852,7 @@ def project_dashboard(
     )
     data = {
         "contract": DASHBOARD_CONTRACT,
-        "schema_version": 2,
+        "schema_version": 3,
         "generated_at": None,
         "refresh_interval_ms": 3000,
         "run": {
@@ -7596,6 +7880,28 @@ def project_dashboard(
             ),
             "release_eligible": release_eligible,
             "integrity": (evidence or {}).get("integrity", projected_integrity),
+            "measurement": (evidence or {}).get(
+                "measurement",
+                {
+                    "status": "pending",
+                    "cases": [
+                        {
+                            "case_id": str(case.get("id")),
+                            "status": "pending",
+                            "oracle": case.get("oracle"),
+                            "sampling": {
+                                **case.get("sampling", {}),
+                                "status": "pending",
+                                "direction_disagreement": False,
+                            },
+                            "reasons": [],
+                        }
+                        for case in plan.get("cases", [])
+                        if isinstance(case, dict)
+                    ],
+                    "reasons": [],
+                },
+            ),
         },
         "summary": summary,
         "evolution": {
@@ -7606,12 +7912,14 @@ def project_dashboard(
             "rejected_candidates": state.get("rejected_candidates", [])
             if state
             else [],
+            "invalid_experiments": state.get("invalid_experiments", [])
+            if state
+            else [],
         },
         "action_center": action_center,
         "review": review,
         "cases": case_rows,
         "diffs": skill_diffs,
-        "iterations": decisions,
         "spine": spine,
         "limitations": [
             *(evidence or {}).get("limitations", []),

@@ -1,4 +1,41 @@
 export type EvidenceStatus = string;
+export type MeasurementStatus = "valid" | "invalid" | "unverified" | "pending";
+
+export interface DashboardOracleValidity {
+  status: MeasurementStatus;
+  required_text_assertions?: number;
+  calibrated_text_assertions?: number;
+  checks?: Array<{
+    assertion_id: string;
+    status: "valid" | "invalid" | "unverified" | "not_applicable";
+    pass_example_count: number;
+    fail_example_count: number;
+    failed_pass_examples: number[];
+    failed_fail_examples: number[];
+  }>;
+  reasons: string[];
+}
+
+export interface DashboardSamplingValidity {
+  status: MeasurementStatus;
+  repeats?: number | null;
+  pairing?: string | null;
+  source?: string | null;
+  direction_disagreement: boolean;
+}
+
+export interface DashboardCaseMeasurement {
+  status: MeasurementStatus;
+  oracle: DashboardOracleValidity;
+  sampling: DashboardSamplingValidity;
+  reasons: string[];
+}
+
+export interface DashboardRunMeasurement {
+  status: MeasurementStatus;
+  cases: Array<{ case_id: string } & DashboardCaseMeasurement>;
+  reasons: string[];
+}
 
 export type AgentTraceEventKind =
   | "execution_started"
@@ -155,6 +192,7 @@ export interface DashboardCase {
   repeats: number;
   holdout_visibility: "public" | "opaque";
   status: EvidenceStatus;
+  measurement?: DashboardCaseMeasurement;
   regressed: boolean;
   direction_disagreement: boolean;
   missing_objective_metrics: string[];
@@ -221,16 +259,6 @@ export interface DashboardEvidenceContent {
   digest: string;
   size: number;
   truncated: boolean;
-}
-
-export interface AcceptanceDecision {
-  iteration: number;
-  phase: "selection" | "audit";
-  status: string;
-  accepted: boolean;
-  artifact?: string;
-  hard_gates?: Array<{ id: string; passed: boolean; reason: string }>;
-  objectives?: Array<Record<string, unknown>>;
 }
 
 export type ActionAttributionId =
@@ -352,6 +380,7 @@ export interface DashboardReviewOutline {
       | "release_gate_failed"
       | "scenario_failed"
       | "candidate_acceptance_failed"
+      | "measurement_invalid"
       | "audit_required"
       | "evidence_incomplete";
     release_eligible: boolean;
@@ -452,6 +481,7 @@ export interface DashboardData {
       run_lock?: string;
       plan_digest?: string;
     } | null;
+    measurement?: DashboardRunMeasurement;
   };
   summary: {
     case_count: number;
@@ -465,6 +495,7 @@ export interface DashboardData {
     selection_queries: number;
     audit_queries: number;
     rejected_candidates: number;
+    invalid_experiments?: number;
     continuity_epoch: number | null;
   };
   evolution: {
@@ -489,12 +520,12 @@ export interface DashboardData {
       training_trace_ids: string[];
     }>;
     rejected_candidates: Array<Record<string, unknown>>;
+    invalid_experiments?: Array<Record<string, unknown>>;
   };
   action_center: DashboardActionCenter;
   review: DashboardReviewOutline;
   cases: DashboardCase[];
   diffs: DashboardDiff[];
-  iterations: AcceptanceDecision[];
   spine: SpineNode[];
   limitations: string[];
 }

@@ -1557,6 +1557,55 @@ body.is-resizing-pane * {
   --review-tone: var(--danger);
 }
 
+.review-measurement-status {
+  display: grid;
+  max-width: 1040px;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  margin: 18px auto 0;
+  padding: 14px 16px;
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--warning);
+  border-radius: 8px;
+  background: var(--surface-raised);
+}
+
+.review-measurement-status.tone-good {
+  border-left-color: var(--success);
+}
+
+.review-measurement-status > svg {
+  margin-top: 2px;
+  color: var(--warning);
+}
+
+.review-measurement-status.tone-good > svg {
+  color: var(--success);
+}
+
+.review-measurement-status span,
+.review-measurement-status strong {
+  display: block;
+}
+
+.review-measurement-status span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.review-measurement-status strong {
+  margin-top: 3px;
+  font-size: 15px;
+}
+
+.review-measurement-status p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .decision-evidence-spine {
   display: grid;
   max-width: 1040px;

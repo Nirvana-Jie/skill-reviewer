@@ -23,6 +23,10 @@ These facts are orthogonal. A completed process is not a passing Eval, a
 declared profile is not proof of dispatch, and a normalized Trace without a
 required source stream is incomplete evidence.
 
+They also precede measurement and candidate judgment. The Dashboard and
+decision runtime apply evidence integrity first, then oracle/sampling validity,
+then candidate quality. Read `measurement-validity.md` for that contract.
+
 ## Four-layer architecture
 
 ```text
@@ -106,6 +110,15 @@ store chain-of-thought, private reasoning, encrypted reasoning, signatures, or
 provider secrets. Observable tool arguments and results may be retained only
 within the locked case's data and permission boundary.
 
+Trace and execution envelopes are framework-owned artifacts. Assignments list
+them in `artifact_ownership.framework`, never in the worker's
+`expected_artifacts`. The evaluated Agent owns only task outputs. The harness
+records dispatch, the adapter closes the canonical Trace, and the finalizer
+then writes `execution.json`; assertions against those framework artifacts run
+after finalization. This avoids circular contracts where a worker would have to
+produce the evidence that proves its own execution before that execution can
+be closed.
+
 ## Source-stream descriptor
 
 When `trace.source` is declared, `execution.json.source_trace` binds:
@@ -179,6 +192,8 @@ and adapter suites without secrets.
 - Render source provenance for every profile that requires it, regardless of
   provider.
 - Keep lifecycle, Eval result, and evidence quality as separate dimensions.
+- Show measurement validity before any candidate-quality verdict; invalid or
+  unverified measurement means the Skill was not judged.
 - Show missing, partial, stale, or redaction-invalid Trace data explicitly.
 - Never use projection data as grading authority or infer events the adapter
   did not retain.

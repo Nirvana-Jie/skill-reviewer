@@ -213,12 +213,15 @@ are useful for independent execution, not as a substitute for evidence.
   the target, update snapshots, or decide the final verdict.
 - Assertions are graded against retained outputs; a zero exit code is not
   sufficient evidence.
+- Required selection/audit text predicates distinguish declared known-good from
+  known-bad calibration examples under the exact runtime matcher.
 - Missing baselines, digest mismatches, timeouts, or conflicting results become
   `inconclusive`, not passing evidence.
 - Deterministic assertions are primary; semantic comparisons are anonymized,
   order-swapped, and supplemental.
-- Deterministic cases run once, stochastic cases run three paired repeats, and
-  opposite paired directions remain `inconclusive`.
+- Sampling is explicit and independent from determinism; stochastic cases use
+  at least three paired repeats, and opposite paired directions invalidate the
+  instrument instead of rejecting the candidate.
 
 **Red flags:**
 - A present invalid or differently shaped eval manifest is silently skipped while the skill
@@ -230,6 +233,8 @@ are useful for independent execution, not as a substitute for evidence.
   vote.
 - An optimizer can edit evals, fixtures, snapshots, graders, or audit cases to
   make its candidate pass.
+- A candidate is rejected or consumes a round when oracle calibration or paired
+  sampling is invalid.
 
 ### Bounded evolution acceptance
 

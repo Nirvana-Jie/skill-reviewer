@@ -181,6 +181,61 @@ describe("dashboard schema against runtime failure projections", () => {
       expect(execution.trace.valid).toBe(false);
       expect(() => validateAndMigrateDashboardData(data)).not.toThrow();
 
+      const missingV3Measurement = structuredClone(data);
+      delete missingV3Measurement.run.measurement;
+      expect(() =>
+        validateAndMigrateDashboardData(missingV3Measurement),
+      ).toThrow(/run\.measurement: expected an object/);
+
+      const legacyV2 = structuredClone(data);
+      legacyV2.schema_version = 2;
+      delete legacyV2.run.measurement;
+      delete legacyV2.summary.invalid_experiments;
+      delete legacyV2.evolution.invalid_experiments;
+      for (const item of legacyV2.cases) delete item.measurement;
+      legacyV2.iterations = [{ iteration: 1, status: "legacy-duplicate" }];
+      const migrated = validateAndMigrateDashboardData(legacyV2);
+      expect(migrated.schema_version).toBe(3);
+      expect(migrated).not.toHaveProperty("iterations");
+      expect(migrated.run.measurement?.status).toBe("unverified");
+      expect(migrated.cases[0].measurement?.status).toBe("unverified");
+      expect(migrated.run.release_eligible).toBe(false);
+      expect(migrated.review.decision).toMatchObject({
+        status: "inconclusive",
+        reason: "evidence_incomplete",
+        release_eligible: false,
+      });
+      expect(migrated.review.next_action).toBe("review_evidence");
+      expect(migrated.action_center).toMatchObject({
+        next_action: "review_evidence",
+        continuation: {
+          mode: "human_required",
+          owner: "human",
+          reason: "evidence_review",
+        },
+        acceptance: { status: "measurement-unverified", accepted: null },
+        attribution: { primary: null },
+      });
+      expect(
+        migrated.action_center.actions.every(
+          (action) => !action.available && !action.recommended,
+        ),
+      ).toBe(true);
+
+      const inconsistentCaseMeasurement = structuredClone(data);
+      inconsistentCaseMeasurement.cases[0].measurement.status = "invalid";
+      inconsistentCaseMeasurement.run.measurement.cases[0].status = "invalid";
+      inconsistentCaseMeasurement.run.measurement.status = "invalid";
+      expect(() =>
+        validateAndMigrateDashboardData(inconsistentCaseMeasurement),
+      ).toThrow(/measurement\.status: must aggregate oracle and sampling status as valid/);
+
+      const inconsistentRunMeasurement = structuredClone(data);
+      inconsistentRunMeasurement.run.measurement.status = "invalid";
+      expect(() =>
+        validateAndMigrateDashboardData(inconsistentRunMeasurement),
+      ).toThrow(/run\.measurement\.status: must aggregate case measurement status as valid/);
+
       const conflictingRunEligibility = structuredClone(data);
       conflictingRunEligibility.run.release_eligible = true;
       expect(() =>

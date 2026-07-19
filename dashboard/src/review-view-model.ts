@@ -22,6 +22,10 @@ export interface ReviewViewModel {
     status: "complete" | "partial" | "missing";
     tone: "neutral" | "warn";
   };
+  measurement: {
+    status: "valid" | "invalid" | "unverified" | "pending";
+    tone: "good" | "warn";
+  };
 }
 
 const requiredAcceptanceCriterionIds = [
@@ -100,6 +104,8 @@ export function buildReviewViewModel(data: DashboardData): ReviewViewModel {
     data.cases.every(
       (item) => buildEvalExecutionTrace(data, item.id)?.confidence === "verified",
     );
+  const measurementStatus = data.run.measurement?.status ?? "unverified";
+  const measurementValid = measurementStatus === "valid";
   const evidenceIncomplete =
     executionStatus !== "complete" ||
     !executionEvidenceVerified ||
@@ -109,7 +115,8 @@ export function buildReviewViewModel(data: DashboardData): ReviewViewModel {
     data.review.blockers.some(
       (blocker) => blocker.missing_artifact_ids.length > 0,
     ) ||
-    data.cases.some((item) => item.arms.some((arm) => !arm.complete));
+    data.cases.some((item) => item.arms.some((arm) => !arm.complete)) ||
+    !measurementValid;
   const releaseInvariantsSatisfied =
     data.run.release_eligible &&
     data.review.blockers.length === 0 &&
@@ -121,7 +128,8 @@ export function buildReviewViewModel(data: DashboardData): ReviewViewModel {
     data.summary.hard_gates_total > 0 &&
     data.summary.hard_gates_passed === data.summary.hard_gates_total &&
     hasTrustedOpaqueHoldout(data) &&
-    hasCompleteAcceptanceCriteria(data);
+    hasCompleteAcceptanceCriteria(data) &&
+    measurementValid;
   const declaredDecisionTone = decisionTone(
     data.review.decision,
     releaseInvariantsSatisfied,
@@ -149,6 +157,10 @@ export function buildReviewViewModel(data: DashboardData): ReviewViewModel {
           : "partial"
         : "complete",
       tone: evidenceIncomplete ? "warn" : "neutral",
+    },
+    measurement: {
+      status: measurementStatus,
+      tone: measurementValid ? "good" : "warn",
     },
   };
 }

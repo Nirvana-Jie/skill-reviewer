@@ -155,6 +155,27 @@ function dispatchFixture(arm: string, repeat: number) {
   });
 }
 
+function validMeasurement(repeats: number) {
+  return {
+    status: "valid" as const,
+    oracle: {
+      status: "valid" as const,
+      required_text_assertions: 1,
+      calibrated_text_assertions: 1,
+      checks: [],
+      reasons: [],
+    },
+    sampling: {
+      status: "valid" as const,
+      repeats,
+      pairing: "paired",
+      source: "explicit",
+      direction_disagreement: false,
+    },
+    reasons: [],
+  };
+}
+
 function WorkerPoolThemeHarness() {
   const { setTheme } = useUiPreferences();
   return (
@@ -237,6 +258,14 @@ const data: DashboardData = {
     evidence_scope: "public-calibration",
     release_eligible: false,
     integrity: { locked: true, verified: true, plan_digest: "c".repeat(64) },
+    measurement: {
+      status: "valid",
+      cases: [
+        { case_id: "selection-quality", ...validMeasurement(3) },
+        { case_id: "public-safety-audit", ...validMeasurement(1) },
+      ],
+      reasons: [],
+    },
   },
   summary: {
     case_count: 2,
@@ -459,6 +488,7 @@ const data: DashboardData = {
       repeats: 3,
       holdout_visibility: "public",
       status: "passed",
+      measurement: validMeasurement(3),
       regressed: false,
       direction_disagreement: false,
       missing_objective_metrics: [],
@@ -534,6 +564,7 @@ const data: DashboardData = {
       repeats: 1,
       holdout_visibility: "public",
       status: "failed",
+      measurement: validMeasurement(1),
       regressed: true,
       direction_disagreement: false,
       missing_objective_metrics: [],
@@ -554,15 +585,6 @@ const data: DashboardData = {
       render_mode: "lazy",
       content_url: `/dashboard-diffs/${"1".repeat(24)}.json`,
       payload_digest: "3".repeat(64),
-    },
-  ],
-  iterations: [
-    {
-      iteration: 2,
-      phase: "selection",
-      status: "accepted",
-      accepted: true,
-      artifact: "iteration-2/acceptance-decision.json",
     },
   ],
   spine: [

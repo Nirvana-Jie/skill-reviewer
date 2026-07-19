@@ -59,6 +59,24 @@ function reviewDecisionCopy(
   releaseReady: boolean,
 ): { title: string; detail: string } {
   const decision = data.review.decision;
+  const measurementStatus = data.run.measurement?.status ?? "unverified";
+  if (measurementStatus === "invalid" || measurementStatus === "unverified") {
+    return locale === "zh-CN"
+      ? {
+          title: "测量不可用，暂不评价 Skill",
+          detail:
+            measurementStatus === "invalid"
+              ? "判据校准或配对采样未通过；当前结果只能用于修复 Eval，不能归因到 Skill。"
+              : "当前投影尚未证明判据与采样可信；完成测量预检前，不形成候选质量结论。",
+        }
+      : {
+          title: "Measurement unavailable — Skill not judged",
+          detail:
+            measurementStatus === "invalid"
+              ? "Oracle calibration or paired sampling failed. Use this run to repair the Eval, not to attribute quality to the Skill."
+              : "The projection has not yet proved the oracle and sampling trustworthy, so candidate quality remains undecided.",
+        };
+  }
   if (
     releaseReady &&
     decision.status === "ready" &&
@@ -176,6 +194,14 @@ export function ReviewOverview({
   const primaryRiskEvidence = primaryBlocker?.evidence_ids
     .map((id) => nodesById.get(id))
     .find((node): node is SpineNode => Boolean(node));
+  const measurementKey =
+    viewModel.measurement.status === "valid"
+      ? "measurementValid"
+      : viewModel.measurement.status === "invalid"
+        ? "measurementInvalid"
+        : viewModel.measurement.status === "pending"
+          ? "measurementPending"
+          : "measurementUnverified";
 
   return (
     <div className="review-overview">
@@ -207,6 +233,18 @@ export function ReviewOverview({
             </strong>
             <span>{t("casesPassed")}</span>
           </div>
+        </div>
+      </section>
+
+      <section
+        className={`review-measurement-status tone-${viewModel.measurement.tone}`}
+        aria-label={t("measurementValidity")}
+      >
+        <ShieldCheck size={18} aria-hidden="true" />
+        <div>
+          <span>{t("measurementValidity")}</span>
+          <strong>{t(measurementKey)}</strong>
+          <p>{t("measurementValidityDescription")}</p>
         </div>
       </section>
 

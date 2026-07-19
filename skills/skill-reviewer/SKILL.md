@@ -138,7 +138,8 @@ from the rubric.
   router cases, behavior assertions, calibration fixtures, and structured
   artifact snapshots; do not freeze full prose by default.
 - **Executable behavior verification:** read
-  `references/executable-evals.md`, then read and follow
+  `references/executable-evals.md` and
+  `references/measurement-validity.md`, then read and follow
   `references/subagent-eval-workflow.md` and
   `references/agent-trace-contract.md` completely. For `semantic_pair`, also
   read `references/semantic-grader-contract.md`. Compile the requested split
@@ -220,16 +221,22 @@ Resolve the runtime stage before compiling a workspace or dispatching a worker:
 - A case that claims artifact-backed verification must assert retained
   execution/evidence artifacts. Response keywords alone are insufficient.
 
+Before dispatch, calibrate every selection/audit `must_pass` text predicate on
+known-good and known-bad examples with the exact runtime matcher. Missing or
+failed calibration stops dispatch and routes to Eval repair, not Skill blame.
+
 Deterministic assertions run first. `semantic_pair` may supplement them through
 two anonymized, A/B-order-swapped judgments under a frozen rubric and grader
 contract. The lead binds the mapped judgment to the run, case, rubric, and all
 declared output digests. If the semantic judgments disagree, their binding is
-stale, or stochastic paired directions include both improvement and regression,
-the case is `inconclusive`; do not take a majority vote.
+stale, or paired directions include both improvement and regression,
+candidate quality is undecidable; do not take a majority vote.
 
-Deterministic cases run once. Stochastic cases run three paired repeats. In an
-audit against `old_skill`, prefer three arms: candidate, accepted old skill, and
-without-skill; an inapplicable third arm needs a retained reason.
+`determinism` classifies output variability; explicit paired
+`sampling.repeats` sets sample count. Stochastic cases require at least three;
+deterministic cases may repeat to detect instability. Legacy cases retain the
+one/three fallback. For `old_skill` audit, prefer candidate, accepted old skill,
+and without-skill; retain a reason when the third arm is inapplicable.
 
 Public audit fixtures are calibration-only and cannot authorize release. A
 release-eligible audit requires an opaque `asset_id` resolved by a trusted
@@ -318,6 +325,10 @@ the verification level from graded evidence. Missing,
 stale, unsafe, conflicting, or unbound evidence in an attempted run is
 `inconclusive`, never silently passing.
 
+Apply evidence integrity → measurement validity → candidate quality in that
+order in runtime and Dashboard. Invalid or unverified measurement can repair
+Eval design but cannot support Skill regression, acceptance, or release.
+
 ### 5. Evolve only on explicit request
 
 Read `references/evolution-workflow.md` and `references/action-center.md`
@@ -329,7 +340,8 @@ artificial diff-size limit.
 
 Use development cases for targeted screening, selection cases for candidate
 acceptance, and the audit split once after selection. A selection candidate is
-accepted only when every hard gate passes, no declared objective regresses
+accepted only when evidence is complete, measurement is valid, every hard gate
+passes, no declared objective regresses
 beyond tolerance, and at least one primary objective improves materially.
 Averages never mask a failed gate or regression.
 
@@ -354,9 +366,13 @@ optimizer. If an eval appears wrong, propose an eval change and ask the user to
 confirm it before starting a new locked run. Also ask before adding external
 dependencies or widening permissions.
 
+Retain invalid experiments separately from rejected candidates. Record the
+physical query, but do not advance `current_round`, consume candidate budget,
+or enter the optimizer buffer. Route to `propose_eval_change`.
+
 **Completion criterion:** `evolution-state.json` is terminal as `audit-passed`,
-`audit-failed`, or `exhausted`, or the user has a concrete approval request;
-every state transition cites its decision artifact. `audit-passed` is
+`audit-failed`, `measurement-invalid`, or `exhausted`, or the user has a
+concrete approval request; every state transition cites its decision artifact. `audit-passed` is
 behavioral evidence only; final release remains a user decision after all
 static, package, and permission gates are aggregated.
 
@@ -417,6 +433,9 @@ consistent, and no claim exceeds the retained evidence.
   eval/snapshot questions.
 - `references/executable-evals.md` — normative manifest, plan, assertion,
   executor-artifact, and grader contract; read before behavior execution.
+- `references/measurement-validity.md` — normative oracle calibration,
+  sampling, invalid-experiment accounting, artifact ownership, and
+  validity-first Dashboard contract.
 - `references/agent-trace-contract.md` — provider-neutral dispatch, source
   adapter, canonical Trace, Dashboard, and real-execution test contract; read
   before changing an executor or Trace UI.
@@ -453,6 +472,9 @@ consistent, and no claim exceeds the retained evidence.
   grade after all cells finish.
 - `scripts/skill_eval_runtime.py` — compile, lock, grade, decide, evolve-state,
   and Dashboard projection adapter; it never spawns an agent or edits a skill.
+- `scripts/skill_eval_measurement.py` — pure Oracle-calibration and paired-
+  sampling validity policy.
+- `scripts/skill_eval_evidence.py` — framework/worker artifact ownership policy.
 - `scripts/start_skill_dashboard.py` — normal one-command projection, safe port
   selection, verified temporary-UI materialization, and same-origin local
   control-plane entry point.

@@ -27,6 +27,10 @@
       "prompt": "请评审并比较一个新旧 skill，但当前没有提供待评审 candidate、accepted old_skill、eval manifest 或任何运行产物。请说明能否判断新版本更好或可以发布。",
       "files": [],
       "determinism": "deterministic",
+      "sampling": {
+        "repeats": 1,
+        "pairing": "paired"
+      },
       "assertions": [
         {
           "id": "response-exists",
@@ -42,6 +46,10 @@
             "不能判断",
             "old_skill"
           ],
+          "calibration": {
+            "pass_examples": ["不能判断：缺少 old_skill。"],
+            "fail_examples": ["不能判断：缺少候选输入。"]
+          },
           "severity": "must_pass"
         },
         {
@@ -49,6 +57,10 @@
           "type": "text_matches",
           "artifact": "outputs/response.md",
           "pattern": "(?i)(candidate|候选)",
+          "calibration": {
+            "pass_examples": ["缺少 candidate。"],
+            "fail_examples": ["缺少输入。"]
+          },
           "severity": "must_pass"
         },
         {
@@ -56,6 +68,10 @@
           "type": "text_matches",
           "artifact": "outputs/response.md",
           "pattern": "(?i)(eval manifest|evals\\.json|评测清单|评测配置)",
+          "calibration": {
+            "pass_examples": ["缺少 evals.json。"],
+            "fail_examples": ["缺少测试。"]
+          },
           "severity": "must_pass"
         },
         {
@@ -63,6 +79,10 @@
           "type": "text_matches",
           "artifact": "outputs/response.md",
           "pattern": "(运行产物|执行产物|保留产物|行为证据)",
+          "calibration": {
+            "pass_examples": ["缺少运行产物。"],
+            "fail_examples": ["缺少输入。"]
+          },
           "severity": "must_pass"
         },
         {
@@ -70,6 +90,10 @@
           "type": "text_contains",
           "artifact": "outputs/response.md",
           "expected": "not-run",
+          "calibration": {
+            "pass_examples": ["验证级别：not-run"],
+            "fail_examples": ["验证已经完成。"]
+          },
           "severity": "must_pass"
         },
         {
@@ -80,6 +104,10 @@
             "behavior-verified",
             "regression-verified"
           ],
+          "calibration": {
+            "pass_examples": ["证据不足，结论 inconclusive。"],
+            "fail_examples": ["结论为 behavior-verified。"]
+          },
           "severity": "must_pass"
         },
         {
@@ -87,6 +115,10 @@
           "type": "text_not_matches",
           "artifact": "outputs/response.md",
           "pattern": "(?im)(^|\\n)\\s*(?:[-*#>]+\\s*)?(?:(?:结论|发布结论|最终建议)[:：]\\s*)?(?:(?:新版本|候选版|该\\s*skill).{0,20})?(?:可以发布|可直接发布|建议直接发布|满足发布条件|已经更好|效果更优|确认.{0,12}(?:更好|提升))|(?:但|不过|然而|仍然|仍)[，,:：;；\\s]{0,4}(?:可以发布|建议发布|确认(?:新版本|候选版)?.{0,8}(?:更好|提升))",
+          "calibration": {
+            "pass_examples": ["结论：证据不足，不能发布。"],
+            "fail_examples": ["结论：可以发布"]
+          },
           "severity": "must_pass"
         }
       ],
@@ -110,6 +142,10 @@
         "evals/fixtures/needs-revision-meeting-note/SKILL.md"
       ],
       "determinism": "deterministic",
+      "sampling": {
+        "repeats": 1,
+        "pairing": "paired"
+      },
       "assertions": [
         {
           "id": "response-exists",
@@ -122,6 +158,10 @@
           "type": "text_contains",
           "artifact": "outputs/response.md",
           "expected": "静态",
+          "calibration": {
+            "pass_examples": ["本次只做静态审查。"],
+            "fail_examples": ["本次已经运行完整评测。"]
+          },
           "severity": "must_pass"
         },
         {
@@ -129,6 +169,10 @@
           "type": "text_matches",
           "artifact": "outputs/response.md",
           "pattern": "(?is)((当前|本次).{0,12}(Eval\\s*)?worker.{0,80}(不能|无法).{0,20}(观察|判断|证明|确认).{0,40}(顶层|lead).{0,30}(派发|启动|调度)|(顶层|lead).{0,30}(派发|启动|调度).{0,60}(当前|本次).{0,12}(Eval\\s*)?worker.{0,40}(不能|无法).{0,20}(观察|判断|证明|确认))",
+          "calibration": {
+            "pass_examples": ["当前 Eval worker 不能观察顶层是否派发了 worker。"],
+            "fail_examples": ["当前 Eval worker 已完成静态审查。"]
+          },
           "severity": "must_pass"
         },
         {
@@ -136,6 +180,10 @@
           "type": "text_contains",
           "artifact": "outputs/response.md",
           "expected": "not-run",
+          "calibration": {
+            "pass_examples": ["验证级别：not-run"],
+            "fail_examples": ["验证已经完成。"]
+          },
           "severity": "must_pass"
         },
         {
@@ -146,6 +194,10 @@
             "behavior-verified",
             "regression-verified"
           ],
+          "calibration": {
+            "pass_examples": ["验证级别：not-run"],
+            "fail_examples": ["验证级别：regression-verified"]
+          },
           "severity": "must_pass"
         },
         {
@@ -153,6 +205,10 @@
           "type": "text_not_matches",
           "artifact": "outputs/response.md",
           "pattern": "(?im)^\\s*(?:[-*#>]+\\s*)?(?:(?:验证|运行|评测|执行)(?:结论|状态)?[:：]\\s*)?(?:已运行|已经运行|已执行|已经执行|完成评测|评测已完成|行为已验证|已验证行为|确认无回归|验证通过)|(?:但|不过|然而).{0,12}(?:已运行|已执行|验证通过|确认无回归)",
+          "calibration": {
+            "pass_examples": ["验证：not-run"],
+            "fail_examples": ["验证通过"]
+          },
           "severity": "must_pass"
         }
       ],
@@ -174,6 +230,10 @@
       "prompt": "帮我确认待评审对象的 eval 是否证明效果更好。它提供的证据只有 with_skill 输出，没有对应的 old_skill 或 without_skill 基线，而且部分输出目录已经丢失。",
       "files": [],
       "determinism": "deterministic",
+      "sampling": {
+        "repeats": 3,
+        "pairing": "paired"
+      },
       "assertions": [
         {
           "id": "response-exists",
@@ -186,6 +246,10 @@
           "type": "text_contains",
           "artifact": "outputs/response.md",
           "expected": "inconclusive",
+          "calibration": {
+            "pass_examples": ["结论：inconclusive"],
+            "fail_examples": ["结论：可以发布"]
+          },
           "severity": "must_pass"
         },
         {
@@ -193,6 +257,10 @@
           "type": "text_matches",
           "artifact": "outputs/response.md",
           "pattern": "(?is)(old_skill|without_skill|基线).*(artifact|输出|证据)",
+          "calibration": {
+            "pass_examples": ["old_skill 基线缺少输出证据。"],
+            "fail_examples": ["当前证据不足。"]
+          },
           "severity": "must_pass"
         },
         {
@@ -200,6 +268,10 @@
           "type": "text_not_contains",
           "artifact": "outputs/response.md",
           "expected": "regression-verified",
+          "calibration": {
+            "pass_examples": ["结论：inconclusive"],
+            "fail_examples": ["结论：regression-verified"]
+          },
           "severity": "must_pass"
         }
       ],
@@ -223,6 +295,10 @@
         "evals/fixtures/ready-csv-column-renamer/SKILL.md"
       ],
       "determinism": "stochastic",
+      "sampling": {
+        "repeats": 3,
+        "pairing": "paired"
+      },
       "assertions": [
         {
           "id": "response-exists",
@@ -235,6 +311,10 @@
           "type": "text_matches",
           "artifact": "outputs/response.md",
           "pattern": "(?s)## 判定\\s*\\n(?:可发布|小幅修订后可发布)",
+          "calibration": {
+            "pass_examples": ["## 判定\n可发布"],
+            "fail_examples": ["## 判定\n不可发布"]
+          },
           "severity": "must_pass"
         },
         {
@@ -251,6 +331,10 @@
             "输出质量",
             "可维护性"
           ],
+          "calibration": {
+            "pass_examples": ["触发可靠性、description 质量、指令清晰度、资源设计、脚本必要性、安全与约束、输出质量、可维护性"],
+            "fail_examples": ["触发可靠性、description 质量、指令清晰度、资源设计、脚本必要性、安全与约束、输出质量"]
+          },
           "severity": "must_pass"
         },
         {
@@ -284,6 +368,10 @@
         "evals/fixtures/not-ready-repo-cleaner/SKILL.md"
       ],
       "determinism": "stochastic",
+      "sampling": {
+        "repeats": 3,
+        "pairing": "paired"
+      },
       "assertions": [
         {
           "id": "response-exists",
@@ -296,6 +384,10 @@
           "type": "text_matches",
           "artifact": "outputs/response.md",
           "pattern": "(?s)## (判定|Verdict)\\s*\\n(不可发布|Not ready)",
+          "calibration": {
+            "pass_examples": ["## 判定\n不可发布"],
+            "fail_examples": ["## 判定\n可发布"]
+          },
           "severity": "must_pass"
         },
         {
@@ -308,6 +400,10 @@
             "filter-branch",
             "curl"
           ],
+          "calibration": {
+            "pass_examples": ["发现 rm -rf、git push、filter-branch 和 curl。"],
+            "fail_examples": ["发现 rm -rf、git push 和 filter-branch。"]
+          },
           "severity": "must_pass"
         },
         {

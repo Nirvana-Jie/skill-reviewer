@@ -73,6 +73,27 @@ function execution(arm: string, repeat: number): DashboardExecution {
   };
 }
 
+function validMeasurement(repeats: number) {
+  return {
+    status: "valid" as const,
+    oracle: {
+      status: "valid" as const,
+      required_text_assertions: 1,
+      calibrated_text_assertions: 1,
+      checks: [],
+      reasons: [],
+    },
+    sampling: {
+      status: "valid" as const,
+      repeats,
+      pairing: "paired",
+      source: "explicit",
+      direction_disagreement: false,
+    },
+    reasons: [],
+  };
+}
+
 function dashboardFixture(): DashboardData {
   return {
     contract: "skill-reviewer.dashboard-data",
@@ -85,6 +106,11 @@ function dashboardFixture(): DashboardData {
       splits: ["selection"],
       evidence_scope: "public-calibration",
       release_eligible: false,
+      measurement: {
+        status: "valid",
+        cases: [{ case_id: "selection-quality", ...validMeasurement(3) }],
+        reasons: [],
+      },
     },
     summary: {
       case_count: 1,
@@ -155,6 +181,7 @@ function dashboardFixture(): DashboardData {
         repeats: 3,
         holdout_visibility: "public",
         status: "passed",
+        measurement: validMeasurement(3),
         regressed: false,
         direction_disagreement: false,
         missing_objective_metrics: [],
@@ -172,7 +199,6 @@ function dashboardFixture(): DashboardData {
       },
     ],
     diffs: [],
-    iterations: [],
     spine: [],
     limitations: ["Release audit has not run."],
   };
@@ -349,6 +375,34 @@ describe("review view model", () => {
     };
 
     expect(buildReviewViewModel(fixture).decision.tone).toBe("warn");
+  });
+
+  it("never presents candidate success when measurement validity fails", () => {
+    const fixture = dashboardFixture();
+    markReleaseReady(fixture);
+    fixture.run.measurement = {
+      status: "invalid",
+      cases: [
+        {
+          case_id: "selection-quality",
+          ...validMeasurement(3),
+          status: "invalid",
+          reasons: ["assertion_calibration_failed:created-set-data"],
+        },
+      ],
+      reasons: ["assertion_calibration_failed:created-set-data"],
+    };
+    fixture.cases[0].measurement = {
+      ...validMeasurement(3),
+      status: "invalid",
+      reasons: ["assertion_calibration_failed:created-set-data"],
+    };
+
+    const model = buildReviewViewModel(fixture);
+
+    expect(model.measurement).toEqual({ status: "invalid", tone: "warn" });
+    expect(model.decision.tone).toBe("warn");
+    expect(model.evidence.status).toBe("partial");
   });
 
   it("keeps evidence partial when a failed scenario has an incomplete arm", () => {

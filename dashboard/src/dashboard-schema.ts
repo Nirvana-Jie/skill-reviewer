@@ -1,6 +1,6 @@
 import type { DashboardData } from "./types";
 
-export const dashboardSchemaVersion = 2 as const;
+export const dashboardSchemaVersion = 3 as const;
 
 export class DashboardCompatibilityError extends Error {
   readonly path: string;
@@ -15,6 +15,7 @@ export class DashboardCompatibilityError extends Error {
 type Validator = (value: unknown, path: string) => void;
 
 const splits = ["development", "selection", "audit"] as const;
+const measurementStatuses = ["valid", "invalid", "unverified", "pending"] as const;
 const attributionIds = [
   "skill",
   "eval",
@@ -246,6 +247,84 @@ function validateOptionalNumber(
   }
 }
 
+function validateOracleMeasurement(value: unknown, path: string): void {
+  const oracle = requireRecord(value, path);
+  requireOneOf(oracle.status, `${path}.status`, measurementStatuses);
+  for (const key of ["required_text_assertions", "calibrated_text_assertions"]) {
+    if (oracle[key] !== undefined) {
+      requireNonNegativeInteger(oracle[key], `${path}.${key}`);
+    }
+  }
+  requireStringArray(oracle.reasons, `${path}.reasons`);
+  if (oracle.checks !== undefined) {
+    requireArrayOf(oracle.checks, `${path}.checks`, (value, checkPath) => {
+      const check = requireRecord(value, checkPath);
+      requireString(check.assertion_id, `${checkPath}.assertion_id`);
+      requireOneOf(check.status, `${checkPath}.status`, [
+        "valid",
+        "invalid",
+        "unverified",
+        "not_applicable",
+      ] as const);
+      for (const key of ["pass_example_count", "fail_example_count"]) {
+        requireNonNegativeInteger(check[key], `${checkPath}.${key}`);
+      }
+      for (const key of ["failed_pass_examples", "failed_fail_examples"]) {
+        requireArrayOf(check[key], `${checkPath}.${key}`, (index, indexPath) => {
+          requireNonNegativeInteger(index, indexPath);
+        });
+      }
+    });
+  }
+}
+
+function validateSamplingMeasurement(value: unknown, path: string): void {
+  const sampling = requireRecord(value, path);
+  requireOneOf(sampling.status, `${path}.status`, measurementStatuses);
+  if (sampling.repeats !== undefined && sampling.repeats !== null) {
+    requirePositiveInteger(sampling.repeats, `${path}.repeats`);
+  }
+  for (const key of ["pairing", "source"]) {
+    if (sampling[key] !== undefined) {
+      requireNullableString(sampling[key], `${path}.${key}`);
+    }
+  }
+  requireBoolean(
+    sampling.direction_disagreement,
+    `${path}.direction_disagreement`,
+  );
+}
+
+function validateCaseMeasurement(value: unknown, path: string): void {
+  const measurement = requireRecord(value, path);
+  requireOneOf(measurement.status, `${path}.status`, measurementStatuses);
+  validateOracleMeasurement(measurement.oracle, `${path}.oracle`);
+  validateSamplingMeasurement(measurement.sampling, `${path}.sampling`);
+  requireStringArray(measurement.reasons, `${path}.reasons`);
+}
+
+function validateRunMeasurement(value: unknown, path: string): void {
+  const measurement = requireRecord(value, path);
+  requireOneOf(measurement.status, `${path}.status`, measurementStatuses);
+  requireStringArray(measurement.reasons, `${path}.reasons`);
+  requireArrayOf(measurement.cases, `${path}.cases`, (value, casePath) => {
+    const item = requireRecord(value, casePath);
+    requireString(item.case_id, `${casePath}.case_id`);
+    validateCaseMeasurement(item, casePath);
+  });
+}
+
+function aggregateMeasurementStatus(
+  statuses: unknown[],
+): (typeof measurementStatuses)[number] {
+  if (statuses.includes("invalid")) return "invalid";
+  if (statuses.includes("pending")) return "pending";
+  if (statuses.includes("unverified") || statuses.length === 0) {
+    return "unverified";
+  }
+  return "valid";
+}
+
 function validateRun(value: unknown, path: string): void {
   const run = requireRecord(value, path);
   requireString(run.id, `${path}.id`);
@@ -259,6 +338,7 @@ function validateRun(value: unknown, path: string): void {
     "opaque-holdout",
   ] as const);
   requireBoolean(run.release_eligible, `${path}.release_eligible`);
+  validateRunMeasurement(run.measurement, `${path}.measurement`);
 
   if (run.manifest != null) {
     const manifest = requireRecord(run.manifest, `${path}.manifest`);
@@ -363,6 +443,7 @@ function validateSummary(value: unknown, path: string): void {
     "selection_queries",
     "audit_queries",
     "rejected_candidates",
+    "invalid_experiments",
   ]) {
     requireNonNegativeInteger(summary[key], `${path}.${key}`);
   }
@@ -458,6 +539,13 @@ function validateEvolution(value: unknown, path: string): void {
   requireArrayOf(
     evolution.rejected_candidates,
     `${path}.rejected_candidates`,
+    (item, itemPath) => {
+      requireRecord(item, itemPath);
+    },
+  );
+  requireArrayOf(
+    evolution.invalid_experiments,
+    `${path}.invalid_experiments`,
     (item, itemPath) => {
       requireRecord(item, itemPath);
     },
@@ -641,6 +729,7 @@ function validateReview(value: unknown, path: string): void {
     "release_gate_failed",
     "scenario_failed",
     "candidate_acceptance_failed",
+    "measurement_invalid",
     "audit_required",
     "evidence_incomplete",
   ] as const);
@@ -1255,6 +1344,7 @@ function validateCase(
     "opaque",
   ] as const);
   requireString(item.status, `${path}.status`);
+  validateCaseMeasurement(item.measurement, `${path}.measurement`);
   requireBoolean(item.regressed, `${path}.regressed`);
   requireBoolean(item.direction_disagreement, `${path}.direction_disagreement`);
   requireStringArray(
@@ -1320,36 +1410,6 @@ function validateDiff(value: unknown, path: string): void {
   requireNullableString(diff.payload_digest, `${path}.payload_digest`);
   if (diff.summary !== undefined) {
     requireNullableString(diff.summary, `${path}.summary`);
-  }
-}
-
-function validateIteration(value: unknown, path: string): void {
-  const iteration = requireRecord(value, path);
-  requirePositiveInteger(iteration.iteration, `${path}.iteration`);
-  requireOneOf(iteration.phase, `${path}.phase`, ["selection", "audit"] as const);
-  requireString(iteration.status, `${path}.status`);
-  requireBoolean(iteration.accepted, `${path}.accepted`);
-  validateOptionalString(iteration, "artifact", path);
-  if (iteration.hard_gates !== undefined) {
-    requireArrayOf(
-      iteration.hard_gates,
-      `${path}.hard_gates`,
-      (gateValue, gatePath) => {
-        const gate = requireRecord(gateValue, gatePath);
-        requireString(gate.id, `${gatePath}.id`);
-        requireBoolean(gate.passed, `${gatePath}.passed`);
-        requireString(gate.reason, `${gatePath}.reason`);
-      },
-    );
-  }
-  if (iteration.objectives !== undefined) {
-    requireArrayOf(
-      iteration.objectives,
-      `${path}.objectives`,
-      (objective, objectivePath) => {
-        requireRecord(objective, objectivePath);
-      },
-    );
   }
 }
 
@@ -1703,6 +1763,72 @@ function validateProjectionInvariants(
       );
     }
   }
+  const runMeasurement = requireRecord(run.measurement, "run.measurement");
+  const measurementCases = requireArray(
+    runMeasurement.cases,
+    "run.measurement.cases",
+  ).map((value, index) =>
+    requireRecord(value, `run.measurement.cases[${index}]`),
+  );
+  const measurementByCase = new Map(
+    measurementCases.map((item) => [String(item.case_id), item]),
+  );
+  if (
+    measurementByCase.size !== caseRecords.length ||
+    caseRecords.some((item) => !measurementByCase.has(String(item.id)))
+  ) {
+    throw new DashboardCompatibilityError(
+      "run.measurement.cases",
+      "must contain exactly one record for every projected case",
+    );
+  }
+  caseRecords.forEach((item, index) => {
+    const caseMeasurement = requireRecord(
+      item.measurement,
+      `cases[${index}].measurement`,
+    );
+    const oracle = requireRecord(
+      caseMeasurement.oracle,
+      `cases[${index}].measurement.oracle`,
+    );
+    const sampling = requireRecord(
+      caseMeasurement.sampling,
+      `cases[${index}].measurement.sampling`,
+    );
+    const expectedCaseStatus = aggregateMeasurementStatus([
+      oracle.status,
+      sampling.status,
+    ]);
+    if (caseMeasurement.status !== expectedCaseStatus) {
+      throw new DashboardCompatibilityError(
+        `cases[${index}].measurement.status`,
+        `must aggregate oracle and sampling status as ${expectedCaseStatus}`,
+      );
+    }
+    if (
+      measurementByCase.get(String(item.id))?.status !== caseMeasurement.status
+    ) {
+      throw new DashboardCompatibilityError(
+        `cases[${index}].measurement.status`,
+        "must match run.measurement.cases",
+      );
+    }
+  });
+  const expectedRunMeasurementStatus = aggregateMeasurementStatus(
+    measurementCases.map((item) => item.status),
+  );
+  if (runMeasurement.status !== expectedRunMeasurementStatus) {
+    throw new DashboardCompatibilityError(
+      "run.measurement.status",
+      `must aggregate case measurement status as ${expectedRunMeasurementStatus}`,
+    );
+  }
+  if (run.release_eligible === true && runMeasurement.status !== "valid") {
+    throw new DashboardCompatibilityError(
+      "run.release_eligible",
+      "requires valid measurement evidence",
+    );
+  }
   const declaredSplits = new Set(
     requireArray(run.splits, "run.splits").map((split) => String(split)),
   );
@@ -1716,32 +1842,187 @@ function validateProjectionInvariants(
   });
 }
 
+function legacyCaseMeasurement(
+  item: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    status: "unverified",
+    oracle: {
+      status: "unverified",
+      required_text_assertions: 0,
+      calibrated_text_assertions: 0,
+      checks: [],
+      reasons: ["legacy_projection_missing_measurement_validity"],
+    },
+    sampling: {
+      status: "unverified",
+      repeats:
+        typeof item.repeats === "number" && Number.isInteger(item.repeats)
+          ? item.repeats
+          : null,
+      pairing: "paired",
+      source: "legacy-projection",
+      direction_disagreement: item.direction_disagreement === true,
+    },
+    reasons: ["legacy_projection_missing_measurement_validity"],
+  };
+}
+
+function migrateV2Projection(
+  source: Record<string, unknown>,
+): Record<string, unknown> {
+  const migratedSource = { ...source };
+  delete migratedSource.iterations;
+  const cases = Array.isArray(source.cases)
+    ? source.cases.map((value) => {
+        if (!isRecord(value)) return value;
+        return {
+          ...value,
+          measurement: value.measurement ?? legacyCaseMeasurement(value),
+        };
+      })
+    : source.cases;
+  const caseMeasurements = Array.isArray(cases)
+    ? cases.flatMap((value) => {
+        if (!isRecord(value) || typeof value.id !== "string") return [];
+        const measurement = isRecord(value.measurement)
+          ? value.measurement
+          : legacyCaseMeasurement(value);
+        return [{ case_id: value.id, ...measurement }];
+      })
+    : [];
+  const run = isRecord(source.run) ? source.run : {};
+  const summary = isRecord(source.summary) ? source.summary : {};
+  const evolution = isRecord(source.evolution) ? source.evolution : {};
+  const review = isRecord(source.review) ? source.review : null;
+  const reviewDecision = review && isRecord(review.decision) ? review.decision : null;
+  const actionCenter = isRecord(source.action_center) ? source.action_center : null;
+  const continuation =
+    actionCenter && isRecord(actionCenter.continuation)
+      ? actionCenter.continuation
+      : null;
+  const acceptance =
+    actionCenter && isRecord(actionCenter.acceptance)
+      ? actionCenter.acceptance
+      : null;
+  const attribution =
+    actionCenter && isRecord(actionCenter.attribution)
+      ? actionCenter.attribution
+      : null;
+  return {
+    ...migratedSource,
+    schema_version: dashboardSchemaVersion,
+    run: {
+      ...run,
+      release_eligible: false,
+      measurement: run.measurement ?? {
+        status: "unverified",
+        cases: caseMeasurements,
+        reasons: ["legacy_projection_missing_measurement_validity"],
+      },
+    },
+    summary: { ...summary, invalid_experiments: summary.invalid_experiments ?? 0 },
+    evolution: {
+      ...evolution,
+      invalid_experiments: evolution.invalid_experiments ?? [],
+    },
+    review:
+      review === null
+        ? source.review
+        : {
+            ...review,
+            decision:
+              reviewDecision === null
+                ? review.decision
+                : {
+                    ...reviewDecision,
+                    status: "inconclusive",
+                    reason: "evidence_incomplete",
+                    release_eligible: false,
+                  },
+            next_action: "review_evidence",
+          },
+    action_center:
+      actionCenter === null
+        ? source.action_center
+        : {
+            ...actionCenter,
+            next_action: "review_evidence",
+            continuation:
+              continuation === null
+                ? actionCenter.continuation
+                : {
+                    ...continuation,
+                    mode: "human_required",
+                    owner: "human",
+                    reason: "evidence_review",
+                  },
+            acceptance:
+              acceptance === null
+                ? actionCenter.acceptance
+                : {
+                    ...acceptance,
+                    status: "measurement-unverified",
+                    accepted: null,
+                    criteria: Array.isArray(acceptance.criteria)
+                      ? acceptance.criteria.map((value) =>
+                          isRecord(value) ? { ...value, status: "pending" } : value,
+                        )
+                      : acceptance.criteria,
+                  },
+            attribution:
+              attribution === null
+                ? actionCenter.attribution
+                : {
+                    ...attribution,
+                    primary: null,
+                    items: Array.isArray(attribution.items)
+                      ? attribution.items.map((value) =>
+                          isRecord(value)
+                            ? { ...value, status: "waiting", signals: [] }
+                            : value,
+                        )
+                      : attribution.items,
+                  },
+            actions: Array.isArray(actionCenter.actions)
+              ? actionCenter.actions.map((value) =>
+                  isRecord(value)
+                    ? { ...value, available: false, recommended: false }
+                    : value,
+                )
+              : actionCenter.actions,
+          },
+    cases,
+  };
+}
+
 /**
  * Validates every decision-bearing nested collection before React receives it.
- * The only legacy form accepted is the immediately preceding unversioned
- * projection, and only when it already satisfies the complete v2 shape. No
- * evidence is synthesized while migrating that projection.
+ * V2 and its unversioned predecessor migrate only by marking the newly added
+ * measurement layer explicitly unverified; no positive evidence is invented.
  */
 export function validateAndMigrateDashboardData(input: unknown): DashboardData {
-  const root = requireRecord(input, "dashboard");
-  requireLiteral(root.contract, "contract", "skill-reviewer.dashboard-data");
+  const source = requireRecord(input, "dashboard");
+  requireLiteral(source.contract, "contract", "skill-reviewer.dashboard-data");
 
-  const rawVersion = root.schema_version;
+  const rawVersion = source.schema_version;
+  let version = 2;
   if (rawVersion !== undefined) {
-    const version = requireFiniteNumber(rawVersion, "schema_version");
+    version = requireFiniteNumber(rawVersion, "schema_version");
     if (!Number.isInteger(version)) {
       throw new DashboardCompatibilityError(
         "schema_version",
         "expected an integer version",
       );
     }
-    if (version !== dashboardSchemaVersion) {
+    if (version !== 2 && version !== dashboardSchemaVersion) {
       throw new DashboardCompatibilityError(
         "schema_version",
         `version ${version} has no registered migration; regenerate with version ${dashboardSchemaVersion}`,
       );
     }
   }
+  const root = version === 2 ? migrateV2Projection(source) : source;
 
   if (root.generated_at !== null) {
     requireString(root.generated_at, "generated_at");
@@ -1802,7 +2083,6 @@ export function validateAndMigrateDashboardData(input: unknown): DashboardData {
     review,
   );
   requireArrayOf(root.diffs, "diffs", validateDiff);
-  requireArrayOf(root.iterations, "iterations", validateIteration);
   requireArrayOf(root.spine, "spine", validateSpineNode);
   requireStringArray(root.limitations, "limitations");
 

@@ -11,6 +11,11 @@ declared objective, and materially improves at least one primary objective.
 Stop after three selection rounds. Run the audit once. Keep the user in
 control of eval changes, permission expansion, and new dependencies.
 
+Candidate quality is evaluated only after evidence integrity and measurement
+validity. An invalid oracle or contradictory paired sample quarantines the
+experiment; it must not reject the candidate or consume a candidate round.
+Read `measurement-validity.md` before changing this state machine.
+
 ## Automation and human-intervention policy
 
 The lead Agent owns the complete bounded loop. It must continue without asking
@@ -96,6 +101,12 @@ user to confirm, then start a new run with a new lock. Likewise, ask before
 adding an external dependency, enabling network access, or widening external
 permissions.
 
+Required selection/audit text assertions are calibrated against known-good and
+known-bad outputs during compilation. Calibration is part of frozen Eval
+authority and is never exposed to workers. Explicit sampling is independent of
+the deterministic/stochastic label; contradictory paired directions make the
+measurement invalid rather than merely lowering a score.
+
 ## State machine
 
 Initialize once:
@@ -172,6 +183,8 @@ python3 scripts/skill_eval_runtime.py evolution-advance \
 
 The acceptance rule is conjunctive:
 
+- evidence integrity is complete;
+- oracle calibration and paired sampling are valid;
 - all required candidate assertions pass;
 - no forbidden action or integrity failure occurs;
 - every paired baseline is complete;
@@ -179,8 +192,17 @@ The acceptance rule is conjunctive:
 - at least one `primary: true` objective reaches `min_material_delta`;
 - evidence is not `inconclusive`.
 
-Averages cannot mask a failed hard gate or a regressed objective. A stochastic
-direction disagreement is `inconclusive` even if its arithmetic mean improves.
+Averages cannot mask a failed hard gate or a regressed objective. A paired
+direction disagreement invalidates the measurement even if its arithmetic mean
+improves; candidate quality remains undecided.
+
+If a decision has invalid or unverified measurement, `evolution-advance`
+records a `measurement-invalid` entry in `invalid_experiments`, sets
+`next_action: propose_eval_change`, and stops the current cycle. It preserves
+the physical query in the journal but does not advance `current_round`, append
+a rejected candidate, or add evidence to the optimizer rejection buffer. The
+same authorization cannot be replayed. Applying an Eval fix still requires the
+user to approve a new authority and start a new locked run.
 
 After a rejected, no-change, or inconclusive selection decision, the lineage
 records parent/candidate digest, tree-change digest, trace IDs, continuity epoch,
@@ -271,6 +293,8 @@ Stop immediately when any of these occurs:
 - safety or permission expansion needs user authority;
 - the optimizer proposes changing frozen eval assets;
 - evidence integrity fails and inputs must be recompiled;
+- oracle calibration or paired sampling is invalid and needs an Eval-change
+  proposal;
 - the user cancels or changes scope.
 
 Retain every candidate digest, plan, run lock, execution artifact, grading,
