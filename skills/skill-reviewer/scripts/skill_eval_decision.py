@@ -4,22 +4,21 @@
 from __future__ import annotations
 
 import os
-import re
 import stat
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from skill_eval_authority import (
-    _ensure_empty_workspace,
-    _is_within,
-    _runtime_skill_file_digests,
     iter_strict_files,
     load_json,
+    locked_skill_snapshot_path,
+    path_is_within,
+    require_empty_workspace,
     require_real_directory,
     require_string,
-    runtime_skill_digest,
+    runtime_skill_file_digests,
     safe_artifact,
-    safe_subject_file,
     sha256_file,
     sha256_json,
     verify_locked_inputs,
@@ -28,16 +27,14 @@ from skill_eval_authority import (
 )
 from skill_eval_contracts import (
     ACCEPTANCE_CONTRACT,
-    DASHBOARD_DIFF_CONTRACT,
     EVOLUTION_STATE_CONTRACT,
     EVOLUTION_TRANSITION_CONTRACT,
     ManifestError,
     PLAN_CONTRACT,
     VERIFICATION_CONTRACT,
 )
-from skill_eval_grading import RESERVED_ARM_RESULT_FIELDS, _objective_delta, grade_run
+from skill_eval_grading import grade_run, objective_delta
 
-DASHBOARD_DIFF_RENDER_LIMIT_BYTES = 512 * 1024
 CANDIDATE_AUTHORIZATION_FIELDS = {
     "phase",
     "round",
@@ -63,6 +60,15 @@ AUDIT_AUTHORIZATION_FIELDS = {
     "holdout_visibility",
     "holdout_digest",
 }
+
+
+@dataclass(frozen=True)
+class DashboardDecisionContext:
+    """Validated evolution and decision records consumed by the Dashboard."""
+
+    state: dict[str, Any] | None
+    decisions: list[dict[str, Any]]
+    latest_decision: dict[str, Any] | None
 
 
 def _baseline_result(
@@ -223,7 +229,7 @@ def _compute_decision_core(
                     }
                 )
                 continue
-            delta = _objective_delta(
+            delta = objective_delta(
                 objective, float(candidate_value), float(baseline_value)
             )
             tolerance = float(objective.get("non_regression_tolerance", 0))
@@ -446,29 +452,11 @@ def _validate_bound_decision(
     return plan, fresh_evidence
 
 
-def _plan_snapshot_path(plan: dict[str, Any], arm: str) -> Path:
-    snapshots = plan.get("skill_snapshots")
-    if not isinstance(snapshots, dict):
-        raise ManifestError("candidate plan is missing skill snapshots")
-    records = [
-        record
-        for record in snapshots.values()
-        if isinstance(record, dict) and record.get("arm") == arm
-    ]
-    if not records:
-        raise ManifestError(f"candidate plan has no {arm} snapshot")
-    path = Path(require_string(records[0].get("path"), f"{arm} snapshot.path"))
-    expected_digest = records[0].get("digest")
-    if not path.is_dir() or runtime_skill_digest(path) != expected_digest:
-        raise ManifestError(f"candidate plan {arm} snapshot changed")
-    return path
-
-
 def _candidate_change(
     *, parent_snapshot: Path, candidate_snapshot: Path
 ) -> dict[str, Any]:
-    parent_files = _runtime_skill_file_digests(parent_snapshot)
-    candidate_files = _runtime_skill_file_digests(candidate_snapshot)
+    parent_files = runtime_skill_file_digests(parent_snapshot)
+    candidate_files = runtime_skill_file_digests(candidate_snapshot)
     added = sorted(set(candidate_files) - set(parent_files))
     removed = sorted(set(parent_files) - set(candidate_files))
     modified = sorted(
@@ -478,144 +466,6 @@ def _candidate_change(
     )
     change = {"added": added, "removed": removed, "modified": modified}
     return {**change, "digest": sha256_json(change)}
-
-
-def _prepare_dashboard_diff_payload_root(workspace: Path) -> Path:
-    payload_root = workspace / "dashboard-diffs"
-    if payload_root.exists():
-        if (
-            payload_root.is_symlink()
-            or not payload_root.is_dir()
-            or payload_root.resolve() != payload_root
-        ):
-            raise ManifestError("dashboard diff payload root must be a canonical directory")
-        for entry in payload_root.iterdir():
-            if (
-                entry.is_symlink()
-                or not entry.is_file()
-                or entry.parent.resolve() != payload_root
-                or not re.fullmatch(r"[a-f0-9]{24}\.json", entry.name)
-            ):
-                raise ManifestError("dashboard diff payload root contains an invalid entry")
-    else:
-        payload_root.mkdir()
-    return payload_root
-
-
-def _dashboard_diff_text(path: Path) -> tuple[str | None, int]:
-    size = path.stat().st_size
-    if size > DASHBOARD_DIFF_RENDER_LIMIT_BYTES:
-        return None, size
-    raw = path.read_bytes()
-    if len(raw) > DASHBOARD_DIFF_RENDER_LIMIT_BYTES:
-        raise ManifestError("dashboard diff source grew while projecting")
-    try:
-        return raw.decode("utf-8"), len(raw)
-    except UnicodeDecodeError:
-        return None, len(raw)
-
-
-def _dashboard_skill_diffs(
-    plan: dict[str, Any], *, workspace: Path
-) -> list[dict[str, Any]]:
-    payload_root = _prepare_dashboard_diff_payload_root(workspace)
-    if plan.get("baseline", {}).get("kind") != "old_skill":
-        return []
-    old_snapshot = _plan_snapshot_path(plan, "old_skill")
-    new_snapshot = _plan_snapshot_path(plan, "with_skill")
-    old_files = {
-        path: digest
-        for path, digest in _runtime_skill_file_digests(old_snapshot).items()
-        if not path.endswith("/")
-    }
-    new_files = {
-        path: digest
-        for path, digest in _runtime_skill_file_digests(new_snapshot).items()
-        if not path.endswith("/")
-    }
-    rows: list[dict[str, Any]] = []
-    for relative_path in sorted(set(old_files) | set(new_files)):
-        old_digest = old_files.get(relative_path)
-        new_digest = new_files.get(relative_path)
-        if old_digest == new_digest:
-            continue
-        if old_digest is None:
-            status = "added"
-        elif new_digest is None:
-            status = "removed"
-        else:
-            status = "modified"
-        binary = False
-        oversized = False
-        contents: dict[str, str] = {"old": "", "new": ""}
-        sizes: dict[str, int] = {"old": 0, "new": 0}
-        for side, snapshot, digest in (
-            ("old", old_snapshot, old_digest),
-            ("new", new_snapshot, new_digest),
-        ):
-            if digest is None:
-                continue
-            source = safe_subject_file(
-                snapshot, relative_path, f"dashboard {side} diff source"
-            )
-            text, size = _dashboard_diff_text(source)
-            sizes[side] = size
-            if size > DASHBOARD_DIFF_RENDER_LIMIT_BYTES:
-                oversized = True
-            elif text is None:
-                binary = True
-            else:
-                contents[side] = text
-        diff_id = sha256_json(
-            {
-                "path": relative_path,
-                "old_digest": old_digest,
-                "new_digest": new_digest,
-            }
-        )[:24]
-        render_mode = "summary" if oversized else "binary" if binary else "lazy"
-        content_url = (
-            f"/dashboard-diffs/{diff_id}.json" if render_mode == "lazy" else None
-        )
-        payload_digest: str | None = None
-        if content_url is not None:
-            payload_path = payload_root / f"{diff_id}.json"
-            write_json(
-                payload_path,
-                {
-                    "contract": DASHBOARD_DIFF_CONTRACT,
-                    "id": diff_id,
-                    "path": relative_path,
-                    "old_digest": old_digest,
-                    "new_digest": new_digest,
-                    "old_content": contents["old"],
-                    "new_content": contents["new"],
-                },
-            )
-            payload_digest = sha256_file(payload_path)
-        rows.append(
-            {
-                "id": diff_id,
-                "path": relative_path,
-                "status": status,
-                "old_digest": old_digest,
-                "new_digest": new_digest,
-                "old_size": sizes["old"],
-                "new_size": sizes["new"],
-                "binary": binary,
-                "render_mode": render_mode,
-                "content_url": content_url,
-                "payload_digest": payload_digest,
-                "summary": (
-                    f"Interactive preview omitted because one side exceeds {DASHBOARD_DIFF_RENDER_LIMIT_BYTES} bytes; full evidence remains bound by digest."
-                    if oversized
-                    else "Binary content is retained by digest and is not rendered."
-                    if binary
-                    else None
-                ),
-            }
-        )
-    return rows
 
 
 def _candidate_authorization(
@@ -637,7 +487,7 @@ def _candidate_authorization(
     )
     change = _candidate_change(
         parent_snapshot=parent_snapshot,
-        candidate_snapshot=_plan_snapshot_path(plan, "with_skill"),
+        candidate_snapshot=locked_skill_snapshot_path(plan, "with_skill"),
     )
     return {
         "phase": "selection",
@@ -711,7 +561,7 @@ def initialize_evolution(*, plan_path: Path, workspace: Path) -> dict[str, Any]:
         require_string(baseline.get("path"), "plan.baseline.path")
     )
     workspace = workspace.resolve()
-    _ensure_empty_workspace(
+    require_empty_workspace(
         workspace, [subject_path, baseline_path, plan_path.parent]
     )
     verify_locked_inputs(
@@ -742,7 +592,7 @@ def initialize_evolution(*, plan_path: Path, workspace: Path) -> dict[str, Any]:
         plan_path=plan_path,
         round_number=1,
         parent_digest=str(baseline["digest"]),
-        parent_snapshot=_plan_snapshot_path(plan, "old_skill"),
+        parent_snapshot=locked_skill_snapshot_path(plan, "old_skill"),
         continuity="continue",
         continuity_epoch=1,
         training_trace_ids=[],
@@ -840,7 +690,7 @@ def authorize_evolution(
             for record in lineage
         ):
             raise ManifestError("selection run is already present in candidate lineage")
-        parent_snapshot = _plan_snapshot_path(plan, "old_skill")
+        parent_snapshot = locked_skill_snapshot_path(plan, "old_skill")
         epoch = int(state.get("continuity_epoch", 1))
         authorization = _candidate_authorization(
             plan=plan,
@@ -1125,16 +975,6 @@ def _decision_sort_key(decision: dict[str, Any]) -> tuple[int, int]:
     )
 
 
-def _arm_metrics(arm: dict[str, Any]) -> dict[str, float]:
-    return {
-        key: float(value)
-        for key, value in arm.items()
-        if key not in RESERVED_ARM_RESULT_FIELDS
-        and isinstance(value, (int, float))
-        and not isinstance(value, bool)
-    }
-
-
 def _validate_authorization_plan(
     authorization: dict[str, Any],
     *,
@@ -1184,6 +1024,102 @@ def _authorization_binds_exact_plan(
     )
 
 
+def load_dashboard_decision_context(
+    *,
+    plan: dict[str, Any],
+    plan_path: Path,
+    workspace: Path,
+    state_path: Path | None,
+    local_decision_paths: set[Path],
+) -> DashboardDecisionContext:
+    """Load and validate the decision state exposed to a Dashboard projection."""
+
+    raw_state_path = Path(
+        os.path.abspath(
+            state_path
+            if state_path is not None
+            else workspace / "evolution-state.json"
+        )
+    )
+    if raw_state_path.is_symlink():
+        raise ManifestError("dashboard evolution state path must not be a symbolic link")
+    resolved_state_path = raw_state_path.resolve()
+    if state_path is not None and not resolved_state_path.is_file():
+        raise ManifestError("explicit dashboard evolution state does not exist")
+    state = _load_optional_json(resolved_state_path)
+    state_decisions = (
+        _validate_evolution_state(state, plan, resolved_state_path, plan_path)
+        if state
+        else []
+    )
+    if state is not None:
+        initialized_plan = load_json(
+            Path(
+                require_string(
+                    state.get("initialized_from_plan"),
+                    "state.initialized_from_plan",
+                )
+            )
+        )
+        seen_run_ids = state.get("seen_run_ids", [])
+        active_query = state.get("authorized_query")
+        current_state_run_id = (
+            active_query.get("run_id")
+            if isinstance(active_query, dict)
+            else seen_run_ids[-1]
+            if seen_run_ids
+            else initialized_plan.get("run_id")
+        )
+        if plan.get("run_id") != current_state_run_id:
+            raise ManifestError("dashboard state does not identify the current run")
+        state_history = state.get("history", [])
+        current_authorization = (
+            active_query
+            if isinstance(active_query, dict)
+            else state_history[-1].get("authorization")
+            if state_history and isinstance(state_history[-1], dict)
+            else None
+        )
+        if (
+            not isinstance(current_authorization, dict)
+            or not _authorization_binds_exact_plan(current_authorization, plan_path)
+        ):
+            raise ManifestError(
+                "dashboard state is not bound to the exact authorized plan"
+            )
+
+    decisions: list[dict[str, Any]] = []
+    decision_paths = set(local_decision_paths)
+    decision_paths.update(path for path, _ in state_decisions)
+    for decision_path in sorted(decision_paths):
+        decision = load_json(decision_path)
+        _validate_bound_decision(decision, decision_path)
+        is_local = path_is_within(decision_path, workspace)
+        if is_local and decision.get("run_id") != plan.get("run_id"):
+            raise ManifestError("workspace decision does not belong to the current run")
+        decisions.append(
+            {
+                **decision,
+                "artifact": (
+                    str(decision_path.relative_to(workspace))
+                    if is_local
+                    else str(decision_path)
+                ),
+            }
+        )
+    decisions.sort(key=_decision_sort_key)
+    current_decisions = [
+        decision
+        for decision in decisions
+        if decision.get("run_id") == plan.get("run_id")
+    ]
+    return DashboardDecisionContext(
+        state=state,
+        decisions=decisions,
+        latest_decision=current_decisions[-1] if current_decisions else None,
+    )
+
+
 def _validate_candidate_lineage(
     lineage: list[Any],
     *,
@@ -1229,8 +1165,8 @@ def _validate_candidate_lineage(
         ):
             raise ManifestError(f"{label} candidate identity is invalid")
         change = _candidate_change(
-            parent_snapshot=_plan_snapshot_path(candidate_plan, "old_skill"),
-            candidate_snapshot=_plan_snapshot_path(candidate_plan, "with_skill"),
+            parent_snapshot=locked_skill_snapshot_path(candidate_plan, "old_skill"),
+            candidate_snapshot=locked_skill_snapshot_path(candidate_plan, "with_skill"),
         )
         expected_change = {
             "added": change["added"],
@@ -1397,8 +1333,8 @@ def _validate_evolution_state(
                 Path(require_string(baseline_record.get("path"), label))
             )
     if any(
-        _is_within(control_workspace, root)
-        or _is_within(root, control_workspace)
+        path_is_within(control_workspace, root)
+        or path_is_within(root, control_workspace)
         for root in protected_roots
     ):
         raise ManifestError(

@@ -835,7 +835,7 @@ def _load_execution_profile(
         raise ManifestError("execution profile must be a canonical regular file")
     lexical = provided.resolve()
     if any(
-        _is_within(lexical, root) or _is_within(root, lexical)
+        path_is_within(lexical, root) or path_is_within(root, lexical)
         for root in protected_roots
     ):
         raise ManifestError(
@@ -1061,7 +1061,7 @@ def _require_read_only_tree(root: Path, label: str) -> None:
             raise ManifestError(f"{label} must be read-only: {path}")
 
 
-def _is_within(path: Path, root: Path) -> bool:
+def path_is_within(path: Path, root: Path) -> bool:
     try:
         path.resolve().relative_to(root.resolve())
     except ValueError:
@@ -1069,13 +1069,13 @@ def _is_within(path: Path, root: Path) -> bool:
     return True
 
 
-def _ensure_empty_workspace(
+def require_empty_workspace(
     workspace: Path, protected_roots: Iterable[Path]
 ) -> None:
     resolved = workspace.resolve()
     for root in protected_roots:
         protected = root.resolve()
-        if _is_within(resolved, protected) or _is_within(protected, resolved):
+        if path_is_within(resolved, protected) or path_is_within(protected, resolved):
             raise ManifestError(
                 "workspace must not overlap protected package or run directories"
             )
@@ -1165,7 +1165,7 @@ def _materialize_skill_snapshot(source: Path, destination: Path) -> str:
 
 def _build_authority(subject: Path, manifest_path: Path) -> dict[str, Any]:
     eval_root = manifest_path.parent.resolve()
-    if not _is_within(eval_root, subject):
+    if not path_is_within(eval_root, subject):
         raise ManifestError("eval authority must stay inside the subject directory")
     semantic_contract_path = (
         Path(__file__).resolve().parents[1]
@@ -1296,7 +1296,7 @@ def _resolve_holdout_cases(
         raise ManifestError("holdout pack must be a canonical regular file")
     pack_path = provided.resolve()
     if any(
-        _is_within(pack_path, root) or _is_within(root, pack_path)
+        path_is_within(pack_path, root) or path_is_within(root, pack_path)
         for root in protected_roots
     ):
         raise ManifestError(
@@ -1381,7 +1381,7 @@ def _resolve_holdout_cases(
                 raise ManifestError("opaque holdout source must be a regular file")
             source = source_provided.resolve()
             if any(
-                _is_within(source, root) or _is_within(root, source)
+                path_is_within(source, root) or path_is_within(root, source)
                 for root in protected_roots
             ):
                 raise ManifestError(
@@ -1462,7 +1462,7 @@ def _artifact_ownership(
     return ownership
 
 
-def _runtime_skill_file_digests(source: Path) -> dict[str, str]:
+def runtime_skill_file_digests(source: Path) -> dict[str, str]:
     records: dict[str, str] = {}
     for entry_name in RUNTIME_SKILL_ENTRIES:
         source_entry = source / entry_name
@@ -1498,7 +1498,27 @@ def _runtime_skill_file_digests(source: Path) -> dict[str, str]:
 
 
 def runtime_skill_digest(source: Path) -> str:
-    return sha256_json(_runtime_skill_file_digests(source))
+    return sha256_json(runtime_skill_file_digests(source))
+
+
+def locked_skill_snapshot_path(plan: dict[str, Any], arm: str) -> Path:
+    """Resolve an arm's immutable Skill snapshot and verify its bound digest."""
+
+    snapshots = plan.get("skill_snapshots")
+    if not isinstance(snapshots, dict):
+        raise ManifestError("candidate plan is missing skill snapshots")
+    records = [
+        record
+        for record in snapshots.values()
+        if isinstance(record, dict) and record.get("arm") == arm
+    ]
+    if not records:
+        raise ManifestError(f"candidate plan has no {arm} snapshot")
+    path = Path(require_string(records[0].get("path"), f"{arm} snapshot.path"))
+    expected_digest = records[0].get("digest")
+    if not path.is_dir() or runtime_skill_digest(path) != expected_digest:
+        raise ManifestError(f"candidate plan {arm} snapshot changed")
+    return path
 
 
 def compile_manifest(
@@ -1585,7 +1605,7 @@ def compile_manifest(
     protected_roots = [subject]
     if baseline_path is not None:
         protected_roots.append(baseline_path)
-    _ensure_empty_workspace(workspace, protected_roots)
+    require_empty_workspace(workspace, protected_roots)
     execution_profile = _load_execution_profile(
         execution_profile_path,
         protected_roots=[*protected_roots, workspace.resolve()],
@@ -1924,7 +1944,7 @@ def verify_locked_inputs(
     if baseline_path is not None:
         protected_roots.append(baseline_path)
     if any(
-        _is_within(workspace, root) or _is_within(root, workspace)
+        path_is_within(workspace, root) or path_is_within(root, workspace)
         for root in protected_roots
     ):
         raise ManifestError(
@@ -2009,7 +2029,7 @@ def verify_locked_inputs(
             source_digest = subject_digest if arm == "with_skill" else baseline_digest
             if source is None:
                 raise ManifestError(f"skill snapshot source is missing for arm {arm}")
-            source_files = _runtime_skill_file_digests(source)
+            source_files = runtime_skill_file_digests(source)
             for repeat in range(1, int(case["repeats"]) + 1):
                 key = f"{case['id']}/{arm}/repeat-{repeat}"
                 snapshot_path = workspace / "skill-snapshots" / key

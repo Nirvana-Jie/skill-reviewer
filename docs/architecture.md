@@ -51,6 +51,10 @@ the façade through `skill_eval_measurement.py` and `skill_eval_evidence.py`.
 Provider adapters translate only their wire event formats. Tests target
 observable CLI results rather than private helper shape.
 
+Domain modules may depend only on another module's public interface. Private
+helpers remain local to their owner; the local `skill_eval_*` import graph must
+remain acyclic. A Vitest architecture guard enforces both constraints.
+
 ### Dashboard interface
 
 The Dashboard consumes only validated `dashboard-data.json` and digest-bound
@@ -101,6 +105,8 @@ replaced by a pointer to its authority.
 - Put maintainer explanations in `docs/`.
 - Put examples used for calibration in `evals/fixtures/`.
 - Preserve the evidence → measurement → candidate order across Runtime and UI.
+- Keep cross-domain imports public and the `skill_eval_*` dependency graph
+  acyclic.
 - A UI migration must fail closed; it cannot invent positive evidence.
 
 ## Acceptance

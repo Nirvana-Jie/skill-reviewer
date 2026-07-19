@@ -337,7 +337,6 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
 
     source_path = repeat_root / SOURCE_EVENT_ARTIFACT
     stderr_path = repeat_root / STDERR_ARTIFACT
-    started = time.monotonic()
     normalized_count = 0
     final_result: str | None = None
     result_is_error = False

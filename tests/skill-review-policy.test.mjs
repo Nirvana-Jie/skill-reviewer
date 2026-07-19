@@ -9,6 +9,7 @@ const skillPath = join(repoRoot, "skills", "skill-reviewer", "SKILL.md");
 const referencePath = (name) =>
   join(repoRoot, "skills", "skill-reviewer", "references", name);
 const referencesRoot = dirname(referencePath("placeholder"));
+const scriptsRoot = join(repoRoot, "skills", "skill-reviewer", "scripts");
 
 function filesBelow(root, current = root) {
   const files = [];
@@ -30,6 +31,19 @@ function section(markdown, start, end) {
     throw new Error(`missing section boundary: ${start} -> ${end}`);
   }
   return markdown.slice(startIndex, endIndex);
+}
+
+function localSkillEvalImports(source) {
+  const imports = [];
+  const pattern = /from\s+(skill_eval_[a-z_]+)\s+import\s+(?:\(([\s\S]*?)\)|([^\n]+))/g;
+  for (const match of source.matchAll(pattern)) {
+    const names = (match[2] ?? match[3])
+      .split(",")
+      .map((name) => name.trim().split(/\s+as\s+/)[0])
+      .filter(Boolean);
+    imports.push({ module: match[1], names });
+  }
+  return imports;
 }
 
 describe("Skill Reviewer execution policy", () => {
@@ -107,6 +121,58 @@ describe("Skill Reviewer execution policy", () => {
       );
     }
     expect(totalReferenceBytes).toBeLessThanOrEqual(32 * 1024);
+  });
+
+  it("keeps runtime domain imports public and acyclic", () => {
+    const pythonFiles = filesBelow(scriptsRoot).filter((name) =>
+      name.endsWith(".py"),
+    );
+    const moduleNames = new Set(
+      pythonFiles.map((name) => name.replace(/\.py$/, "")),
+    );
+    const graph = new Map();
+    const privateImports = [];
+
+    for (const name of pythonFiles) {
+      const moduleName = name.replace(/\.py$/, "");
+      const imports = localSkillEvalImports(
+        readFileSync(join(scriptsRoot, name), "utf8"),
+      );
+      graph.set(
+        moduleName,
+        imports
+          .map((entry) => entry.module)
+          .filter((dependency) => moduleNames.has(dependency)),
+      );
+      for (const entry of imports) {
+        for (const importedName of entry.names.filter((item) =>
+          item.startsWith("_"),
+        )) {
+          privateImports.push(`${moduleName} -> ${entry.module}.${importedName}`);
+        }
+      }
+    }
+
+    const visited = new Set();
+    const active = new Set();
+    const cycles = [];
+    function visit(moduleName, path = []) {
+      if (active.has(moduleName)) {
+        cycles.push([...path, moduleName].join(" -> "));
+        return;
+      }
+      if (visited.has(moduleName)) return;
+      active.add(moduleName);
+      for (const dependency of graph.get(moduleName) ?? []) {
+        visit(dependency, [...path, moduleName]);
+      }
+      active.delete(moduleName);
+      visited.add(moduleName);
+    }
+    for (const moduleName of graph.keys()) visit(moduleName);
+
+    expect(privateImports).toEqual([]);
+    expect(cycles).toEqual([]);
   });
 
   it("opens the Dashboard only on explicit request and keeps it out of review authority", () => {

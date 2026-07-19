@@ -1939,7 +1939,7 @@ def grade_semantic_assertion(
     }
 
 
-def _objective_delta(
+def objective_delta(
     objective: dict[str, Any], candidate_value: float, baseline_value: float
 ) -> float:
     if objective.get("direction") == "maximize":
@@ -1983,7 +1983,7 @@ def _paired_direction_disagreement(
             if candidate_value is None or baseline_value is None:
                 continue
             try:
-                delta = _objective_delta(
+                delta = objective_delta(
                     objective, candidate_value, baseline_value
                 )
             except ManifestError:
@@ -2067,7 +2067,7 @@ def grade_run(
                     missing_objective_metrics.append(metric)
                     continue
                 try:
-                    delta = _objective_delta(
+                    delta = objective_delta(
                         objective, float(candidate_value), float(baseline_value)
                     )
                 except ManifestError:

@@ -4,30 +4,32 @@
 from __future__ import annotations
 
 import hashlib
-import os
+import re
 from pathlib import Path
 from typing import Any
 
 from skill_eval_authority import (
-    _is_within,
     load_json,
+    locked_skill_snapshot_path,
     require_string,
+    runtime_skill_file_digests,
     safe_artifact,
+    safe_subject_file,
+    sha256_file,
+    sha256_json,
     verify_locked_inputs,
     write_json,
 )
-from skill_eval_contracts import DASHBOARD_CONTRACT, ManifestError, PLAN_CONTRACT
-from skill_eval_decision import (
-    _arm_metrics,
-    _authorization_binds_exact_plan,
-    _dashboard_skill_diffs,
-    _decision_sort_key,
-    _load_optional_json,
-    _validate_bound_decision,
-    _validate_evolution_state,
+from skill_eval_contracts import (
+    DASHBOARD_CONTRACT,
+    DASHBOARD_DIFF_CONTRACT,
+    ManifestError,
+    PLAN_CONTRACT,
 )
-from skill_eval_grading import grade_run
+from skill_eval_decision import load_dashboard_decision_context
+from skill_eval_grading import RESERVED_ARM_RESULT_FIELDS, grade_run
 
+DASHBOARD_DIFF_RENDER_LIMIT_BYTES = 512 * 1024
 DASHBOARD_EVIDENCE_SOURCE_LIMIT_BYTES = 2 * 1024 * 1024
 
 _DASHBOARD_PASS_STATUSES = {
@@ -62,6 +64,154 @@ def _discover_local_decisions(workspace: Path) -> set[Path]:
                 )
             decisions.add(artifact)
     return decisions
+
+
+def _arm_metrics(arm: dict[str, Any]) -> dict[str, float]:
+    return {
+        key: float(value)
+        for key, value in arm.items()
+        if key not in RESERVED_ARM_RESULT_FIELDS
+        and isinstance(value, (int, float))
+        and not isinstance(value, bool)
+    }
+
+
+def _prepare_dashboard_diff_payload_root(workspace: Path) -> Path:
+    payload_root = workspace / "dashboard-diffs"
+    if payload_root.exists():
+        if (
+            payload_root.is_symlink()
+            or not payload_root.is_dir()
+            or payload_root.resolve() != payload_root
+        ):
+            raise ManifestError("dashboard diff payload root must be a canonical directory")
+        for entry in payload_root.iterdir():
+            if (
+                entry.is_symlink()
+                or not entry.is_file()
+                or entry.parent.resolve() != payload_root
+                or not re.fullmatch(r"[a-f0-9]{24}\.json", entry.name)
+            ):
+                raise ManifestError("dashboard diff payload root contains an invalid entry")
+    else:
+        payload_root.mkdir()
+    return payload_root
+
+
+def _dashboard_diff_text(path: Path) -> tuple[str | None, int]:
+    size = path.stat().st_size
+    if size > DASHBOARD_DIFF_RENDER_LIMIT_BYTES:
+        return None, size
+    raw = path.read_bytes()
+    if len(raw) > DASHBOARD_DIFF_RENDER_LIMIT_BYTES:
+        raise ManifestError("dashboard diff source grew while projecting")
+    try:
+        return raw.decode("utf-8"), len(raw)
+    except UnicodeDecodeError:
+        return None, len(raw)
+
+
+def _dashboard_skill_diffs(
+    plan: dict[str, Any], *, workspace: Path
+) -> list[dict[str, Any]]:
+    payload_root = _prepare_dashboard_diff_payload_root(workspace)
+    if plan.get("baseline", {}).get("kind") != "old_skill":
+        return []
+    old_snapshot = locked_skill_snapshot_path(plan, "old_skill")
+    new_snapshot = locked_skill_snapshot_path(plan, "with_skill")
+    old_files = {
+        path: digest
+        for path, digest in runtime_skill_file_digests(old_snapshot).items()
+        if not path.endswith("/")
+    }
+    new_files = {
+        path: digest
+        for path, digest in runtime_skill_file_digests(new_snapshot).items()
+        if not path.endswith("/")
+    }
+    rows: list[dict[str, Any]] = []
+    for relative_path in sorted(set(old_files) | set(new_files)):
+        old_digest = old_files.get(relative_path)
+        new_digest = new_files.get(relative_path)
+        if old_digest == new_digest:
+            continue
+        if old_digest is None:
+            status = "added"
+        elif new_digest is None:
+            status = "removed"
+        else:
+            status = "modified"
+        binary = False
+        oversized = False
+        contents: dict[str, str] = {"old": "", "new": ""}
+        sizes: dict[str, int] = {"old": 0, "new": 0}
+        for side, snapshot, digest in (
+            ("old", old_snapshot, old_digest),
+            ("new", new_snapshot, new_digest),
+        ):
+            if digest is None:
+                continue
+            source = safe_subject_file(
+                snapshot, relative_path, f"dashboard {side} diff source"
+            )
+            text, size = _dashboard_diff_text(source)
+            sizes[side] = size
+            if size > DASHBOARD_DIFF_RENDER_LIMIT_BYTES:
+                oversized = True
+            elif text is None:
+                binary = True
+            else:
+                contents[side] = text
+        diff_id = sha256_json(
+            {
+                "path": relative_path,
+                "old_digest": old_digest,
+                "new_digest": new_digest,
+            }
+        )[:24]
+        render_mode = "summary" if oversized else "binary" if binary else "lazy"
+        content_url = (
+            f"/dashboard-diffs/{diff_id}.json" if render_mode == "lazy" else None
+        )
+        payload_digest: str | None = None
+        if content_url is not None:
+            payload_path = payload_root / f"{diff_id}.json"
+            write_json(
+                payload_path,
+                {
+                    "contract": DASHBOARD_DIFF_CONTRACT,
+                    "id": diff_id,
+                    "path": relative_path,
+                    "old_digest": old_digest,
+                    "new_digest": new_digest,
+                    "old_content": contents["old"],
+                    "new_content": contents["new"],
+                },
+            )
+            payload_digest = sha256_file(payload_path)
+        rows.append(
+            {
+                "id": diff_id,
+                "path": relative_path,
+                "status": status,
+                "old_digest": old_digest,
+                "new_digest": new_digest,
+                "old_size": sizes["old"],
+                "new_size": sizes["new"],
+                "binary": binary,
+                "render_mode": render_mode,
+                "content_url": content_url,
+                "payload_digest": payload_digest,
+                "summary": (
+                    f"Interactive preview omitted because one side exceeds {DASHBOARD_DIFF_RENDER_LIMIT_BYTES} bytes; full evidence remains bound by digest."
+                    if oversized
+                    else "Binary content is retained by digest and is not rendered."
+                    if binary
+                    else None
+                ),
+            }
+        )
+    return rows
 
 
 def _dashboard_evidence_fields(
@@ -863,88 +1013,16 @@ def project_dashboard(
         if evidence_path.is_file() or local_decision_paths or has_execution_artifacts
         else None
     )
-    raw_state_path = Path(
-        os.path.abspath(
-            state_path
-            if state_path is not None
-            else workspace / "evolution-state.json"
-        )
+    decision_context = load_dashboard_decision_context(
+        plan=plan,
+        plan_path=plan_path,
+        workspace=workspace,
+        state_path=state_path,
+        local_decision_paths=local_decision_paths,
     )
-    if raw_state_path.is_symlink():
-        raise ManifestError("dashboard evolution state path must not be a symbolic link")
-    resolved_state_path = raw_state_path.resolve()
-    if state_path is not None and not resolved_state_path.is_file():
-        raise ManifestError("explicit dashboard evolution state does not exist")
-    state = _load_optional_json(resolved_state_path)
-    state_decisions = (
-        _validate_evolution_state(
-            state, plan, resolved_state_path, plan_path
-        )
-        if state
-        else []
-    )
-    if state is not None:
-        initialized_plan = load_json(
-            Path(
-                require_string(
-                    state.get("initialized_from_plan"),
-                    "state.initialized_from_plan",
-                )
-            )
-        )
-        seen_run_ids = state.get("seen_run_ids", [])
-        active_query = state.get("authorized_query")
-        current_state_run_id = (
-            active_query.get("run_id")
-            if isinstance(active_query, dict)
-            else seen_run_ids[-1]
-            if seen_run_ids
-            else initialized_plan.get("run_id")
-        )
-        if plan.get("run_id") != current_state_run_id:
-            raise ManifestError(
-                "dashboard state does not identify the current run"
-            )
-        state_history = state.get("history", [])
-        current_authorization = (
-            active_query
-            if isinstance(active_query, dict)
-            else state_history[-1].get("authorization")
-            if state_history and isinstance(state_history[-1], dict)
-            else None
-        )
-        if (
-            not isinstance(current_authorization, dict)
-            or not _authorization_binds_exact_plan(current_authorization, plan_path)
-        ):
-            raise ManifestError(
-                "dashboard state is not bound to the exact authorized plan"
-            )
-    decisions: list[dict[str, Any]] = []
-    decision_paths = set(local_decision_paths)
-    decision_paths.update(path for path, _ in state_decisions)
-    for decision_path in sorted(decision_paths):
-        decision = load_json(decision_path)
-        _validate_bound_decision(decision, decision_path)
-        if _is_within(decision_path, workspace) and decision.get("run_id") != plan.get(
-            "run_id"
-        ):
-            raise ManifestError("workspace decision does not belong to the current run")
-        decisions.append(
-            {
-                **decision,
-                "artifact": str(decision_path.relative_to(workspace))
-                if _is_within(decision_path, workspace)
-                else str(decision_path),
-            }
-        )
-    decisions.sort(key=_decision_sort_key)
-    current_decisions = [
-        decision
-        for decision in decisions
-        if decision.get("run_id") == plan.get("run_id")
-    ]
-    latest_decision = current_decisions[-1] if current_decisions else None
+    state = decision_context.state
+    decisions = decision_context.decisions
+    latest_decision = decision_context.latest_decision
     evidence_cases = {
         str(item.get("id")): item
         for item in (evidence or {}).get("cases", [])
