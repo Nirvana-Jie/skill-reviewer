@@ -28,7 +28,7 @@ from serve_skill_dashboard import (
     validate_sources,
 )
 from skill_eval_contracts import DASHBOARD_LAUNCH_SESSION_CONTRACT, ManifestError
-from skill_eval_runtime import project_dashboard
+from skill_eval_dashboard import project_dashboard
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

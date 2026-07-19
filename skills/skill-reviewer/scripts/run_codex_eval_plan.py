@@ -15,23 +15,20 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
-from skill_eval_authority import load_json
+from skill_eval_authority import load_json, verify_locked_inputs, write_json
 from skill_eval_contracts import ManifestError
 from skill_eval_execution import (
     build_provider_environment,
     redact_text,
     terminate_process_group,
 )
-from skill_eval_runtime import (
-    grade_run,
-    verify_locked_inputs,
-    write_json,
-)
+from skill_eval_grading import grade_run
 
 
 SUMMARY_CONTRACT = "skill-reviewer.codex-dispatch-summary"
@@ -178,10 +175,14 @@ def _run_batch(*, args: argparse.Namespace, batch: dict[str, Any]) -> dict[str, 
                 start_new_session=(os.name == "posix"),
             )
             processes.append((cell, process))
-    except OSError as error:
+    except BaseException as error:
         for _cell, process in processes:
             terminate_process_group(process)
-        raise ManifestError(f"unable to start paired Codex executors: {error}") from error
+        if isinstance(error, OSError):
+            raise ManifestError(
+                f"unable to start paired Codex executors: {error}"
+            ) from error
+        raise
 
     results: list[dict[str, Any]] = []
     try:
@@ -263,11 +264,19 @@ def run_plan(args: argparse.Namespace) -> dict[str, Any]:
         summary["status"] = (
             "completed" if summary["failed_count"] == 0 else "failed"
         )
-    except (ManifestError, OSError) as error:
-        summary["status"] = "failed"
+    except BaseException as error:
+        summary["status"] = (
+            "interrupted" if isinstance(error, KeyboardInterrupt) else "failed"
+        )
         summary["error"] = str(error)
         summary["finished_at"] = _timestamp()
-        write_json(summary_path, summary)
+        try:
+            write_json(summary_path, summary)
+        except OSError:
+            # Preserve the original failure when the summary path itself became
+            # unavailable; a stale running summary is still never reported as
+            # successful evidence.
+            pass
         raise
     summary["finished_at"] = _timestamp()
     write_json(summary_path, summary)
@@ -318,6 +327,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
+
+    def interrupt_plan(_signum: int, _frame: object) -> None:
+        raise KeyboardInterrupt
+
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, interrupt_plan)
     try:
         result = run_plan(args)
     except KeyboardInterrupt:

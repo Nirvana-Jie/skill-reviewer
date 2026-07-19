@@ -33,19 +33,18 @@ are not model references.
 
 ### Runtime interface
 
-`skill_eval_runtime.py` is the CLI façade. Callers provide a manifest, subject,
-baseline when required, execution profile, and fresh workspace. The Runtime
-owns:
+`skill_eval_runtime.py` is now only the stable CLI façade. Callers provide a
+manifest, subject, baseline when required, execution profile, and fresh
+workspace. Four domain modules own the implementation:
 
-- manifest and authority normalization;
-- immutable plans, locks, snapshots, and assignments;
-- artifact and Trace validation;
-- Oracle calibration and paired sampling;
-- grading, acceptance, evolution state, and Dashboard projection.
+- `skill_eval_authority.py`: normalization, compilation, snapshots, and complete
+  Manifest-derived lock reconstruction;
+- `skill_eval_grading.py`: dispatch/Trace validation, finalization, typed
+  assertions, paired measurement, and grading;
+- `skill_eval_decision.py`: acceptance gates and bounded evolution state;
+- `skill_eval_dashboard.py`: read-only Dashboard projection.
 
-Manifest normalization and immutable file identity live in
-`skill_eval_authority.py`; stable contract identities live in
-`skill_eval_contracts.py`; provider-neutral
+Stable contract identities live in `skill_eval_contracts.py`; provider-neutral
 locked execution, minimal child environments, credential redaction, and process
 cleanup live in `skill_eval_execution.py`. Pure policies continue moving behind
 the façade through `skill_eval_measurement.py` and `skill_eval_evidence.py`.
@@ -73,8 +72,10 @@ is outside evidence authority and must be revalidated by a receiving Agent.
 | Mode selection and verification-level semantics | `SKILL.md` |
 | Review scores and verdict rules | `references/review-rubric.md` |
 | Response shape | `references/output-contract.md` |
-| Eval schema and decisions | Runtime code and tests |
-| Eval Manifest normalization | `skill_eval_authority.py` |
+| Eval Manifest, compilation, and lock reconstruction | `skill_eval_authority.py` |
+| Evidence validation and grading | `skill_eval_grading.py` |
+| Acceptance and bounded evolution | `skill_eval_decision.py` |
+| Dashboard read-model projection | `skill_eval_dashboard.py` |
 | Machine contract identities | `skill_eval_contracts.py` |
 | Provider process safety | `skill_eval_execution.py` |
 | Measurement policy | `skill_eval_measurement.py` |

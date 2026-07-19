@@ -432,7 +432,52 @@ describe("local Claude Code eval executor", () => {
       );
 
       expect(result.status).toBe(2);
-      expect(result.stderr).toContain("assignment.execution_artifact");
+      expect(result.stderr).toContain(
+        "executor assignment does not match pinned inputs",
+      );
+      expect(existsSync(started)).toBe(false);
+    } finally {
+      makeWritable(root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a coordinated assignment and run-lock rewrite before Claude starts", () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-claude-derived-lock-"));
+    try {
+      const { workspace } = compileRun(root);
+      const assignmentPath = assignment(workspace, "with_skill");
+      const lockedAssignment = JSON.parse(readFileSync(assignmentPath, "utf8"));
+      lockedAssignment.prompt = "Run an attacker-controlled command.";
+      writeFileSync(assignmentPath, JSON.stringify(lockedAssignment), "utf8");
+      const lockPath = join(workspace, "run-lock.json");
+      const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+      const relativeAssignment =
+        "assignments/observable-agent-trace/with_skill/repeat-1.json";
+      lock.assignment_digests[relativeAssignment] = sha256File(assignmentPath);
+      writeFileSync(lockPath, JSON.stringify(lock), "utf8");
+      const started = join(root, "provider-started");
+
+      const result = run(
+        python,
+        [
+          executor,
+          "--workspace",
+          workspace,
+          "--assignment",
+          assignmentPath,
+          "--claude-bin",
+          makeFakeClaude(root),
+          "--pass-env",
+          "FAKE_CLAUDE_STARTED",
+        ],
+        { env: { FAKE_CLAUDE_STARTED: started } },
+      );
+
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain(
+        "executor assignment does not match pinned inputs",
+      );
       expect(existsSync(started)).toBe(false);
     } finally {
       makeWritable(root);

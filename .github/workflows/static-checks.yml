@@ -102,4 +102,4 @@ jobs:
         run: python3 -m json.tool skills/skill-reviewer/evals/evals.json > /dev/null
 
       - name: Compile Python scripts
-        run: python3 -m py_compile skills/skill-reviewer/scripts/dashboard_bundle.py skills/skill-reviewer/scripts/lint_skill_package.py skills/skill-reviewer/scripts/run_claude_eval_executor.py skills/skill-reviewer/scripts/run_codex_eval_executor.py skills/skill-reviewer/scripts/run_codex_eval_plan.py skills/skill-reviewer/scripts/skill_eval_authority.py skills/skill-reviewer/scripts/skill_eval_contracts.py skills/skill-reviewer/scripts/skill_eval_evidence.py skills/skill-reviewer/scripts/skill_eval_execution.py skills/skill-reviewer/scripts/skill_eval_measurement.py skills/skill-reviewer/scripts/skill_eval_runtime.py skills/skill-reviewer/scripts/serve_skill_dashboard.py skills/skill-reviewer/scripts/start_skill_dashboard.py
+        run: python3 -m py_compile skills/skill-reviewer/scripts/*.py

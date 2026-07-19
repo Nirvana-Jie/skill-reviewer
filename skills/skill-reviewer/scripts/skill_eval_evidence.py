@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from skill_eval_authority import (
+from skill_eval_contracts import (
     DETERMINISTIC_ASSERTION_TYPES,
     SEMANTIC_ASSERTION_TYPES,
 )

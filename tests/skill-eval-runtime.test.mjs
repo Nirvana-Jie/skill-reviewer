@@ -1354,6 +1354,18 @@ description: Review demo inputs when asked.
       expect(plan.contract).toBe("skill-reviewer.execution-plan");
       expect(plan.manifest.digest).toMatch(/^[a-f0-9]{64}$/);
       expect(plan.subject.digest).toMatch(/^[a-f0-9]{64}$/);
+      const expectedGraderFiles = Object.fromEntries(
+        [
+          "skill_eval_authority.py",
+          "skill_eval_contracts.py",
+          "skill_eval_decision.py",
+          "skill_eval_evidence.py",
+          "skill_eval_grading.py",
+          "skill_eval_measurement.py",
+        ].map((name) => [name, sha256(join(dirname(runtime), name))]),
+      );
+      expect(plan.authority.grader_files).toEqual(expectedGraderFiles);
+      expect(plan.authority.grader_digest).toBe(sha256Value(expectedGraderFiles));
       expect(plan.cases).toEqual([
         expect.objectContaining({
           id: "writes-review",

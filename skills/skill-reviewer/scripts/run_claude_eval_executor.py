@@ -10,7 +10,6 @@ the retained source stream is written.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import signal
 import subprocess
@@ -19,21 +18,19 @@ import time
 from pathlib import Path
 from typing import Any
 
-from skill_eval_authority import safe_artifact, sha256_file
+from skill_eval_authority import safe_artifact, verify_locked_inputs
 from skill_eval_contracts import ManifestError
 from skill_eval_execution import (
-    ManagedProviderProcess,
     ProviderSpec,
+    ProviderStreamResult,
     build_provider_environment,
-    compact_json,
-    contains_credential,
+    capture_provider_jsonl,
+    finalize_provider_capture,
     load_locked_assignment,
-    redact_retained_credentials,
-    redact_text,
+    run_provider_process,
     sanitize_observable,
-    sha256_text,
 )
-from skill_eval_runtime import (
+from skill_eval_grading import (
     finalize_execution,
     record_dispatch_receipt,
     record_trace_event,
@@ -250,6 +247,7 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
         assignment_path=assignment_path,
         workspace=workspace,
         provider=CLAUDE_PROVIDER,
+        verify_plan=verify_locked_inputs,
     )
     assignment = locked.assignment
     repeat_root = locked.repeat_root
@@ -340,110 +338,68 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
     source_path = repeat_root / SOURCE_EVENT_ARTIFACT
     stderr_path = repeat_root / STDERR_ARTIFACT
     started = time.monotonic()
-    source_count = 0
     normalized_count = 0
-    parse_errors = 0
-    credential_observation_count = 0
-    stderr_credential_observation_count = 0
     final_result: str | None = None
     result_is_error = False
     usage: dict[str, Any] = {}
-    source_stream_hasher = hashlib.sha256()
+    started = time.monotonic()
+    stream_result: ProviderStreamResult | None = None
 
-    def redact_stderr_line(line: str) -> str:
-        nonlocal stderr_credential_observation_count
-        redacted = redact_text(line, provider_environment.credential_values)
-        if redacted != line:
-            stderr_credential_observation_count += 1
-        return redacted
+    def on_started(provider_pid: int, dispatch_id: str) -> None:
+        record_dispatch_receipt(
+            assignment_path=assignment_path,
+            workspace=workspace,
+            dispatch_id=dispatch_id,
+            worker_id=f"pid:{provider_pid}",
+            batch_id=args.batch_id,
+        )
 
-    try:
-        with ManagedProviderProcess(
-            command=command,
-            cwd=repeat_root,
-            environment=provider_environment.values,
-            timeout_seconds=timeout,
-            redact_stderr=redact_stderr_line,
-        ) as process:
-            record_dispatch_receipt(
+    def on_source_event(event: dict[str, Any], source_index: int) -> None:
+        nonlocal normalized_count, final_result, result_is_error, usage
+        if event.get("type") == "result":
+            result_is_error = event.get("is_error") is True
+            if isinstance(event.get("result"), str):
+                final_result = event["result"]
+            if isinstance(event.get("usage"), dict):
+                usage = event["usage"]
+        for mapped in _mapped_events(event, source_index):
+            _record(
                 assignment_path=assignment_path,
                 workspace=workspace,
-                dispatch_id="dispatch-"
-                + sha256_text(
-                    "|".join(
-                        [
-                            str(assignment.get("run_id")),
-                            str(assignment.get("case_id")),
-                            str(assignment.get("arm")),
-                            str(assignment.get("repeat")),
-                            str(process.pid),
-                            str(time.time_ns()),
-                        ]
-                    )
-                )[:20],
-                worker_id=f"pid:{process.pid}",
-                batch_id=args.batch_id,
+                mapped=mapped,
             )
+            normalized_count += 1
 
-            with source_path.open("w", encoding="utf-8") as source_handle:
-                for line in process.stdout:
-                    source_count += 1
-                    source_stream_hasher.update(line.encode("utf-8"))
-                    stripped = line.strip()
-                    if not stripped:
-                        continue
-                    line_contains_credential = (
-                        redact_text(stripped, provider_environment.credential_values)
-                        != stripped
-                    )
-                    if line_contains_credential:
-                        credential_observation_count += 1
-                    try:
-                        event = json.loads(stripped)
-                    except json.JSONDecodeError:
-                        parse_errors += 1
-                        source_handle.write(
-                            compact_json(
-                                {
-                                    "type": "unparseable",
-                                    "source_event_index": source_count,
-                                    "source_sha256": sha256_text(stripped),
-                                }
-                            )
-                            + "\n"
-                        )
-                        continue
-                    if not line_contains_credential and contains_credential(
-                        event,
-                        provider_environment.credential_values,
-                    ):
-                        credential_observation_count += 1
-                    event = sanitize_observable(
-                        event,
-                        credential_values=provider_environment.credential_values,
-                    )
-                    if not isinstance(event, dict):
-                        parse_errors += 1
-                        continue
-                    source_handle.write(compact_json(event) + "\n")
-                    source_handle.flush()
-                    if event.get("type") == "result":
-                        result_is_error = event.get("is_error") is True
-                        if isinstance(event.get("result"), str):
-                            final_result = event["result"]
-                        if isinstance(event.get("usage"), dict):
-                            usage = event["usage"]
-                    for mapped in _mapped_events(event, source_count):
-                        _record(
-                            assignment_path=assignment_path,
-                            workspace=workspace,
-                            mapped=mapped,
-                        )
-                        normalized_count += 1
-            return_code = process.wait()
-            timed_out = process.timed_out
-            stderr_text = process.stderr_text
-            stderr_line_count = process.stderr_line_count
+    def consume_stdout(stdout: Any) -> None:
+        nonlocal stream_result
+        stream_result = capture_provider_jsonl(
+            source=stdout,
+            destination=source_path,
+            credential_values=provider_environment.credential_values,
+            on_event=on_source_event,
+        )
+
+    try:
+        process_result = run_provider_process(
+            command=command,
+            cwd=repeat_root,
+            environment=provider_environment,
+            timeout_seconds=timeout,
+            assignment=assignment,
+            on_started=on_started,
+            consume_stdout=consume_stdout,
+        )
+        return_code = process_result.return_code
+        timed_out = process_result.timed_out
+        stderr_line_count = process_result.stderr_line_count
+        stderr_credential_observation_count = (
+            process_result.stderr_credential_observation_count
+        )
+        if stream_result is None:
+            raise ManifestError("Claude source stream capture did not complete")
+        source_count = stream_result.source_event_count
+        parse_errors = stream_result.parse_error_count
+        credential_observation_count = stream_result.credential_observation_count
     except OSError as error:
         _record(
             assignment_path=assignment_path,
@@ -472,29 +428,26 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
             capture_source=CAPTURE_SOURCE,
         )
 
-    if stderr_text:
-        stderr_path.write_text(stderr_text, encoding="utf-8")
-
     expected = list(assignment.get("expected_artifacts", []))
     if final_result and not result_is_error and "outputs/response.md" in expected:
         response_path = safe_artifact(repeat_root, "outputs/response.md")
         response_path.write_text(final_result.rstrip() + "\n", encoding="utf-8")
-    trace_relative = locked.trace_path.relative_to(repeat_root).as_posix()
-    credential_leak_paths = redact_retained_credentials(
+    capture = finalize_provider_capture(
         root=repeat_root,
-        relative_paths=[
-            SOURCE_EVENT_ARTIFACT,
-            STDERR_ARTIFACT,
-            trace_relative,
-            *expected,
-        ],
-        credential_values=provider_environment.credential_values,
+        source_path=source_path,
+        stderr_path=stderr_path,
+        trace_path=locked.trace_path,
+        retained_paths=expected,
+        environment=provider_environment,
+        process=process_result,
+        source_stream_digest=stream_result.source_stream_digest,
+        credential_observation_count=credential_observation_count,
     )
-    credential_leak_count = (
-        credential_observation_count
-        + stderr_credential_observation_count
-        + len(credential_leak_paths)
-    )
+    credential_leak_paths = list(capture.credential_leak_paths)
+    credential_leak_count = capture.credential_leak_count
+    source_digest = capture.source_digest
+    retained_source_stream_digest = capture.retained_source_stream_digest
+    retained_count = capture.retained_event_count
     if credential_leak_count:
         _record(
             assignment_path=assignment_path,
@@ -514,17 +467,6 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
             },
         )
         normalized_count += 1
-    source_digest = sha256_file(source_path)
-    retained_source_stream_digest = (
-        source_digest
-        if credential_observation_count
-        else source_stream_hasher.hexdigest()
-    )
-    retained_count = sum(
-        1
-        for line in source_path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    )
     _record(
         assignment_path=assignment_path,
         workspace=workspace,
@@ -557,7 +499,7 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
                 "status": "completed",
                 "details": {
                     "path": STDERR_ARTIFACT,
-                    "digest": sha256_file(stderr_path),
+                    "digest": capture.stderr_digest,
                     "size": stderr_path.stat().st_size,
                     "line_count": stderr_line_count,
                 },

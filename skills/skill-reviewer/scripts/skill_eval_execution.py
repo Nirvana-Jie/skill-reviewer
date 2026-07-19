@@ -18,9 +18,10 @@ import stat
 import subprocess
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from skill_eval_authority import (
     load_json,
@@ -118,6 +119,41 @@ class ProviderEnvironment:
     passed_name_count: int
     credential_name_count: int
     declared_names_digest: str
+
+
+@dataclass(frozen=True)
+class ProviderProcessResult:
+    return_code: int
+    timed_out: bool
+    stderr_text: str
+    stderr_line_count: int
+    stderr_credential_observation_count: int
+
+
+@dataclass(frozen=True)
+class ProviderCaptureResult:
+    source_digest: str
+    stderr_digest: str | None
+    retained_source_stream_digest: str
+    retained_event_count: int
+    credential_leak_paths: tuple[str, ...]
+    credential_leak_count: int
+
+
+@dataclass(frozen=True)
+class ProviderSourceError:
+    kind: str
+    source_event_index: int
+    source_sha256: str
+    source_bytes: int
+
+
+@dataclass(frozen=True)
+class ProviderStreamResult:
+    source_event_count: int
+    parse_error_count: int
+    credential_observation_count: int
+    source_stream_digest: str
 
 
 def compact_json(value: Any) -> str:
@@ -314,6 +350,82 @@ def sanitize_observable(
     return redact_text(str(value), credential_values)
 
 
+def capture_provider_jsonl(
+    *,
+    source: Iterable[str],
+    destination: Path,
+    credential_values: Sequence[str],
+    on_event: Callable[[dict[str, Any], int], None],
+    on_error: Callable[[ProviderSourceError], None] | None = None,
+) -> ProviderStreamResult:
+    """Retain one bounded JSONL stream and expose only sanitized object events."""
+
+    source_event_count = 0
+    parse_error_count = 0
+    credential_observation_count = 0
+    source_stream_hasher = hashlib.sha256()
+    with destination.open("w", encoding="utf-8") as destination_handle:
+        for line in source:
+            source_event_count += 1
+            encoded = line.encode("utf-8")
+            source_stream_hasher.update(encoded)
+            stripped = line.strip()
+            if not stripped:
+                continue
+            line_contains_credential = (
+                redact_text(stripped, credential_values) != stripped
+            )
+            try:
+                raw_event = json.loads(stripped)
+            except json.JSONDecodeError:
+                raw_event = None
+                error_kind = "unparseable"
+            else:
+                error_kind = "invalid"
+                if not line_contains_credential and contains_credential(
+                    raw_event, credential_values
+                ):
+                    line_contains_credential = True
+                raw_event = sanitize_observable(
+                    raw_event,
+                    credential_values=credential_values,
+                )
+            if line_contains_credential:
+                credential_observation_count += 1
+            if not isinstance(raw_event, dict):
+                parse_error_count += 1
+                error = ProviderSourceError(
+                    kind=error_kind,
+                    source_event_index=source_event_count,
+                    source_sha256=sha256_text(stripped),
+                    source_bytes=len(encoded),
+                )
+                destination_handle.write(
+                    compact_json(
+                        {
+                            "type": error.kind,
+                            "source_event_index": error.source_event_index,
+                            "source_sha256": error.source_sha256,
+                            "source_bytes": error.source_bytes,
+                        }
+                    )
+                    + "\n"
+                )
+                destination_handle.flush()
+                if on_error is not None:
+                    on_error(error)
+                continue
+            destination_handle.write(compact_json(raw_event) + "\n")
+            destination_handle.flush()
+            on_event(raw_event, source_event_count)
+    return ProviderStreamResult(
+        source_event_count=source_event_count,
+        parse_error_count=parse_error_count,
+        credential_observation_count=credential_observation_count,
+        source_stream_digest=source_stream_hasher.hexdigest(),
+    )
+
+
 def redact_retained_credentials(
     *,
     root: Path,
@@ -368,11 +480,117 @@ def redact_retained_credentials(
     return leaks
 
 
+def run_provider_process(
+    *,
+    command: Sequence[str],
+    cwd: Path,
+    environment: ProviderEnvironment,
+    timeout_seconds: int,
+    assignment: Mapping[str, Any],
+    on_started: Callable[[int, str], None],
+    consume_stdout: Callable[[Any], None],
+) -> ProviderProcessResult:
+    """Run one provider with shared dispatch identity, redaction, and cleanup."""
+
+    stderr_credential_observation_count = 0
+
+    def redact_stderr_line(line: str) -> str:
+        nonlocal stderr_credential_observation_count
+        redacted = redact_text(line, environment.credential_values)
+        if redacted != line:
+            stderr_credential_observation_count += 1
+        return redacted
+
+    with ManagedProviderProcess(
+        command=command,
+        cwd=cwd,
+        environment=environment.values,
+        timeout_seconds=timeout_seconds,
+        redact_stderr=redact_stderr_line,
+    ) as process:
+        dispatch_seed = "|".join(
+            [
+                str(assignment.get("run_id")),
+                str(assignment.get("case_id")),
+                str(assignment.get("arm")),
+                str(assignment.get("repeat")),
+                str(process.pid),
+                str(time.time_ns()),
+            ]
+        )
+        on_started(process.pid, f"dispatch-{sha256_text(dispatch_seed)[:20]}")
+        consume_stdout(process.stdout)
+        return_code = process.wait()
+        return ProviderProcessResult(
+            return_code=return_code,
+            timed_out=process.timed_out,
+            stderr_text=process.stderr_text,
+            stderr_line_count=process.stderr_line_count,
+            stderr_credential_observation_count=(
+                stderr_credential_observation_count
+            ),
+        )
+
+
+def finalize_provider_capture(
+    *,
+    root: Path,
+    source_path: Path,
+    stderr_path: Path,
+    trace_path: Path,
+    retained_paths: Sequence[str],
+    environment: ProviderEnvironment,
+    process: ProviderProcessResult,
+    source_stream_digest: str,
+    credential_observation_count: int,
+) -> ProviderCaptureResult:
+    """Redact retained files and derive one provider-neutral capture result."""
+
+    if process.stderr_text:
+        stderr_path.write_text(process.stderr_text, encoding="utf-8")
+    relative_paths = [
+        source_path.relative_to(root).as_posix(),
+        stderr_path.relative_to(root).as_posix(),
+        trace_path.relative_to(root).as_posix(),
+        *retained_paths,
+    ]
+    credential_leak_paths = tuple(
+        redact_retained_credentials(
+            root=root,
+            relative_paths=relative_paths,
+            credential_values=environment.credential_values,
+        )
+    )
+    source_digest = sha256_file(source_path)
+    stderr_digest = sha256_file(stderr_path) if stderr_path.is_file() else None
+    retained_source_stream_digest = (
+        source_digest if credential_observation_count else source_stream_digest
+    )
+    retained_event_count = sum(
+        1
+        for line in source_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    )
+    return ProviderCaptureResult(
+        source_digest=source_digest,
+        stderr_digest=stderr_digest,
+        retained_source_stream_digest=retained_source_stream_digest,
+        retained_event_count=retained_event_count,
+        credential_leak_paths=credential_leak_paths,
+        credential_leak_count=(
+            credential_observation_count
+            + process.stderr_credential_observation_count
+            + len(credential_leak_paths)
+        ),
+    )
+
+
 def load_locked_assignment(
     *,
     assignment_path: Path,
     workspace: Path,
     provider: ProviderSpec,
+    verify_plan: Callable[..., dict[str, Any]],
     full_access: bool = False,
 ) -> LockedAssignment:
     """Validate one immutable assignment against its plan and provider profile."""
@@ -391,6 +609,10 @@ def load_locked_assignment(
         )
     plan = load_json(plan_path)
     lock = load_json(lock_path)
+    # A digest recorded in a mutable lock file is not an authority by itself.
+    # Reconstruct the complete plan, assignments, snapshots, fixtures, and lock
+    # from their pinned sources before any provider-visible work begins.
+    verify_plan(plan_path=plan_path, workspace=workspace, plan=plan)
     relative_assignment = assignment_path.relative_to(workspace).as_posix()
     assignment_digests = lock.get("assignment_digests")
     if (

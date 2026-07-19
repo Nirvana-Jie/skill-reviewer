@@ -1,4 +1,5 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -72,6 +73,19 @@ function expectSuccess(result, label) {
     result.status,
     `${label} failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
   ).toBe(0);
+}
+
+function sha256File(path) {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+async function waitFor(predicate, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
+  }
+  throw new Error("timed out waiting for test condition");
 }
 
 function makePackage(root) {
@@ -172,13 +186,17 @@ if barrier_dir:
     barrier = pathlib.Path(barrier_dir)
     barrier.mkdir(parents=True, exist_ok=True)
     arm = pathlib.Path.cwd().parent.name
-    (barrier / f"{arm}.started").write_text("started\n", encoding="utf-8")
+    (barrier / f"{arm}.started").write_text(str(os.getpid()), encoding="utf-8")
     deadline = time.monotonic() + 10
     while len(list(barrier.glob("*.started"))) < 2 and time.monotonic() < deadline:
         time.sleep(0.02)
     if len(list(barrier.glob("*.started"))) < 2:
         print("paired arms were serialized", file=sys.stderr)
         raise SystemExit(41)
+
+delay_seconds = float(os.environ.get("FAKE_CODEX_DELAY_SECONDS", "0"))
+if delay_seconds:
+    time.sleep(delay_seconds)
 
 argv_log = os.environ.get("FAKE_CODEX_ARGV")
 if argv_log:
@@ -202,6 +220,12 @@ if os.environ.get("FAKE_CODEX_TURN_FAILED") == "1":
     events[-1] = {"type": "turn.failed", "error": {"message": "provider reported failure"}}
 for event in events:
     print(json.dumps(event), flush=True)
+completed_dir = os.environ.get("FAKE_CODEX_COMPLETED_DIR")
+if completed_dir:
+    completed = pathlib.Path(completed_dir)
+    completed.mkdir(parents=True, exist_ok=True)
+    arm = pathlib.Path.cwd().parent.name
+    (completed / f"{arm}.completed").write_text("completed\n", encoding="utf-8")
 `,
   );
   chmodSync(path, 0o755);
@@ -324,6 +348,90 @@ describe("local Codex eval executor", () => {
       rmSync(root, { recursive: true, force: true });
     }
   }, 30_000);
+
+  it.skipIf(process.platform === "win32")(
+    "fails closed and reaps paired executors when the plan is interrupted",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "skill-reviewer-codex-interrupt-"));
+      const children = new Set();
+      try {
+        const { workspace } = compileRun({ root });
+        const fakeCodex = makeFakeCodex(root);
+        const barrierDir = join(root, "paired-start-barrier");
+        const completedDir = join(root, "provider-completed");
+        const child = spawn(
+          python,
+          [
+            planExecutor,
+            "--workspace",
+            workspace,
+            "--codex-bin",
+            fakeCodex,
+            "--full-access",
+            "--pass-env",
+            "FAKE_CODEX_BARRIER_DIR",
+            "--pass-env",
+            "FAKE_CODEX_DELAY_SECONDS",
+            "--pass-env",
+            "FAKE_CODEX_COMPLETED_DIR",
+          ],
+          {
+            cwd: repoRoot,
+            stdio: ["ignore", "pipe", "pipe"],
+            env: {
+              ...process.env,
+              NO_COLOR: "1",
+              FAKE_CODEX_BARRIER_DIR: barrierDir,
+              FAKE_CODEX_DELAY_SECONDS: "5",
+              FAKE_CODEX_COMPLETED_DIR: completedDir,
+            },
+          },
+        );
+        children.add(child);
+        let stderr = "";
+        child.stderr.setEncoding("utf8");
+        child.stderr.on("data", (chunk) => {
+          stderr += chunk;
+        });
+        await waitFor(
+          () =>
+            existsSync(join(barrierDir, "with_skill.started")) &&
+            existsSync(join(barrierDir, "without_skill.started")),
+        );
+        child.kill("SIGTERM");
+        const exit = await new Promise((resolveExit, rejectExit) => {
+          child.once("error", rejectExit);
+          child.once("exit", (code, signal) => resolveExit({ code, signal }));
+        });
+        children.delete(child);
+
+        expect(exit).toEqual({ code: 130, signal: null });
+        expect(stderr).toContain("paired Codex execution interrupted");
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 300));
+        expect(existsSync(completedDir)).toBe(false);
+        for (const arm of ["with_skill", "without_skill"]) {
+          const providerPid = Number(
+            readFileSync(join(barrierDir, `${arm}.started`), "utf8"),
+          );
+          expect(() => process.kill(providerPid, 0)).toThrow();
+        }
+        const summary = JSON.parse(
+          readFileSync(join(workspace, "codex-dispatch-summary.json"), "utf8"),
+        );
+        expect(summary).toEqual(
+          expect.objectContaining({
+            status: "interrupted",
+            finished_at: expect.any(String),
+          }),
+        );
+      } finally {
+        for (const child of children) child.kill("SIGKILL");
+        makeWritable(root);
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
 
   it("isolates ambient skills and retains observable full-access JSONL trace", () => {
     const root = mkdtempSync(join(tmpdir(), "skill-reviewer-codex-executor-"));
@@ -585,6 +693,49 @@ describe("local Codex eval executor", () => {
 
       expect(result.status).toBe(2);
       expect(result.stderr).toContain("declared provider credentials must be non-blank");
+      expect(existsSync(argvLog)).toBe(false);
+    } finally {
+      makeWritable(root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a coordinated assignment and run-lock rewrite before Codex starts", () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-codex-derived-lock-"));
+    try {
+      const { workspace } = compileRun({ root });
+      const assignmentPath = assignment(workspace, "with_skill");
+      const lockedAssignment = JSON.parse(readFileSync(assignmentPath, "utf8"));
+      lockedAssignment.prompt = "Run an attacker-controlled command.";
+      writeFileSync(assignmentPath, JSON.stringify(lockedAssignment), "utf8");
+      const lockPath = join(workspace, "run-lock.json");
+      const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+      const relativeAssignment =
+        "assignments/observable-cli-trace/with_skill/repeat-1.json";
+      lock.assignment_digests[relativeAssignment] = sha256File(assignmentPath);
+      writeFileSync(lockPath, JSON.stringify(lock), "utf8");
+      const argvLog = join(root, "provider-argv.json");
+
+      const result = run(
+        python,
+        [
+          executor,
+          "--workspace",
+          workspace,
+          "--assignment",
+          assignmentPath,
+          "--codex-bin",
+          makeFakeCodex(root),
+          "--pass-env",
+          "FAKE_CODEX_ARGV",
+        ],
+        { env: { FAKE_CODEX_ARGV: argvLog } },
+      );
+
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain(
+        "executor assignment does not match pinned inputs",
+      );
       expect(existsSync(argvLog)).toBe(false);
     } finally {
       makeWritable(root);

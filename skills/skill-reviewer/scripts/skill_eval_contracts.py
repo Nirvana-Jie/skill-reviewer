@@ -25,6 +25,21 @@ DASHBOARD_AGENT_HANDOFF_CONTRACT = "skill-reviewer.dashboard-agent-handoff"
 EVOLUTION_STATE_CONTRACT = "skill-reviewer.evolution-state"
 EVOLUTION_TRANSITION_CONTRACT = "skill-reviewer.evolution-transition"
 
+DETERMINISTIC_ASSERTION_TYPES = frozenset(
+    {
+        "file_exists",
+        "text_contains",
+        "text_not_contains",
+        "text_matches",
+        "text_not_matches",
+        "json_path",
+        "event_absent",
+        "digest_equals",
+        "numeric_range",
+    }
+)
+SEMANTIC_ASSERTION_TYPES = frozenset({"semantic_pair"})
+
 
 class ManifestError(ValueError):
     """Raised when a machine artifact violates a public Skill Eval contract."""
