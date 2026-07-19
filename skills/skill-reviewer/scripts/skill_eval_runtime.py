@@ -7115,6 +7115,7 @@ def project_dashboard(
                 )
                 projected_trace = None
                 if isinstance(raw_trace, dict):
+                    trace_capture_source = raw_trace.get("capture_source")
                     projected_trace = {
                         key: raw_trace.get(key)
                         for key in (
@@ -7146,11 +7147,19 @@ def project_dashboard(
                             "kind": event.get("kind"),
                             "status": event.get("status"),
                             "summary": "Opaque holdout event retained; content is hidden.",
-                            "details": {},
+                            "details": (
+                                {"capture_source": trace_capture_source}
+                                if event_index == 0
+                                and isinstance(trace_capture_source, str)
+                                else {}
+                            ),
                             "artifact_refs": [],
                         }
-                        for event in trace_events
-                        if isinstance(event, dict)
+                        for event_index, event in enumerate(
+                            event
+                            for event in trace_events
+                            if isinstance(event, dict)
+                        )
                     ]
                 raw_dispatch = repeat.get("dispatch")
                 projected_dispatch = (

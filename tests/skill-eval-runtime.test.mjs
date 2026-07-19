@@ -21,6 +21,8 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import { validateAndMigrateDashboardData } from "../dashboard/src/dashboard-schema";
+
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const runtime = join(
   repoRoot,
@@ -3118,6 +3120,9 @@ describe("skill_eval_runtime decide", () => {
           release_eligible: false,
         }),
       );
+      expect(() =>
+        validateAndMigrateDashboardData(preDecisionDashboard),
+      ).not.toThrow();
 
       const result = decide({
         plan: planPath,
@@ -3200,6 +3205,21 @@ describe("skill_eval_runtime decide", () => {
           release_eligible: true,
         }),
       );
+      expect(() => validateAndMigrateDashboardData(dashboard)).not.toThrow();
+      const projectedTraces = dashboard.cases.flatMap((testCase) =>
+        testCase.arms.flatMap((arm) =>
+          arm.executions.map((execution) => execution.trace),
+        ),
+      );
+      expect(projectedTraces).toHaveLength(3);
+      for (const trace of projectedTraces) {
+        expect(trace.events[0].details).toEqual({
+          capture_source: trace.capture_source,
+        });
+        for (const event of trace.events.slice(1)) {
+          expect(event.details).toEqual({});
+        }
+      }
       expect(dashboard.spine).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
