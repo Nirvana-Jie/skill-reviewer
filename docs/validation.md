@@ -6,11 +6,15 @@ context.
 
 ## Code under test
 
-- Commit: `a4915dc4483c36038cce014d0484b33ef798cbbb`
+- Final deterministic gates and Codex canary commit:
+  `9ef9972be0f1f81cccb4b6f096ff4bae7555cfc4`.
+- Claude fail-closed canary commit:
+  `a4915dc4483c36038cce014d0484b33ef798cbbb`.
 - Branch: `codex/dashboard-decision-first-ui`
 - Date: 2026-07-19 (Asia/Shanghai)
-- Local retained root:
-  `/private/tmp/skill-reviewer-real-canary-a4915dc`
+- Local retained roots:
+  `/private/tmp/skill-reviewer-real-canary-9ef9972` and
+  `/private/tmp/skill-reviewer-real-canary-a4915dc`.
 
 The retained workspace is intentionally not committed: repository policy
 forbids generated Eval workspaces and provider state. The digests below make
@@ -23,7 +27,9 @@ typecheck and production build, Skill package lint, Eval Manifest JSON parse,
 all-script Python compilation, diff hygiene, deterministic Dashboard packaging,
 committed-manifest comparison, and safe extraction check.
 
-- Vitest: 28 files; 27 passed, 1 skipped; 338 tests; 336 passed, 2 skipped.
+- Vitest: 28 files; 27 passed, 1 skipped; 339 tests; 337 passed, 2 skipped.
+- Skill package lint digest:
+  `16528f9861d994ca3955db6f51fb349f4843a80f681d3f2523d8ab28259e7c65`.
 - Dashboard tree SHA-256:
   `0c2878b18325f09ff8bc4249a0b6694279c6a50660e3974addea28d80071ade4`
 - Dashboard archive SHA-256:
@@ -37,21 +43,21 @@ case, invokes the real local CLI, retains the provider stream and canonical
 Trace, grades the result, projects Dashboard data, validates the schema, and
 renders the Trace UI.
 
-### Codex — passed
+### Codex — passed on the final script boundary
 
-- Test duration: 40.77 seconds; provider duration: 21.215 seconds.
-- Run: `run-de6910536aaa5641b5ea`.
+- Test duration: 43.95 seconds; provider duration: 15.101 seconds.
+- Run: `run-b8f11cf7bd0f3b386690`.
 - Execution status / exit code: `completed` / `0`.
-- Source events / normalized events: `10` / `10`.
+- Source events / normalized events: `9` / `9`.
 - Credential leak count: `0`.
 - Source SHA-256:
-  `4432ff731e359716af352d5eb73cab8162e113467557462ee927aec161bcab03`.
+  `3076ab0d6911ecd99230773942923750b92886c5523acbee9b2ce1f3b5e64c0a`.
 - Trace SHA-256:
-  `377482c3265ec445ea1c095339138292d40feacaac94563386465b6a5fe1d7ea`.
+  `7545dab997e58ed91f910181b3c7283d5096745c3dfc2e6e99336652818f332d`.
 - Verification evidence SHA-256:
-  `59298db9b14ac4cd902147b86ddecf5a4c061a8798d61067dcb86ef75de6b29d`.
+  `297cacaf787906a2fbab987abe764c8c545886236deca890eddd733f8efb96df`.
 - Dashboard data SHA-256:
-  `7a63107a5040ab4333bab6495ff86f7645ff49b33b78111fd000b641de6f471a`.
+  `9be96390df673ee773cc0d348e873a4ef8cdf7cdf9e50808d6bf51745f0af50c`.
 
 ### Claude — external authentication blocked, failed closed
 
@@ -75,6 +81,8 @@ Claude success canary requires the user to restore local Claude authentication.
 ## Claim boundary
 
 This is a public development canary for execution and presentation plumbing.
-It proves the Codex end-to-end path and Claude fail-closed behavior on this
-machine. It is not an opaque audit, release authorization, or general Skill
-quality claim.
+It proves the final Codex end-to-end path on this machine. The Claude record
+proves fail-closed behavior on the stated earlier commit; the final boundary
+refactor received deterministic coverage but was not presented as a successful
+Claude run. Neither record is an opaque audit, release authorization, or
+general Skill quality claim.
