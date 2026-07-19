@@ -173,6 +173,13 @@ contains read-only decision support. Its v3 criterion ID `pareto` is likewise a
 compatibility token; the product label and actual algorithm are objective
 non-regression against one fixed baseline, not Pareto-frontier search.
 
+The Runs anomaly summary treats latency as a within-run outlier signal, not an
+absolute product SLA. Its slow threshold is the larger of five seconds and a
+three-sigma median/MAD fence (`median + 3 × 1.4826 × MAD`). When observed
+dispersion is zero, a run must take more than twice the median to be called
+slow. This keeps one outlier from moving its own threshold while avoiding the
+false claim that every normal long-running local Agent execution is anomalous.
+
 ## Authority map
 
 | Meaning | Authority |

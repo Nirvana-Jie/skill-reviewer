@@ -93,6 +93,13 @@ invalid instrument: retain them as a limitation and let the predeclared
 all-repeat objective gates reject or retain the candidate. Invalid measurement
 does not reject the Skill or consume an evolution candidate round.
 
+Calibration examples must exercise the boundary the predicate claims. For a
+section-scoped negative assertion, the passing example includes the forbidden
+term in an allowed neighboring section and the failing example places it inside
+the governed section. If retained output shows that a predicate crosses its
+declared container or section, quarantine that run and repair it under a new
+authority digest; never edit the candidate to satisfy the mis-scoped predicate.
+
 Deterministic assertions run before any semantic comparison. A `semantic_pair`
 uses exactly two blind, order-swapped judgments under its frozen task rubric;
 disagreement or stale binding cannot support a preference. It is always

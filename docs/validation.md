@@ -19,7 +19,7 @@ generated run workspaces.
 
 The worktree passed:
 
-- `pnpm test`: 28 files; 27 passed, 1 explicitly skipped; 364 tests; 362 passed,
+- `pnpm test`: 28 files; 27 passed, 1 explicitly skipped; 365 tests; 363 passed,
   2 explicitly skipped;
 - Dashboard TypeScript checking and production build;
 - all native ESM runtime files through `node --check`;
@@ -30,11 +30,11 @@ The installable Skill contains one native ESM runtime and no language bridge;
 neither no-op nor deleted commands are represented as quality evidence.
 
 - Skill package lint digest:
-  `f00cb9fb167e47839defd7cd4f950b1008f7235d44ff90ca78d35d2867c32be1`
+  `5082851b63385b431949505b429e0a66aab09383ba5c560182a289df764a8d3b`
 - Dashboard tree SHA-256:
-  `10679ded0098f80e4687eef26b2a01f16baae569a702ec83d27da6737a53b617`
+  `fd342c25abe5ad77dbb11f9b33a97e8513bf3d4b070fd91bbd5ca4079768454f`
 - Dashboard archive SHA-256:
-  `8f62929c52a20cad6e506fa787120591c36b90151beadf2dfad52defdaa64cc5`
+  `ccdd2a3798bf7e9d0a523f268afd9342b7c8b964aa1061cd45a59d5e176cef18`
 
 Decision tests additionally prove that a favorable mean cannot hide a
 repeat-level regression or claim material improvement when any paired repeat
@@ -73,6 +73,43 @@ stability, and evidence limits; they are not presented as executable support.
 OpenTelemetry GenAI is telemetry rather than an executing Agent and therefore
 stays outside the execution registry.
 
+## Real end-to-end Skill evolution
+
+A separate, ignored Git repository exercised the installed Skill in Evolve mode
+through Codex CLI YOLO execution. The proposal session
+`019f7be4-bda6-76b1-99f5-44b8eb43f656` read the Skill and its four references,
+changed only the candidate `meeting-note-helper/SKILL.md`, retained its static
+review, and left the accepted baseline, Eval authority, execution profile, and
+opaque holdout unchanged.
+
+The first public selection run (`run-75172fb4c33312c723f7`) completed all 12
+planned Agent cells with no framework failures, but retained output exposed a
+measurement defect: two negative regular expressions crossed the next Markdown
+section and a table assertion assumed label/value adjacency. The candidate
+outputs respected the intended decision boundary. That run was quarantined as
+invalid measurement rather than counted as a rejected candidate. The Oracle was
+repaired with boundary-bearing passing examples, then frozen under a new
+authority digest; the candidate was applied only after that freeze.
+
+Under repaired authority `af814d8c4e38a2ca74b473d5a96248106defd04f6b5a61ad4f406379e7b11621`:
+
+- selection run `run-1810897178677f8e861c` completed 12/12 cells with zero
+  framework failures; both public objectives improved in every paired repeat
+  (`+0.667 × 3` and `+0.6 × 3`);
+- the one authorized opaque audit run `run-0d1987a5b4b399efbed1` completed 9/9
+  cells across candidate, old-Skill, and no-Skill arms with zero framework
+  failures;
+- the audit candidate scored `1.0 × 3`, the old Skill scored `0.4 × 3`, and all
+  paired deltas were `+0.6` against a predeclared `+0.3` material threshold;
+- measurement was valid, the plan and lock verified, 6/6 release gates passed,
+  no forbidden action or external side effect was observed, and evolution
+  terminated at `audit-passed / request_user_release`.
+
+The generated workspaces remain ignored because they contain local Agent state
+and opaque evaluation material. Run IDs, digests, counts, and decision values
+above are the retained review record; they do not widen the local holdout
+issuer's trust boundary.
+
 ## Real Dashboard inspection
 
 The current production build opened an existing real Codex canary projection
@@ -88,9 +125,21 @@ The check also caught and prevented an accidental schema-v3 break: legacy
 objective non-regression. The Dashboard exposes no task ledger; server tests
 confirm write methods return 405 and the old action-ledger routes return 404.
 
+The final opaque-audit projection was also opened through the authenticated
+loopback server at 1440×1000 and 1024×768. Review, Runs, and Evidence archive
+loaded with zero browser console errors or warnings. The page showed 6/6 gates,
+9/9 retained Agent executions, the three-by-three arm/repeat matrix, hidden
+holdout content, and the human release boundary. This inspection found a real
+attention-ranking defect: an absolute five-second cap labeled all nine normal
+17–42 second Codex executions as slow. A median/MAD fence raised the observed
+threshold to 53.7 seconds and reduced false slow flags from 9 to 0; Vitest keeps
+both the real-duration sample and a genuine 6-second outlier fixture.
+
 ## Claim boundary
 
-This is a public development canary for execution and presentation plumbing. It
-does not prove opaque-audit behavior, authorize release, or establish that any
-arbitrary Skill is high quality. A future Agent version or source-format change
-must be revalidated before its adapter maturity is retained.
+The adapter canary proves execution and presentation plumbing. The separate
+meeting-note demonstration additionally proves one locally issued, one-shot
+opaque audit under its recorded authority; it does not authorize release,
+generalize to arbitrary Skills, or turn three repeats into statistical
+confidence. A future Agent version, source-format change, or authority change
+must be revalidated before its claims are retained.
