@@ -304,4 +304,6 @@ trigger this cap.
 
 A present invalid `evals/evals.json` is also a Critical Issue in a full or
 readiness review: it is a broken declared quality gate, not an absent optional
-eval set. Do not start workers or silently downgrade it to `not-run`.
+eval set. Do not start workers or hide the defect. Review records `not-run`
+because execution was not attempted; explicit Verify or Evolve records
+`inconclusive` because execution preflight failed.

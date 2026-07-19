@@ -1,7 +1,8 @@
 # Native-Agent Eval Orchestration
 
-Read this workflow for full/readiness reviews that discover a valid executable
-manifest, and for explicit behavior or regression verification. Read
+Read this workflow only for explicit behavior/regression verification or
+explicit evolution. A default Review may inspect the manifest but must not
+dispatch workers. Read
 `references/executable-evals.md` first for the manifest, assertion, and artifact
 contracts, then read `references/agent-trace-contract.md` for the
 provider-neutral adapter boundary. If the user explicitly asks to improve the skill, also read
@@ -51,7 +52,7 @@ For local Codex execution, bind this profile shape before compile:
     "filesystem-write",
     "shell",
     "jsonl-agent-events",
-    "danger-full-access"
+    "source-event-stream"
   ],
   "isolation": "local-unattested",
   "sampling": {"mode": "codex-default", "paired": true}
@@ -63,28 +64,26 @@ batch before waiting for any arm:
 
 ```bash
 python3 scripts/run_codex_eval_plan.py \
-  --workspace <workspace> \
-  --full-access
+  --workspace <workspace>
 ```
 
-`--full-access` is an explicit local execution choice. The adapter invokes
-Codex with `danger-full-access` and approval policy `never`, but retains the
-profile as `local-unattested`. It first inspects the model-visible prompt input,
-disables every ambient Skill, verifies that none remain, and then points the
-assigned arm directly at its frozen Skill snapshot. An isolation failure blocks
-execution instead of silently contaminating the baseline. The resulting Trace
-is strong evidence of observable Agent behavior, but it cannot prove that the
-host enforced network denial or prevented every write outside the repeat root.
+`--full-access` is a separate, explicit local execution choice. Use it only when
+the user authorizes `danger-full-access`, and add that capability to the locked
+profile before compile. The adapter keeps the profile as `local-unattested`,
+disables ambient Skills, and points the assigned arm directly at its frozen
+snapshot. An isolation failure blocks execution instead of contaminating the
+baseline. The resulting Trace is evidence of observable Agent behavior, not
+proof that the host enforced network denial or prevented every out-of-root
+write.
 
 ## When to execute
 
-- Full review or production-readiness review: if `evals/evals.json` exists and
-  compiles, execute the relevant full verification path unless the user forbids
-  runtime work.
-- Focused review: execute only when the focus concerns evals, runtime effect, or
-  a claim that requires behavioral evidence.
-- Explicit static-only / no-subagent request: do not execute; report `not-run`.
-- Explicit evolution request: follow the bounded evolution workflow.
+- Default Review, including full readiness and focused review: do not execute;
+  report `not-run` and name what explicit Verify could establish.
+- Explicit Verify request: execute the relevant locked verification path.
+- Explicit static-only / no-subagent request: do not execute even if Verify-like
+  wording is present; report `not-run`.
+- Explicit Evolve request: follow the bounded evolution workflow.
 
 An absent manifest is not a defect. An invalid present manifest is a release
 blocker and stops before worker launch.

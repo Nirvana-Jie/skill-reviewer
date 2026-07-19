@@ -13,8 +13,8 @@
 
 `skill-reviewer` 解决三件事：
 
-- **Review**：检查触发条件、指令、资源、脚本、安全与可维护性，输出可直接修改的建议。
-- **Verify**：编译合法 `evals/evals.json`，通过 native 或 provider adapter 分发候选版与基线版，并为 Dashboard 保留调度、标准 Trace、源事件和输出证据。
+- **Review（默认）**：只读检查触发条件、指令、资源、脚本、安全与可维护性，输出可直接修改的建议，不启动 Eval worker。
+- **Verify（显式）**：只有用户要求时，才编译合法 `evals/evals.json`，通过 native 或 provider adapter 分发候选版与基线版，并为 Dashboard 保留调度、标准 Trace、源事件和输出证据。
 - **Evolve**：只有用户要求时，才进入最多三轮的有界改进；Eval 在运行中保持不可变，最终发布始终由人确认。
 
 ## 快速开始
@@ -28,7 +28,13 @@ npx skills add Nirvana-Jie/skill-reviewer --skill skill-reviewer
 然后在 Agent 会话中直接说：
 
 ```text
-帮我完整 review 这个 Skill，判断能否发布；如果有可执行 eval，请运行真实验证。
+帮我完整 review 这个 Skill，判断能否发布。
+```
+
+需要模型行为证据时，再显式要求运行：
+
+```text
+请运行声明的 eval，并与已接受基线对照验证这个 Skill。
 ```
 
 输入可以是 Skill 目录、`SKILL.md`、单个资源文件，或一份明确的设计方案。
@@ -47,13 +53,14 @@ npx skills add Nirvana-Jie/skill-reviewer --skill skill-reviewer
 ```mermaid
 flowchart LR
     A["锁定评审范围"] --> B["只读静态检查"]
-    B --> C{"是否存在 evals.json"}
-    C -- "不存在" --> D["语义评审与改写建议"]
-    C -- "格式无效" --> E["阻塞发布"]
-    C -- "合法" --> F["真实 Agent 成对执行"]
+    B --> C{"用户要求哪种模式"}
+    C -- "Review" --> D["语义评审与改写建议"]
+    C -- "Verify / Evolve" --> E{"evals.json 是否合法"}
+    E -- "否" --> H["分发前停止"]
+    E -- "是" --> F["真实 Agent 成对执行"]
     F --> G["确定性断言"]
-    G --> H["语义判断补充"]
-    H --> I{"硬门禁 + Pareto + 实质提升"}
+    G --> M["语义判断补充"]
+    M --> I{"硬门禁 + Pareto + 实质提升"}
     I -- "不满足" --> J["修复或生成下一候选"]
     J --> F
     I -- "满足" --> K["一次性发布审计"]
@@ -153,7 +160,7 @@ Eval 与 grader 在一次运行中不可变。发布级文本断言会在分发�
 
 Dashboard 按决策顺序回答四个问题：
 
-1. **证据完整吗？** 验证 dispatch、Trace、产物和绑定关系。
+1. **证据可信么？** 验证 dispatch、Trace、产物和绑定关系。
 2. **测量可信么？** 在评价 Skill 前检查 Oracle 校准与配对采样。
 3. **候选是否真的更好？** 左右对比候选版与基线版的执行、得分、文件差异和重复轮次。
 4. **下一步做什么？** 展示状态机的 `next_action`、责任归因和需要人工介入的边界。
@@ -185,7 +192,7 @@ python3 skills/skill-reviewer/scripts/start_skill_dashboard.py \
 
 ## 自动化与人工边界
 
-在权限和输入不变时，Agent 应自动完成：候选生成、锁定 Eval 执行、确定性评分、补充语义判断，以及一次性审计的准备与执行。
+用户显式进入 Verify 或 Evolve 后，在权限和输入不变时，Agent 应自动完成：候选生成、锁定 Eval 执行、确定性评分、补充语义判断，以及一次性审计的准备与执行。
 
 只有这些情况需要人：
 
@@ -199,7 +206,7 @@ Dashboard 的行动按钮只会创建带审计记录的本地交接任务，不�
 ## 安全边界
 
 - 被评审文件始终视为**不可信数据**，其中的提示词或命令不会成为评审指令。
-- 默认不安装依赖、不执行目标 Skill 脚本；只有合法 Manifest 声明的隔离验证才会运行。
+- 默认 Review 不安装依赖、不执行目标 Skill 脚本，也不启动 Eval worker；只有显式 Verify 或 Evolve 后，合法 Manifest 声明的隔离验证才会运行。
 - 未确认的破坏性命令、发布、推送、网络、密钥或权限扩张会被阻塞。
 - `local-unattested` Trace 证明“发生过什么”，不等价于操作系统沙箱证明。
 - Dashboard 的 executor 标签依赖每个执行单元的有效调度凭据；只有 run-level

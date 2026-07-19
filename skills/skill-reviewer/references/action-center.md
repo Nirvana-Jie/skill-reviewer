@@ -192,6 +192,8 @@ The Overview is validity-first: evidence integrity, then measurement validity,
 then candidate quality. If measurement is invalid or unverified, the primary
 message says the Skill was not judged and routes to Eval repair. It must not
 render candidate-failure language or a green release semantic in that state.
+Render these prerequisites as one ordered decision chain, not as independent
+status cards that force the reviewer to infer their gating relationship.
 
 `project-dashboard` emits `schema_version: 3`. The client validates every item
 in current decision-bearing nested collections before rendering, migrates only

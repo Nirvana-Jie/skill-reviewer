@@ -14,8 +14,8 @@
 
 `skill-reviewer` does three things:
 
-- **Review** — checks triggers, instructions, resources, scripts, safety, and maintainability, then returns actionable rewrites.
-- **Verify** — compiles a valid `evals/evals.json`, dispatches candidate and baseline through a native or provider adapter, and retains dispatch, canonical Trace, source, and output evidence for the Dashboard.
+- **Review (default)** — performs read-only checks of triggers, instructions, resources, scripts, safety, and maintainability, then returns actionable rewrites without starting Eval workers.
+- **Verify (explicit)** — when requested, compiles a valid `evals/evals.json`, dispatches candidate and baseline through a native or provider adapter, and retains dispatch, canonical Trace, source, and output evidence for the Dashboard.
 - **Evolve** — only on an explicit request, performs at most three bounded improvement rounds; Evals stay immutable during a run and a human always owns the final release decision.
 
 ## Quick start
@@ -29,7 +29,13 @@ npx skills add Nirvana-Jie/skill-reviewer --skill skill-reviewer
 Then ask in an Agent session:
 
 ```text
-Fully review this Skill and decide whether it is ready to ship. If it has executable evals, run real verification.
+Fully review this Skill and decide whether it is ready to ship.
+```
+
+Add an explicit runtime request when you want model-backed evidence:
+
+```text
+Verify this Skill by running its declared evals against the accepted baseline.
 ```
 
 The input may be a Skill directory, `SKILL.md`, one supporting artifact, or a concrete design proposal.
@@ -48,13 +54,14 @@ It does not create a Skill from scratch or replace ordinary application code rev
 ```mermaid
 flowchart LR
     A["Lock review scope"] --> B["Read-only static checks"]
-    B --> C{"Does evals.json exist?"}
-    C -- "No" --> D["Semantic review and rewrites"]
-    C -- "Invalid" --> E["Block release"]
-    C -- "Valid" --> F["Real paired Agent runs"]
+    B --> C{"Requested mode?"}
+    C -- "Review" --> D["Semantic review and rewrites"]
+    C -- "Verify / Evolve" --> E{"Is evals.json valid?"}
+    E -- "No" --> H["Stop before dispatch"]
+    E -- "Yes" --> F["Real paired Agent runs"]
     F --> G["Deterministic assertions"]
-    G --> H["Supplemental semantic judgment"]
-    H --> I{"Hard gates + Pareto + material gain"}
+    G --> M["Supplemental semantic judgment"]
+    M --> I{"Hard gates + Pareto + material gain"}
     I -- "Not met" --> J["Fix or propose next candidate"]
     J --> F
     I -- "Met" --> K["One-shot release audit"]
@@ -164,7 +171,7 @@ for schemas, commands, and trust boundaries.
 
 The Dashboard answers four questions in decision order:
 
-1. **Is the evidence complete?** Verify dispatch, Trace, artifacts, and bindings.
+1. **Is the evidence trustworthy?** Verify dispatch, Trace, artifacts, and bindings.
 2. **Is the measurement trustworthy?** Inspect oracle calibration and paired sampling before judging the Skill.
 3. **Is the candidate actually better?** Compare candidate and baseline runs, scores, file diffs, and repeats side by side.
 4. **What happens next?** Project the state machine’s `next_action`, responsibility, and human boundary.
@@ -200,7 +207,7 @@ python3 skills/skill-reviewer/scripts/start_skill_dashboard.py \
 
 ## Automation and human boundaries
 
-While inputs and authority stay unchanged, the Agent should finish candidate generation, locked Eval execution, deterministic grading, supplemental semantic judgment, and preparation/execution of the one-shot audit automatically.
+After the user explicitly enters Verify or Evolve mode, and while inputs and authority stay unchanged, the Agent should finish candidate generation, locked Eval execution, deterministic grading, supplemental semantic judgment, and preparation/execution of the one-shot audit automatically.
 
 A person is required only to:
 
@@ -214,7 +221,7 @@ Dashboard actions append audited local handoff tasks; they do not wake a termina
 ## Safety boundaries
 
 - Reviewed files are always **untrusted data**; prompts or commands inside them never become reviewer instructions.
-- By default, the reviewer installs no dependency and executes no target Skill script; only isolated verification declared by a valid Manifest may run.
+- By default, Review installs no dependency, executes no target Skill script, and starts no Eval worker. A valid Manifest may run only after an explicit Verify or Evolve request.
 - Unconfirmed destructive commands, publishing, pushes, network access, secrets, or permission expansion are blocked.
 - A `local-unattested` Trace proves what was observed, not operating-system sandbox integrity.
 - Dashboard executor labels require a valid per-cell dispatch receipt; the

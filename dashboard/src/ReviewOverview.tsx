@@ -43,6 +43,13 @@ const attributionActionKeys: Record<ActionAttributionId, MessageKey> = {
   human: "issueAction_human",
 };
 
+const candidateMessageKeys = {
+  accepted: "candidateAccepted",
+  rejected: "candidateRejected",
+  pending: "candidatePending",
+  not_judged: "candidateNotJudged",
+} as const satisfies Record<string, MessageKey>;
+
 function nodeMap(data: DashboardData): Map<string, SpineNode> {
   return new Map(data.spine.map((node) => [node.id, node]));
 }
@@ -57,10 +64,22 @@ function reviewDecisionCopy(
   locale: "en" | "zh-CN",
   data: DashboardData,
   releaseReady: boolean,
+  evidenceIntegrityValid: boolean,
 ): { title: string; detail: string } {
   const decision = data.review.decision;
   const measurementStatus = data.run.measurement?.status ?? "unverified";
-  if (measurementStatus === "invalid" || measurementStatus === "unverified") {
+  if (!evidenceIntegrityValid) {
+    return locale === "zh-CN"
+      ? {
+          title: "证据完整性失败，暂不评价 Skill",
+          detail: "运行绑定、派发回执或 Trace 尚未全部验证；先修复证据链，不能把当前结果归因到 Skill。",
+        }
+      : {
+          title: "Evidence integrity failed — Skill not judged",
+          detail: "Run bindings, dispatch receipts, or traces are not fully verified. Repair the evidence chain before attributing this result to the Skill.",
+        };
+  }
+  if (measurementStatus !== "valid") {
     return locale === "zh-CN"
       ? {
           title: "测量不可用，暂不评价 Skill",
@@ -172,6 +191,7 @@ export function ReviewOverview({
     locale,
     data,
     decisionTone === "good",
+    viewModel.validity.evidence.status === "valid",
   );
   const nextActionKey = nextActionMessageKey(data.review.next_action);
   const automaticContinuation =
@@ -202,6 +222,15 @@ export function ReviewOverview({
         : viewModel.measurement.status === "pending"
           ? "measurementPending"
           : "measurementUnverified";
+  const evidenceIntegrityKey: MessageKey =
+    viewModel.validity.evidence.status === "valid"
+      ? "evidenceIntegrityValid"
+      : "evidenceIntegrityInvalid";
+  const measurementTone =
+    viewModel.measurement.status === "invalid"
+      ? "bad"
+      : viewModel.measurement.tone;
+  const candidateKey = candidateMessageKeys[viewModel.validity.candidate.status];
 
   return (
     <div className="review-overview">
@@ -215,37 +244,77 @@ export function ReviewOverview({
           <p>{decision.detail}</p>
         </div>
         <div className="review-decision-counts" aria-label={t("decisionCoverage")}>
-          <div>
-            <strong>
-              {configuredRatio(
-                data.summary.hard_gates_passed,
-                data.summary.hard_gates_total,
-              )}
-            </strong>
-            <span>{t("hardGates")}</span>
-          </div>
-          <div>
-            <strong>
-              {configuredRatio(
-                data.summary.candidate_passed,
-                data.summary.case_count,
-              )}
-            </strong>
-            <span>{t("casesPassed")}</span>
-          </div>
+          {viewModel.validity.candidate.status === "not_judged" ? (
+            <>
+              <div>
+                <strong>—</strong>
+                <span>
+                  {viewModel.validity.evidence.status === "invalid"
+                    ? t("evidenceIntegrityInvalid")
+                    : t(measurementKey)}
+                </span>
+              </div>
+              <div>
+                <strong>—</strong>
+                <span>{t("candidateNotJudged")}</span>
+              </div>
+            </>
+          ) : (
+            <>
+              <div>
+                <strong>
+                  {configuredRatio(
+                    data.summary.hard_gates_passed,
+                    data.summary.hard_gates_total,
+                  )}
+                </strong>
+                <span>{t("hardGates")}</span>
+              </div>
+              <div>
+                <strong>
+                  {configuredRatio(
+                    data.summary.candidate_passed,
+                    data.summary.case_count,
+                  )}
+                </strong>
+                <span>{t("casesPassed")}</span>
+              </div>
+            </>
+          )}
         </div>
       </section>
 
-      <section
-        className={`review-measurement-status tone-${viewModel.measurement.tone}`}
-        aria-label={t("measurementValidity")}
-      >
-        <ShieldCheck size={18} aria-hidden="true" />
-        <div>
-          <span>{t("measurementValidity")}</span>
-          <strong>{t(measurementKey)}</strong>
-          <p>{t("measurementValidityDescription")}</p>
+      <section className="review-validity-chain" aria-label={t("decisionValidity")}>
+        <div className="review-validity-intro">
+          <strong>{t("decisionValidity")}</strong>
+          <p>{t("decisionValidityDescription")}</p>
         </div>
+        <ol>
+          <li className={`tone-${viewModel.validity.evidence.tone}`}>
+            <span className="review-validity-step" aria-hidden="true">1</span>
+            <span>
+              <small>{t("evidenceIntegrity")}</small>
+              <strong>{t(evidenceIntegrityKey)}</strong>
+            </span>
+            <DecisionIcon tone={viewModel.validity.evidence.tone} />
+          </li>
+          <li className={`tone-${measurementTone}`}>
+            <span className="review-validity-step" aria-hidden="true">2</span>
+            <span>
+              <small>{t("measurementValidity")}</small>
+              <strong>{t(measurementKey)}</strong>
+            </span>
+            <DecisionIcon tone={measurementTone} />
+          </li>
+          <li className={`tone-${viewModel.validity.candidate.tone}`}>
+            <span className="review-validity-step" aria-hidden="true">3</span>
+            <span>
+              <small>{t("candidateQuality")}</small>
+              <strong>{t(candidateKey)}</strong>
+            </span>
+            <DecisionIcon tone={viewModel.validity.candidate.tone} />
+          </li>
+        </ol>
       </section>
 
       <section

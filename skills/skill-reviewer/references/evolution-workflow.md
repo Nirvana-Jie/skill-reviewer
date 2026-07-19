@@ -1,8 +1,9 @@
 # Bounded Skill Evolution
 
 Read this file only when the user explicitly asks `skill-reviewer` to improve,
-evolve, or iterate the reviewed skill. A full review may automatically execute
-valid declared evals, but it must not silently enter edit mode.
+evolve, or iterate the reviewed skill. This workflow belongs only to explicit
+Evolve mode. Review never executes declared evals, and Verify may execute them
+without entering edit mode.
 
 ## Objective
 

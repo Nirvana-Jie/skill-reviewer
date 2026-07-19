@@ -148,8 +148,10 @@ framework finalizes its execution.
 
 Review Overview is validity-first:
 
-1. show measurement validity before candidate verdict;
-2. when invalid or unverified, say that the Skill was not judged;
+1. show one ordered chain: evidence integrity, measurement validity, candidate
+   quality;
+2. when an earlier stage is invalid or unverified, say that the Skill was not
+   judged and suppress downstream success semantics;
 3. route the next action to Eval repair and keep candidate failure language
    suppressed;
 4. keep lifecycle completion, evidence quality, measurement validity, and

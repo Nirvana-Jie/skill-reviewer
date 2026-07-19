@@ -969,7 +969,12 @@ describe("EvidenceDashboard", () => {
     expect(evidenceGap).not.toHaveClass("tone-good");
     expect(evidenceGap).toHaveTextContent("Release is not ready");
     expect(container.querySelector(".review-no-blockers.tone-good")).toBeNull();
-    expect(screen.getAllByText("Not configured").length).toBeGreaterThan(0);
+    expect(
+      screen.getByRole("heading", {
+        name: "Evidence integrity failed — Skill not judged",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("Skill not judged").length).toBeGreaterThan(0);
     expect(screen.queryByText("0/0")).not.toBeInTheDocument();
   });
 
@@ -1326,7 +1331,9 @@ describe("EvidenceDashboard", () => {
     expect(screen.getByText("regression-verified")).toBeInTheDocument();
     expect(screen.getAllByText("public-calibration").length).toBeGreaterThan(0);
     expect(
-      screen.getByRole("heading", { name: "Not ready for release" }),
+      screen.getByRole("heading", {
+        name: "Evidence integrity failed — Skill not judged",
+      }),
     ).toBeInTheDocument();
     expect(screen.getAllByText("2 / 3").length).toBeGreaterThan(0);
     expect(screen.getByText(/continuity epoch 1/)).toBeInTheDocument();
@@ -1704,12 +1711,76 @@ describe("EvidenceDashboard", () => {
       screen.queryByRole("heading", { name: "Ready for release confirmation" }),
     ).not.toBeInTheDocument();
     expect(
-      screen.getByRole("heading", { name: "Evidence is still incomplete" }),
+      screen.getByRole("heading", {
+        name: "Evidence integrity failed — Skill not judged",
+      }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Review execution evidence" }),
     ).toHaveClass("tone-warn");
     expect(container.querySelector('a[href="#review-decision-title"]')).toBeNull();
+  });
+
+  it("shows validity in decision order and suppresses candidate quality when measurement is invalid", () => {
+    const invalidMeasurementData: DashboardData = structuredClone(data);
+    if (!invalidMeasurementData.run.measurement) {
+      throw new Error("measurement fixture is missing");
+    }
+    invalidMeasurementData.run.measurement.status = "invalid";
+    invalidMeasurementData.run.measurement.reasons = [
+      "assertion_calibration_failed:release-copy",
+    ];
+
+    renderWithPreferences(
+      <EvidenceDashboard data={invalidMeasurementData} connectionState="live" />,
+    );
+
+    const validity = screen.getByRole("region", {
+      name: "Decision validity",
+    });
+    expect(within(validity).getByText("Evidence integrity")).toBeInTheDocument();
+    expect(within(validity).getByText("Measurement validity")).toBeInTheDocument();
+    expect(within(validity).getByText("Candidate quality")).toBeInTheDocument();
+    expect(within(validity).getByText("Skill not judged")).toBeInTheDocument();
+    expect(
+      within(validity).queryByText("Accepted by selection"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("region", { name: "Measurement validity" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("suppresses candidate success across the primary decision when evidence integrity is invalid", () => {
+    const invalidEvidenceData: DashboardData = structuredClone(data);
+    invalidEvidenceData.review.decision = {
+      status: "inconclusive",
+      reason: "audit_required",
+      release_eligible: false,
+      blocking_scenario_count: 0,
+      blocking_gate_count: 0,
+    };
+    invalidEvidenceData.review.blockers = [];
+    invalidEvidenceData.action_center.acceptance.accepted = true;
+    invalidEvidenceData.action_center.acceptance.status = "accepted";
+    invalidEvidenceData.run.integrity = {
+      locked: true,
+      verified: false,
+      plan_digest: "c".repeat(64),
+    };
+
+    renderWithPreferences(
+      <EvidenceDashboard data={invalidEvidenceData} connectionState="live" />,
+    );
+
+    const decision = screen.getByRole("heading", {
+      name: "Evidence integrity failed — Skill not judged",
+    });
+    const hero = decision.closest(".review-decision-hero");
+    expect(hero).not.toBeNull();
+    expect(hero).toHaveTextContent("Skill not judged");
+    expect(hero).not.toHaveTextContent("Candidate passed");
+    expect(hero).not.toHaveTextContent("Cases passed");
+    expect(hero).not.toHaveTextContent("1/2");
   });
 
   it("creates an audited task only after the state reaches a human release boundary", async () => {
@@ -2223,9 +2294,13 @@ describe("EvidenceDashboard", () => {
     expect(document.documentElement).toHaveAttribute("lang", "zh-CN");
     expect(document.title).toBe("Skill Reviewer · 证据工作台");
     expect(screen.getAllByText("评审总览").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("暂不可发布").length).toBeGreaterThan(0);
     expect(
-      screen.getAllByText("1 个评测场景尚未得到可接受的结果。").length,
+      screen.getAllByText("证据完整性失败，暂不评价 Skill").length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText(
+        "运行绑定、派发回执或 Trace 尚未全部验证；先修复证据链，不能把当前结果归因到 Skill。",
+      ).length,
     ).toBeGreaterThan(0);
     expect(
       screen.getAllByText("需要处理的独立问题：1").length,

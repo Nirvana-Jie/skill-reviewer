@@ -1,8 +1,9 @@
 # Executable Eval Manifest
 
-Read this file when a reviewed skill contains `evals/evals.json`, when a full
-review must execute declared behavior checks, or when the user asks whether a
-revision is measurably better.
+Read this file when a reviewed skill contains `evals/evals.json` and static
+contract analysis needs its schema, or when the user explicitly requests Verify
+or Evolve behavior execution. Merely finding a valid manifest never authorizes
+execution.
 
 Read `agent-trace-contract.md` before changing execution profiles, provider
 adapters, source retention, or Dashboard Trace consumption.
@@ -21,7 +22,7 @@ ignore undeclared fields, or silently skip a differently shaped manifest. If
 `evals/evals.json` exists but cannot compile:
 
 - do not start eval workers;
-- report verification level `inconclusive`;
+- Review reports `not-run`; only an explicit Verify or Evolve attempt can become `inconclusive`.
 - raise a structural Critical Issue with the exact manifest error;
 - cap a requested release/readiness verdict at `Needs revision`.
 

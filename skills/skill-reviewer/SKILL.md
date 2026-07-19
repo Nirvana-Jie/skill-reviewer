@@ -52,24 +52,27 @@ script and resource paths instead.
 ### 1. Pin the subject and branch
 
 Accept a skill directory, `SKILL.md`, one package artifact, or a concrete
-question about a dimension. Choose exactly one branch:
+question about a dimension. Choose one execution mode, then one review scope:
 
-- **Full review** — whole package, readiness, merge, or install judgment. A
-  valid declared executable manifest is run unless the user forbids runtime
-  work or the environment cannot safely dispatch it.
-- **Focused review** — one artifact or dimension; unrelated output sections are
-  `N/A — focused review of <scope>`.
-- **Effect verification** — runtime eval, benchmark, snapshot, or old/new skill
-  comparison. This branch includes a review and an evidence run.
-- **Evolution** — the user explicitly asks to improve/iterate the existing
-  skill. This branch adds at most three candidate rounds and a one-shot audit.
+- **Review (default)** — static, read-only package and design analysis. It does
+  not compile an Eval workspace or dispatch a worker. Use full scope for
+  readiness, merge, or install judgments; use focused scope for one artifact or
+  dimension and mark unrelated output sections `N/A — focused review of
+  <scope>`.
+- **Verify (explicit)** — only when the user explicitly asks to run evals,
+  benchmark behavior, verify effects, or compare a candidate with a baseline.
+  This mode includes Review plus a retained evidence run.
+- **Evolve (explicit)** — only when the user asks to improve or iterate the
+  existing Skill. This mode adds at most three candidate rounds and a one-shot
+  audit; follow section 5.
 
 Do not stall on optional files. Ask for exactly one artifact only when its
 absence blocks the requested branch; otherwise review what exists and name the
 unassessable scope.
 
-**Completion criterion:** the branch, target path/input, provided artifacts,
-and missing-but-relevant artifacts are explicit.
+**Completion criterion:** mode, scope, target path/input, provided artifacts,
+and missing-but-relevant artifacts are explicit. Ambiguous requests stay in
+Review; never infer permission to spend model calls or start workers.
 
 ### 2. Run the package-facts axis
 
@@ -88,8 +91,10 @@ decide semantic quality. Treat `error` as a structural defect, `warning` as a
 review lead, and `info` as context that still requires judgment.
 
 If `evals/evals.json` exists but is invalid, stop before launching workers. The
-manifest is a release blocker: verification is `inconclusive`, the error becomes
-a Critical Issue, and a readiness verdict cannot exceed `Needs revision`.
+manifest is a release blocker and the error becomes a Critical Issue. Review
+keeps verification `not-run`; requested Verify or Evolve reports `inconclusive`
+because its execution preflight failed. A readiness verdict cannot exceed
+`Needs revision`.
 
 If the linter is unavailable or the user forbids command execution, perform the
 same checks read-only and report that deterministic static verification was not
@@ -127,207 +132,76 @@ the fixed output shape and mark the other sections `N/A`.
 Critical Issue has a paste-ready fix, and the verdict is mechanically derivable
 from the rubric.
 
-### 4. Compile and execute evals when in scope
+### 4. Verify only on explicit request
 
-- **Suggestion only:** evals remain unscored; propose them only when fuzzy
-  triggers, sibling collisions, or regression risk justify their maintenance.
-  Use the current `skill-reviewer.evals` shape in
-  `references/executable-evals.md` and give 5–10 manifest-ready cases with
-  executable assertions and objectives.
-- **Snapshot/eval design:** read `references/local-eval-snapshot.md`. Separate
-  router cases, behavior assertions, calibration fixtures, and structured
-  artifact snapshots; do not freeze full prose by default.
-- **Executable behavior verification:** read
-  `references/executable-evals.md` and
-  `references/measurement-validity.md`, then read and follow
-  `references/subagent-eval-workflow.md` and
-  `references/agent-trace-contract.md` completely. For `semantic_pair`, also
-  read `references/semantic-grader-contract.md`. Compile the requested split
-  into a fresh workspace, plan, run lock, answer-key-free case/arm/repeat skill
-  snapshots, and arm/repeat-specific input copies. The lead agent launches
-  native paired workers in the same turn; the runtime itself stays
-  agent-agnostic. Compilation requires a canonical execution profile outside
-  the subject/baseline/workspace; bind its target, harness, dispatch
-  observation, Trace adapter/source, capability, isolation, and sampling digest
-  to every assignment and executor response.
-  Executor identity comes from that lead-supplied profile and the bound
-  artifacts; do not accept worker self-reported build fields. The profile also
-  locks `dispatch_observation` plus the provider-neutral Trace adapter and its
-  optional source stream; Dashboard code must never parse a provider format.
-- **Provider adapters:** any native Agent, local CLI, SDK, or external harness
-  may execute a locked assignment when it emits the contract in
-  `references/agent-trace-contract.md`. The Dashboard classifies the validated
-  dispatch observation and canonical events rather than target names. Bundled
-  Codex and Claude adapters are reference implementations, not a provider
-  whitelist.
-- **Local Codex executor:** when the local `codex` CLI is available, the lead
-  should dispatch a complete locked plan through
-  `scripts/run_codex_eval_plan.py`; it starts every arm for one case/repeat
-  batch before waiting for any arm, then grades the complete run. Use
-  `scripts/run_codex_eval_executor.py` only for one explicitly selected locked
-  assignment. Use an execution profile whose target
-  is `codex-cli`, harness is `codex-exec-jsonl`, capability includes
-  `jsonl-agent-events`, and isolation is `local-unattested`. Pass
-  `--full-access` only when the user explicitly authorizes local
-  `danger-full-access`; the adapter sets approval policy to `never`, disables
-  every ambient model-visible Skill before launching the arm, and gives the
-  Agent only the locked candidate/old snapshot path through the sanitized
-  assignment. It converts Codex JSONL messages, tools, commands, exit codes,
-  usage, errors, and artifacts into `agent-trace.jsonl`, while redacting
-  private-reasoning events before retention. Start candidate and baseline
-  assignments together when worker capacity allows. Full access produces real
-  behavioral provenance, not proof that network or OS permissions were
-  enforced; never relabel it as `trusted-orchestrator` evidence.
-- **Local Claude executor:** `scripts/run_claude_eval_executor.py` executes one
-  locked `claude-code` / `claude-stream-json` assignment, retains a redacted
-  `agent-source-events.jsonl`, and maps the observable stream into the same
-  canonical Trace. It records a process receipt only after a real spawn and
-  keeps provider errors as failed evidence. Authentication and model spend
-  remain environment-owned; do not initiate login or widen permissions merely
-  to make a canary pass.
-- **Trace ownership:** treat one execution cell as
-  `Eval case × arm × repeat × actual Eval worker`. The lead Agent locks and
-  dispatches the cell but is not the evaluated actor, so its planning and
-  scheduling activity stays in assignments, locks, and the task ledger rather
-  than the behavior Trace. The Trace records the native subagent, local Codex
-  Agent, or other bound executor actually using the frozen candidate/old Skill
-  snapshot. If that Skill starts another Agent, retain child events only when
-  the harness can bind them to the parent cell and declares
-  `nested-agent-events`; never infer unobserved child behavior.
-- **Dispatch provenance:** `evals/evals.json` and `compile` declare execution
-  cells but do not prove a worker started. Before recording native worker
-  behavior, the lead/harness must call `skill_eval_runtime.py record-dispatch`
-  with the real host dispatch ID and worker/thread ID. The local Codex adapters
-  record the spawned PID automatically. Every completed execution binds
-  `dispatch-receipt.json`; a profile without that receipt remains declared
-  configuration, not executor identity evidence. This is trusted harness
-  provenance, not a cryptographic host attestation.
+Review may inspect and lint `evals/evals.json`, but it never executes it. Enter
+this section only for explicit Verify or Evolve mode. A static-only, no-eval, or
+no-subagent instruction always wins.
 
-For a full/readiness branch, auto-discover and execute a valid manifest. For a
-focused branch, execute only when evals or effect claims are in scope. An
-explicit “static only”, “do not run evals”, or “do not start subagents” request
-wins and yields `not-run`.
+Before executing behavior, read `references/executable-evals.md`,
+`references/measurement-validity.md`, `references/subagent-eval-workflow.md`,
+and `references/agent-trace-contract.md` completely. If any assertion uses
+`semantic_pair`, also read `references/semantic-grader-contract.md`. Those
+references own the protocol; this file owns only the decision sequence:
 
-Resolve the runtime stage before compiling a workspace or dispatching a worker:
+1. Validate the manifest and every required text Oracle. Invalid authority or
+   failed calibration stops before dispatch and routes to Eval repair.
+2. Resolve the stage. With an accepted `old_skill` digest, compile the complete
+   `selection` split against it. Without one, use only bounded `development`
+   diagnosis against `without_skill`; that evidence cannot prove improvement or
+   authorize release.
+3. Compile into a fresh workspace and bind immutable authority, skill snapshots,
+   per-arm inputs, and an external canonical execution-profile digest. The
+   runtime declares cells; it does not spawn Agents.
+4. Dispatch each `case × arm × repeat` through the selected native or provider
+   adapter. Every cell must retain a real dispatch receipt, canonical Trace,
+   execution contract, and declared artifacts. A plan, profile, process exit,
+   or worker self-report alone never proves execution.
+5. Grade deterministic assertions first. Use only the two required anonymized,
+   order-swapped judgments for `semantic_pair`; disagreement, stale binding, or
+   contradictory paired directions makes candidate quality undecidable.
+6. Aggregate in this fixed order: evidence integrity → measurement validity →
+   candidate quality. Missing or invalid earlier stages suppress later-stage
+   success semantics and route to the responsible owner instead of blaming the
+   Skill.
 
-- With an accepted `old_skill` path and digest, compile the complete
-  `selection` split against that frozen baseline.
-- Without an accepted baseline, run only bounded `development` diagnosis
-  against `without_skill`; it cannot authorize release or support an
-  improvement claim.
-- Resolve an explicit static-only, no-eval, or no-subagent request at the lead
-  boundary. Do not create an Eval workspace or worker merely to test that no
-  worker should be created.
-- A case that claims artifact-backed verification must assert retained
-  execution/evidence artifacts. Response keywords alone are insufficient.
+Never pass `--full-access` without explicit authorization for local
+`danger-full-access`. Do not initiate provider login, widen permissions, or add
+undeclared spend merely to complete a run. Keep optimizer, executor, graders,
+and release decider separate; never expose private reasoning or reconstruct a
+missing Trace.
 
-Before dispatch, calibrate every selection/audit `must_pass` text predicate on
-known-good and known-bad examples with the exact runtime matcher. Missing or
-failed calibration stops dispatch and routes to Eval repair, not Skill blame.
-
-Deterministic assertions run first. `semantic_pair` may supplement them through
-two anonymized, A/B-order-swapped judgments under a frozen rubric and grader
-contract. The lead binds the mapped judgment to the run, case, rubric, and all
-declared output digests. If the semantic judgments disagree, their binding is
-stale, or paired directions include both improvement and regression,
-candidate quality is undecidable; do not take a majority vote.
-
-`determinism` classifies output variability; explicit paired
-`sampling.repeats` sets sample count. Stochastic cases require at least three;
-deterministic cases may repeat to detect instability. Legacy cases retain the
-one/three fallback. For `old_skill` audit, prefer candidate, accepted old skill,
-and without-skill; retain a reason when the third arm is inapplicable.
-
-Public audit fixtures are calibration-only and cannot authorize release. A
-release-eligible audit requires an opaque `asset_id` resolved by a trusted
-holdout pack outside the candidate, baseline, and run workspaces. The public
-manifest shell must not expose prompt, logical files, assertions, or
-objectives. Never expose that pack or its source paths to the optimizer.
+Public audit fixtures are calibration-only. Release evidence requires a trusted
+opaque holdout pack outside candidate, baseline, and run workspaces; never show
+its prompt, assertions, objectives, or source paths to the optimizer.
 
 Use exactly one verification level:
 
-- `not-run` — semantic/static inspection only; no runtime effect claim.
-- `inconclusive` — a run was attempted but evidence is incomplete or
-  inconsistent.
-- `behavior-verified` — required assertions passed for the tested `with_skill`
-  cases; no baseline claim.
-- `regression-verified` — `with_skill` passed and did not regress against the
-  paired `old_skill` or `without_skill` baseline.
+- `not-run` — Review only; no behavior execution or effect claim.
+- `inconclusive` — execution was attempted but evidence is incomplete, invalid,
+  unsafe, conflicting, or unbound.
+- `behavior-verified` — required candidate assertions passed without a paired
+  baseline claim.
+- `regression-verified` — candidate assertions passed and declared objectives
+  did not regress against the paired baseline.
 
-Treat the selected level as a machine-readable enum, not explanatory
-vocabulary. In the emitted review, write the selected identifier exactly once,
-only in the `Verification Evidence` level field. Do not list or repeat any
-other verification-level identifier elsewhere in the response, including when
-explaining why a stronger claim is unavailable; describe that boundary in
-plain language instead. This keeps negative assertions and downstream parsers
-unambiguous without weakening the human explanation.
+Write the chosen identifier exactly once, only in the `Verification Evidence`
+level field. Missing evals do not lower a Review score; failed required evidence
+is a Critical Issue only when Verify or Evolve was requested.
 
-Missing evals never lower a normal review score. But when runtime verification
-was requested, a failed declared check, missing paired evidence, or false
-verification claim is a Critical Issue.
+The Dashboard is optional and read-only. Read `references/action-center.md`
+completely before starting or consuming it. An explicit request to show it is
+consent; an explicit refusal skips it. Otherwise ask once through the host's
+structured user-input surface, and treat silence as refusal. Start at most one
+foreground session. The UI presents retained evidence and appends external
+handoff tasks; it never executes workers, edits Eval authority, confirms
+release, or becomes grading evidence.
 
-The Dashboard is an optional human-review control plane, never a prerequisite
-for a locked Eval. Resolve the control-plane preference once per run before any
-UI download:
-
-- An explicit request to open, show, or use the Dashboard is already an
-  affirmative answer; start it after compile without asking again.
-- An explicit refusal, static-only request, headless CI, or unavailable browser
-  skips it without weakening the locked Eval.
-- Otherwise, an interactive host MUST use its structured `AskUserQuestion` /
-  `request_user_input` surface as a standalone consent gate. Offer exactly two
-  choices, recommend opening the control plane, and wait for the answer. Do not
-  bury the question in a progress update or continue as though silence were a
-  user decision.
-- If no interactive question surface exists or the task ends before an answer,
-  do not download or start anything. Silence grants no permission.
-
-Use this concise question:
-
-> 是否需要打开临时本地 Dashboard 控制面进行人工 Review？它会匿名下载经摘要校验的静态 UI，停止后自动删除；评测数据始终留在本机。
-
-Use `打开控制面（推荐）` and `不打开` as the two choices. Only an explicit
-yes authorizes the verified temporary UI download and local loopback server.
-Read `references/action-center.md` completely before launching or consuming a
-Dashboard handoff; it is the authority for consent, lifecycle, capability,
-same-origin, Action Center, and recovery behavior.
-
-Start at most one foreground Dashboard session per run through
-`scripts/start_skill_dashboard.py`. It presents retained evidence but never
-executes a worker, mutates Eval authority, confirms release, or wakes an Agent.
-A browser action only appends an external local handoff; the receiving lead must
-revalidate its run, Dashboard digest, evidence references, and `next_action`.
-
-The consent flag is a hard launcher gate, not a substitute for consent. Pass it
-only after an affirmative answer in the current request or structured question;
-without it the launcher exits before any UI download or server startup.
-
-Every configured `case × arm × repeat` still needs an independent, contiguous,
-digest-bound `dispatch-receipt.json`, `agent-trace.jsonl`, and `execution.json`.
-Any profile that declares a source stream additionally binds the
-reasoning-redacted `agent-source-events.jsonl` artifact, its adapter, format,
-counts, and digests. Follow
-`references/executable-evals.md` and `references/subagent-eval-workflow.md` for
-Trace capture and artifact provenance. The Dashboard must show a missing Trace
-as missing; never reconstruct events, mix lead orchestration into a worker
-Trace, expose private reasoning, or use presentation data as grading evidence.
-Treat Review Overview as the only primary verdict surface. Diff, Agent Trace,
-and the collapsed audit archive provide evidence; next actions open from the
-overview as a drawer, and the Inspector describes only selected evidence.
-Require the current projection schema and show incompatibility as an explicit
-recovery state rather than attempting to render partial nested data.
-
-**Completion criterion:** a `not-run` branch creates no Eval workspace or worker
-and binds the static sources used for its review. An attempted Eval binds its
-plan, eval/grader authority, assignments, snapshots, inputs, dispatch receipts,
-source streams when declared, Traces, executions, and artifacts, and derives
-the verification level from graded evidence. Missing,
-stale, unsafe, conflicting, or unbound evidence in an attempted run is
-`inconclusive`, never silently passing.
-
-Apply evidence integrity → measurement validity → candidate quality in that
-order in runtime and Dashboard. Invalid or unverified measurement can repair
-Eval design but cannot support Skill regression, acceptance, or release.
+**Completion criterion:** Review creates no Eval workspace or worker and binds
+its static sources. Verify/Evolve binds the complete plan-to-artifact chain and
+derives its level from graded evidence. Runtime and Dashboard both present
+evidence integrity → measurement validity → candidate quality in that order;
+invalid or unverified measurement never supports Skill acceptance or release.
 
 ### 5. Evolve only on explicit request
 
@@ -440,7 +314,7 @@ consistent, and no claim exceeds the retained evidence.
   adapter, canonical Trace, Dashboard, and real-execution test contract; read
   before changing an executor or Trace UI.
 - `references/subagent-eval-workflow.md` — runtime effect verification; read
-  for full/readiness auto-verification and explicit effect verification.
+  only for explicit Verify or Evolve mode.
 - `references/semantic-grader-contract.md` — normative blind comparison,
   role-separation, order-swap, and evidence-binding contract; read before any
   semantic grader is dispatched.
