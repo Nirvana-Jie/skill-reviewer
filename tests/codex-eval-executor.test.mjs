@@ -186,7 +186,8 @@ if argv_log:
 output_index = args.index("--output-last-message") + 1
 output = pathlib.Path(args[output_index])
 output.parent.mkdir(parents=True, exist_ok=True)
-output.write_text("PASS\n", encoding="utf-8")
+credential = os.environ.get("SKILL_REVIEWER_TEST_CREDENTIAL")
+output.write_text("PASS\n" + ((credential + "\n") if credential else ""), encoding="utf-8")
 events = [
     {"type": "thread.started", "thread_id": "thread-real-jsonl"},
     {"type": "turn.started"},
@@ -194,7 +195,7 @@ events = [
     {"type": "item.started", "item": {"id": "cmd-1", "type": "command_execution", "command": "/bin/zsh -lc 'printf PASS'", "status": "in_progress"}},
     {"type": "item.completed", "item": {"id": "cmd-1", "type": "command_execution", "command": "/bin/zsh -lc 'printf PASS'", "aggregated_output": "PASS", "exit_code": 0, "status": "completed"}},
     {"type": "item.completed", "item": {"id": "provider-1", "type": "provider_observation", "status": "completed", "payload": {"thinking": "PRIVATE_NESTED_THINKING", "signature": "PRIVATE_SIGNATURE"}}},
-    {"type": "item.completed", "item": {"id": "msg-1", "type": "agent_message", "text": "PASS"}},
+    {"type": "item.completed", "item": {"id": "msg-1", "type": "agent_message", "text": credential or "PASS"}},
     {"type": "turn.completed", "usage": {"input_tokens": 21, "cached_input_tokens": 3, "output_tokens": 2}},
 ]
 if os.environ.get("FAKE_CODEX_TURN_FAILED") == "1":
@@ -282,6 +283,8 @@ describe("local Codex eval executor", () => {
           "--codex-bin",
           fakeCodex,
           "--full-access",
+          "--pass-env",
+          "FAKE_CODEX_BARRIER_DIR",
         ],
         { env: { FAKE_CODEX_BARRIER_DIR: join(root, "paired-start-barrier") } },
       );
@@ -339,6 +342,8 @@ describe("local Codex eval executor", () => {
           "--codex-bin",
           fakeCodex,
           "--full-access",
+          "--pass-env",
+          "FAKE_CODEX_ARGV",
         ],
         { env: { FAKE_CODEX_ARGV: argvLog } },
       );
@@ -428,6 +433,8 @@ describe("local Codex eval executor", () => {
           "--codex-bin",
           fakeCodex,
           "--full-access",
+          "--pass-env",
+          "FAKE_CODEX_ARGV",
         ],
         { env: { FAKE_CODEX_ARGV: argvLog } },
       );
@@ -458,6 +465,172 @@ describe("local Codex eval executor", () => {
     }
   }, 30_000);
 
+  it("does not expose undeclared host credentials to the provider process", () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-codex-env-isolation-"));
+    const secret = "host-only-secret-must-not-cross";
+    try {
+      const { workspace } = compileRun({ root });
+      const result = run(
+        python,
+        [
+          executor,
+          "--workspace",
+          workspace,
+          "--assignment",
+          assignment(workspace, "with_skill"),
+          "--codex-bin",
+          makeFakeCodex(root),
+          "--full-access",
+        ],
+        { env: { SKILL_REVIEWER_TEST_CREDENTIAL: secret } },
+      );
+
+      expectSuccess(result, "credential-isolated Codex execution");
+      const repeatRoot = join(
+        workspace,
+        "cases/observable-cli-trace/with_skill/repeat-1",
+      );
+      expect(readFileSync(join(repeatRoot, "outputs/response.md"), "utf8")).toBe(
+        "PASS\n",
+      );
+      expect(readFileSync(join(repeatRoot, "agent-source-events.jsonl"), "utf8")).not.toContain(
+        secret,
+      );
+      expect(readFileSync(join(repeatRoot, "agent-trace.jsonl"), "utf8")).not.toContain(
+        secret,
+      );
+    } finally {
+      makeWritable(root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("redacts explicitly passed credentials and fails the retained execution", () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-codex-credential-guard-"));
+    const secret = "declared-secret-must-be-redacted";
+    try {
+      const { workspace } = compileRun({ root });
+      const result = run(
+        python,
+        [
+          executor,
+          "--workspace",
+          workspace,
+          "--assignment",
+          assignment(workspace, "with_skill"),
+          "--codex-bin",
+          makeFakeCodex(root),
+          "--full-access",
+          "--credential-env",
+          "SKILL_REVIEWER_TEST_CREDENTIAL",
+        ],
+        { env: { SKILL_REVIEWER_TEST_CREDENTIAL: secret } },
+      );
+
+      expect(result.status).toBe(1);
+      const repeatRoot = join(
+        workspace,
+        "cases/observable-cli-trace/with_skill/repeat-1",
+      );
+      const execution = JSON.parse(
+        readFileSync(join(repeatRoot, "execution.json"), "utf8"),
+      );
+      expect(execution.status).toBe("failed");
+      expect(execution.metrics.credential_leak_count).toBeGreaterThan(0);
+      expect(execution.forbidden_actions.join("\n")).toContain(
+        "provider credential appeared in retained output",
+      );
+      for (const relative of [
+        "outputs/response.md",
+        "agent-source-events.jsonl",
+        "agent-trace.jsonl",
+      ]) {
+        const retained = readFileSync(join(repeatRoot, relative), "utf8");
+        expect(retained).not.toContain(secret);
+        expect(retained).toContain("[REDACTED_CREDENTIAL]");
+      }
+    } finally {
+      makeWritable(root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("rejects an empty declared credential before starting Codex", () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-codex-empty-credential-"));
+    const argvLog = join(root, "codex-argv.json");
+    try {
+      const { workspace } = compileRun({ root });
+      const result = run(
+        python,
+        [
+          executor,
+          "--workspace",
+          workspace,
+          "--assignment",
+          assignment(workspace, "with_skill"),
+          "--codex-bin",
+          makeFakeCodex(root),
+          "--credential-env",
+          "SKILL_REVIEWER_TEST_CREDENTIAL",
+          "--pass-env",
+          "FAKE_CODEX_ARGV",
+        ],
+        {
+          env: {
+            SKILL_REVIEWER_TEST_CREDENTIAL: "",
+            FAKE_CODEX_ARGV: argvLog,
+          },
+        },
+      );
+
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain("declared provider credentials must be non-blank");
+      expect(existsSync(argvLog)).toBe(false);
+    } finally {
+      makeWritable(root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects secret-like names passed through the ordinary environment channel", () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-codex-secret-channel-"));
+    const argvLog = join(root, "codex-argv.json");
+    try {
+      const { workspace } = compileRun({ root });
+      const result = run(
+        python,
+        [
+          executor,
+          "--workspace",
+          workspace,
+          "--assignment",
+          assignment(workspace, "with_skill"),
+          "--codex-bin",
+          makeFakeCodex(root),
+          "--pass-env",
+          "SKILL_REVIEWER_TEST_CREDENTIAL",
+          "--pass-env",
+          "FAKE_CODEX_ARGV",
+        ],
+        {
+          env: {
+            SKILL_REVIEWER_TEST_CREDENTIAL: "ordinary-channel-bypass",
+            FAKE_CODEX_ARGV: argvLog,
+          },
+        },
+      );
+
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain(
+        "secret-like environment names require --credential-env",
+      );
+      expect(existsSync(argvLog)).toBe(false);
+    } finally {
+      makeWritable(root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("treats a provider-reported turn failure as failed even when the process exits zero", () => {
     const root = mkdtempSync(join(tmpdir(), "skill-reviewer-codex-turn-failed-"));
     try {
@@ -473,6 +646,8 @@ describe("local Codex eval executor", () => {
           "--codex-bin",
           makeFakeCodex(root),
           "--full-access",
+          "--pass-env",
+          "FAKE_CODEX_TURN_FAILED",
         ],
         { env: { FAKE_CODEX_TURN_FAILED: "1" } },
       );

@@ -20,9 +20,9 @@ export const preferenceStorageKeys = {
 } as const;
 
 const englishMessages = {
-  pageTitle: "Skill Reviewer · Evidence Workbench",
-  appTitle: "Skill Reviewer evidence workspace",
-  brandEvidence: "Evidence",
+  pageTitle: "Skill Reviewer · Decision Review",
+  appTitle: "Skill Reviewer decision review",
+  brandEvidence: "Decision review",
   displayPreferences: "Display preferences",
   language: "Language",
   switchToEnglish: "Switch to English",
@@ -75,7 +75,7 @@ const englishMessages = {
   live: "Live",
   connecting: "Connecting",
   stale: "Stale",
-  readOnly: "read-only",
+  readOnly: "evidence read-only",
   behavioralGateState: "Behavioral gate state",
   releaseState: "Release decision",
   releaseReady: "Ready for release",
@@ -733,9 +733,9 @@ export type MessageKey = keyof typeof englishMessages;
 type MessageValues = Record<string, string | number>;
 
 const chineseMessages: Record<MessageKey, string> = {
-  pageTitle: "Skill Reviewer · 证据工作台",
-  appTitle: "Skill Reviewer 证据工作台",
-  brandEvidence: "证据",
+  pageTitle: "Skill Reviewer · 决策审查",
+  appTitle: "Skill Reviewer 决策审查",
+  brandEvidence: "决策审查",
   displayPreferences: "显示偏好",
   language: "语言",
   switchToEnglish: "切换到英文",
@@ -788,7 +788,7 @@ const chineseMessages: Record<MessageKey, string> = {
   live: "实时",
   connecting: "连接中",
   stale: "已过期",
-  readOnly: "只读查看",
+  readOnly: "证据只读",
   behavioralGateState: "发布证据概览",
   releaseState: "发布结论",
   releaseReady: "可以进入发布",

@@ -36,8 +36,9 @@ build/
 skill-reviewer-workspace/
 
 # Local research, article-authoring, screenshots, videos, and generated demos.
-# Canonical project documentation belongs in the READMEs or the installable
-# skill package under skills/skill-reviewer/references/.
-/docs/
+# Keep one maintainer architecture map outside the installable Skill so it does
+# not enter model context.
+/docs/*
+!/docs/architecture.md
 /diagrams/
 /output/

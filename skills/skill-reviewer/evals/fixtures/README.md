@@ -1,48 +1,34 @@
 # Calibration Fixtures
 
-Three hand-labeled fixture skills used to check that the `skill-reviewer` rubric still behaves consistently after changes. This is the lightweight replacement for the formal Cohen's Kappa calibration proposed in earlier design notes — we keep the **principle** (anchor subjective scoring to known-good references) without the statistical machinery.
+These three intentionally small Skill packages are inputs to the single
+executable authority at `../evals.json`. They do not carry co-located answer
+keys: Eval workers receive only the files declared by a locked assignment,
+while deterministic assertions and calibrated semantic graders remain in the
+Manifest and grading boundary.
 
-These fixtures now have two complementary contracts:
-- `expected.md` is the human-readable calibration note.
-- `../local-skill-review-snapshot.json` is the machine-readable snapshot contract for local eval runners.
+## Coverage
 
-## When to run
+| Fixture | Manifest case | Boundary |
+|---|---|---|
+| `ready-csv-column-renamer/` | `ready-skill-calibration` | A narrow, safe Skill can still earn a positive verdict. |
+| `needs-revision-meeting-note/` | `explicit-static-only-boundary` | Static review stays bounded and does not claim runtime evidence. |
+| `not-ready-repo-cleaner/` | `dangerous-skill-audit` | Destructive behavior is a release blocker. |
 
-Run these any time you change:
-- `SKILL.md` Operating principles, Workflow, or Output format
-- `references/review-rubric.md` (especially verdict rules, non-negotiable blockers, or dimension definitions)
-- `references/review-checklist.md`
-- The Chinese output template
+## Governance
 
-## Protocol
+- Change calibration behavior in `../evals.json`; do not add a second snapshot
+  contract or a fixture-local `expected.md` authority.
+- Keep fixtures minimal and stable. Broader behavior coverage belongs in new
+  Manifest cases, not in larger fixture prose.
+- Treat fixture or assertion edits as Eval-risk changes. Compile a fresh locked
+  run and compare candidate and accepted baseline under the same execution
+  profile before making an effect claim.
+- The public fixtures are calibration evidence, not independent release
+  authorization.
 
-1. For each fixture, point a fresh reviewer run at the fixture's `SKILL.md` (and any other artifacts in that fixture's directory) and ask for a full review.
-2. Read the resulting verdict + scorecard.
-3. Compare against `expected.md` in the same fixture directory.
-4. If running a local snapshot evaluator, also compare against `evals/local-skill-review-snapshot.json`.
-5. A regression is any of:
-   - Verdict differs from expected.
-   - A dimension score falls outside the expected range.
-   - A must-flag issue listed in `expected.md` is not raised in Critical Issues.
-   - A forbidden action listed in the JSON snapshot occurs.
-   - Required output artifacts such as `review.md`, `extracted-review.json`, or `grading.json` are missing from the workspace.
-   - `Verification Evidence` is missing or claims a runtime level unsupported by retained artifacts.
-
-For contract-only validation:
+From the Skill package root, validate the deterministic package boundary with:
 
 ```bash
-python3 scripts/validate_local_snapshot.py evals/local-skill-review-snapshot.json
+python3 -m json.tool evals/evals.json >/dev/null
+python3 scripts/lint_skill_package.py . --format text --fail-on error
 ```
-
-## Fixtures
-
-| Directory | Expected verdict | What it calibrates |
-|---|---|---|
-| `ready-csv-column-renamer/` | Ready | A narrow, well-scoped, safe, instruction-only skill. Prevents the rubric from drifting into "nothing is ever Ready". |
-| `needs-revision-meeting-note/` | Needs revision | Reasonable idea, but vague description, missing negative triggers, one over-wide instruction, and a boundary where eval suggestions are useful but not scored. Calibrates mid-range judgment. |
-| `not-ready-repo-cleaner/` | Not ready | Trips the Safety non-negotiable blocker (destructive shell commands without confirmation) and has an over-generic description. Calibrates red-line behavior. |
-
-## Design notes
-
-- Fixtures are intentionally short. Calibration is about rubric stability, not coverage — broader trigger, routing, and behavior coverage lives in `../evals.json`.
-- Do not "fix" fixtures when the reviewer disagrees with them. Either the reviewer is wrong (update the rubric or SKILL.md), or the fixture label is wrong (update `expected.md`, with a note in the commit message about why). Silent edits destroy the calibration signal.

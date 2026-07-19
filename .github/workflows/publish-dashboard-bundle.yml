@@ -8,7 +8,7 @@ on:
     paths:
       - "dashboard/**"
       - "skills/skill-reviewer/scripts/dashboard_bundle.py"
-      - "skills/skill-reviewer/references/dashboard-ui-bundle.json"
+      - "skills/skill-reviewer/assets/dashboard-ui-bundle.json"
       - "package.json"
       - "pnpm-lock.yaml"
       - ".github/workflows/publish-dashboard-bundle.yml"
@@ -60,12 +60,12 @@ jobs:
 
       - name: Verify committed digest anchor and safe extraction
         run: |
-          cmp skills/skill-reviewer/references/dashboard-ui-bundle.json \
+          cmp skills/skill-reviewer/assets/dashboard-ui-bundle.json \
             .dashboard-release/generated-manifest.json
           archive="$(find .dashboard-release -maxdepth 1 -type f -name 'dashboard-ui-*.zip' -print -quit)"
           test -n "$archive"
           python3 skills/skill-reviewer/scripts/dashboard_bundle.py verify \
-            --manifest skills/skill-reviewer/references/dashboard-ui-bundle.json \
+            --manifest skills/skill-reviewer/assets/dashboard-ui-bundle.json \
             --archive "$archive" \
             --output-dir .dashboard-release/verified
           test -f .dashboard-release/verified/index.html

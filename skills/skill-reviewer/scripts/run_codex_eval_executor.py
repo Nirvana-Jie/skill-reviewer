@@ -14,25 +14,32 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import re
 import signal
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 from typing import Any
 
+from skill_eval_authority import safe_artifact, sha256_file
+from skill_eval_contracts import ManifestError
+from skill_eval_execution import (
+    ManagedProviderProcess,
+    ProviderSpec,
+    build_provider_environment,
+    compact_json,
+    contains_credential,
+    load_locked_assignment,
+    redact_retained_credentials,
+    redact_text,
+    sanitize_observable,
+    sha256_text,
+)
 from skill_eval_runtime import (
-    ManifestError,
-    _safe_artifact,
-    _trace_assignment_context,
     finalize_execution,
-    load_json,
     record_dispatch_receipt,
     record_trace_event,
-    sha256_file,
 )
 
 
@@ -43,19 +50,18 @@ RAW_EVENT_ARTIFACT = "agent-source-events.jsonl"
 SOURCE_FORMAT = "codex-exec-jsonl-v1"
 STDERR_ARTIFACT = "codex-stderr.log"
 LAST_MESSAGE_FALLBACK = "codex-last-message.md"
-MAX_TRACE_STRING = 24_000
-MAX_TRACE_LIST = 100
+CODEX_PROVIDER = ProviderSpec(
+    label="Codex",
+    target=CODEX_TARGET,
+    harness=CODEX_HARNESS,
+    source_artifact=RAW_EVENT_ARTIFACT,
+    source_format=SOURCE_FORMAT,
+    stderr_artifact=STDERR_ARTIFACT,
+    required_capabilities=("jsonl-agent-events",),
+    full_access_capability="danger-full-access",
+)
 SKILL_ROOT_PATTERN = re.compile(r"^- `(?P<alias>r\d+)` = `(?P<root>[^`]+)`$", re.M)
 SKILL_FILE_PATTERN = re.compile(r"\(file: (?P<path>[^)]+/SKILL\.md)\)")
-FORBIDDEN_DETAIL_KEYS = {
-    "analysis",
-    "chain_of_thought",
-    "private_reasoning",
-    "reasoning",
-    "thinking",
-    "thought",
-    "thoughts",
-}
 NETWORK_COMMAND_PATTERN = re.compile(
     r"(?:^|[\s;&|])(?:curl|wget|ssh|scp|rsync)(?:\s|$)|"
     r"\bgit\s+(?:clone|fetch|pull|push)\b|"
@@ -67,69 +73,6 @@ EXTERNAL_SIDE_EFFECT_PATTERN = re.compile(
     r"\b(?:lark|bytedcli)\b.*\b(?:send|create|update|delete|publish)\b",
     re.I,
 )
-
-
-def _compact_json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
-
-
-def _sha256_text(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
-def _normalized_key(value: Any) -> str:
-    return str(value).strip().lower().replace("-", "_")
-
-
-def _sanitize_observable(value: Any, *, depth: int = 0) -> Any:
-    """Bound observable payloads and remove private-reasoning fields."""
-
-    if depth > 8:
-        return "<nested payload omitted>"
-    if isinstance(value, dict):
-        if value.get("type") in {"thinking", "reasoning"}:
-            return {
-                "id": value.get("id"),
-                "type": value.get("type"),
-                "redacted": True,
-            }
-        return {
-            str(key): _sanitize_observable(item, depth=depth + 1)
-            for key, item in value.items()
-            if _normalized_key(key) not in FORBIDDEN_DETAIL_KEYS
-            and _normalized_key(key)
-            not in {"encrypted_content", "encrypted_reasoning", "signature"}
-        }
-    if isinstance(value, list):
-        result = [
-            _sanitize_observable(item, depth=depth + 1)
-            for item in value[:MAX_TRACE_LIST]
-        ]
-        if len(value) > MAX_TRACE_LIST:
-            result.append(f"<{len(value) - MAX_TRACE_LIST} items omitted>")
-        return result
-    if isinstance(value, str) and len(value) > MAX_TRACE_STRING:
-        return value[:MAX_TRACE_STRING] + f"\n<{len(value) - MAX_TRACE_STRING} characters omitted>"
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    return str(value)
-
-
-def _redact_source_event(event: dict[str, Any]) -> dict[str, Any]:
-    """Retain Codex wire evidence without retaining private reasoning text."""
-
-    item = event.get("item")
-    if isinstance(item, dict) and item.get("type") == "reasoning":
-        return {
-            "type": event.get("type"),
-            "item": {
-                "id": item.get("id"),
-                "type": "reasoning",
-                "redacted": True,
-            },
-        }
-    sanitized = _sanitize_observable(event)
-    return sanitized if isinstance(sanitized, dict) else {"type": "invalid"}
 
 
 def _prompt_input_texts(payload: Any) -> list[str]:
@@ -166,11 +109,15 @@ def _parse_visible_skill_paths(payload: Any) -> tuple[list[str], str]:
         raise ManifestError(
             "Codex exposed skills to the model, but their paths could not be isolated"
         )
-    return sorted(paths), _sha256_text(_compact_json(payload))
+    return sorted(paths), sha256_text(compact_json(payload))
 
 
 def _run_prompt_input_probe(
-    *, codex_bin: str, cwd: Path, skills_config: str | None = None
+    *,
+    codex_bin: str,
+    cwd: Path,
+    environment: dict[str, str],
+    skills_config: str | None = None,
 ) -> tuple[list[str], str]:
     command = [codex_bin, "debug", "prompt-input"]
     if skills_config is not None:
@@ -184,7 +131,7 @@ def _run_prompt_input_probe(
             capture_output=True,
             timeout=90,
             check=False,
-            env={**os.environ, "NO_COLOR": "1"},
+            env=environment,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise ManifestError(f"unable to inspect Codex model-visible skills: {error}") from error
@@ -208,12 +155,19 @@ def _toml_skill_config(paths: list[str]) -> str:
     ) + "]"
 
 
-def isolate_model_visible_skills(*, codex_bin: str, cwd: Path) -> dict[str, Any]:
-    visible, discovery_digest = _run_prompt_input_probe(codex_bin=codex_bin, cwd=cwd)
+def isolate_model_visible_skills(
+    *, codex_bin: str, cwd: Path, environment: dict[str, str]
+) -> dict[str, Any]:
+    visible, discovery_digest = _run_prompt_input_probe(
+        codex_bin=codex_bin,
+        cwd=cwd,
+        environment=environment,
+    )
     config = _toml_skill_config(visible)
     remaining, verification_digest = _run_prompt_input_probe(
         codex_bin=codex_bin,
         cwd=cwd,
+        environment=environment,
         skills_config=config,
     )
     if remaining:
@@ -224,13 +178,13 @@ def isolate_model_visible_skills(*, codex_bin: str, cwd: Path) -> dict[str, Any]
     return {
         "config": config,
         "disabled_count": len(visible),
-        "disabled_paths_digest": _sha256_text("\n".join(visible)),
+        "disabled_paths_digest": sha256_text("\n".join(visible)),
         "discovery_digest": discovery_digest,
         "verification_digest": verification_digest,
     }
 
 
-def _codex_version(codex_bin: str) -> str:
+def _codex_version(codex_bin: str, *, environment: dict[str, str]) -> str:
     try:
         result = subprocess.run(
             [codex_bin, "--version"],
@@ -238,98 +192,11 @@ def _codex_version(codex_bin: str) -> str:
             capture_output=True,
             timeout=15,
             check=False,
+            env=environment,
         )
     except (OSError, subprocess.TimeoutExpired):
         return "unavailable"
     return (result.stdout or result.stderr).strip()[:200] or "unavailable"
-
-
-def _require_locked_assignment(
-    *, assignment_path: Path, workspace: Path, full_access: bool
-) -> tuple[dict[str, Any], Path, Path, dict[str, Any]]:
-    workspace = workspace.resolve()
-    assignment_path = assignment_path.resolve()
-    assignment, repeat_root, trace_path = _trace_assignment_context(
-        assignment_path=assignment_path,
-        workspace=workspace,
-    )
-    plan_path = workspace / "execution-plan.json"
-    lock_path = workspace / "run-lock.json"
-    if not plan_path.is_file() or not lock_path.is_file():
-        raise ManifestError("Codex executor requires execution-plan.json and run-lock.json")
-    plan = load_json(plan_path)
-    lock = load_json(lock_path)
-    relative_assignment = assignment_path.relative_to(workspace).as_posix()
-    assignment_digests = lock.get("assignment_digests")
-    if (
-        not isinstance(assignment_digests, dict)
-        or assignment_digests.get(relative_assignment) != sha256_file(assignment_path)
-    ):
-        raise ManifestError("assignment digest does not match the immutable run lock")
-    if lock.get("plan_digest") != sha256_file(plan_path):
-        raise ManifestError("execution plan digest does not match the immutable run lock")
-    if plan.get("run_id") != assignment.get("run_id") or lock.get("run_id") != assignment.get("run_id"):
-        raise ManifestError("assignment, plan, and run lock identities do not match")
-    profile = plan.get("execution_profile")
-    if not isinstance(profile, dict):
-        raise ManifestError("execution plan is missing its execution profile")
-    if profile.get("digest") != assignment.get("execution_profile_digest"):
-        raise ManifestError("assignment execution profile digest is stale")
-    if profile.get("target") != CODEX_TARGET or profile.get("harness") != CODEX_HARNESS:
-        raise ManifestError(
-            f"Codex executor requires target={CODEX_TARGET} and harness={CODEX_HARNESS}"
-        )
-    if profile.get("isolation") != "local-unattested":
-        raise ManifestError(
-            "local Codex execution must be declared as isolation=local-unattested"
-        )
-    capabilities = profile.get("capabilities")
-    if not isinstance(capabilities, list) or "jsonl-agent-events" not in capabilities:
-        raise ManifestError("Codex execution profile must declare jsonl-agent-events")
-    if profile.get("dispatch_observation") != "process_spawn":
-        raise ManifestError(
-            "Codex execution profile must declare dispatch_observation=process_spawn"
-        )
-    trace_profile = profile.get("trace")
-    if (
-        not isinstance(trace_profile, dict)
-        or trace_profile.get("capture_source") != CAPTURE_SOURCE
-        or trace_profile.get("source")
-        != {"artifact": RAW_EVENT_ARTIFACT, "format": SOURCE_FORMAT}
-    ):
-        raise ManifestError(
-            "Codex execution profile must bind the provider-stream source adapter"
-        )
-    if full_access and "danger-full-access" not in capabilities:
-        raise ManifestError(
-            "--full-access requires danger-full-access in the locked execution profile"
-        )
-    execution_artifact = assignment.get("execution_artifact")
-    if not isinstance(execution_artifact, str):
-        raise ManifestError("assignment.execution_artifact is invalid")
-    execution_path = _safe_artifact(repeat_root, execution_artifact)
-    dispatch_artifact = assignment.get("dispatch_artifact")
-    if not isinstance(dispatch_artifact, str):
-        raise ManifestError("assignment.dispatch_artifact is invalid")
-    dispatch_path = _safe_artifact(repeat_root, dispatch_artifact)
-    for generated in [
-        trace_path,
-        execution_path,
-        dispatch_path,
-        repeat_root / RAW_EVENT_ARTIFACT,
-        repeat_root / STDERR_ARTIFACT,
-    ]:
-        if generated.exists() or generated.is_symlink():
-            raise ManifestError(f"executor output already exists: {generated.name}")
-    expected = assignment.get("expected_artifacts")
-    if not isinstance(expected, list) or not all(isinstance(value, str) for value in expected):
-        raise ManifestError("assignment.expected_artifacts must be a string array")
-    for relative in expected:
-        artifact = _safe_artifact(repeat_root, relative)
-        if artifact.exists() or artifact.is_symlink():
-            raise ManifestError(f"expected artifact already exists before execution: {relative}")
-        artifact.parent.mkdir(parents=True, exist_ok=True)
-    return assignment, repeat_root, trace_path, profile
 
 
 def _configuration_instruction(assignment: dict[str, Any]) -> str:
@@ -393,7 +260,7 @@ def build_executor_prompt(
             *(inputs or ["- 无"]),
             "必须保留的输出（相对于唯一可写目录）：",
             *(f"- {path}" for path in expected),
-            "权限声明：" + _compact_json(permissions),
+            "权限声明：" + compact_json(permissions),
             "只读取上面声明的 Skill 快照、assignment 和输入文件。不要读取 execution-plan.json、"
             "run-lock.json、evals.json、断言、expected/answer-key、其他实验臂或历史输出。",
             "只在唯一可写目录中写入声明的输出；不要访问网络、发送消息、安装依赖、提交或推送 Git，"
@@ -437,7 +304,7 @@ def _event_status(item: dict[str, Any]) -> str:
 
 
 def _short_command(command: Any) -> str:
-    value = command if isinstance(command, str) else _compact_json(command)
+    value = command if isinstance(command, str) else compact_json(command)
     value = " ".join(value.split())
     return value[:180] + ("…" if len(value) > 180 else "")
 
@@ -471,7 +338,7 @@ def _map_codex_event(
             "kind": "tool_call",
             "summary": "Codex 已结束当前回合并上报用量",
             "status": "completed",
-            "details": {**base, "usage": _sanitize_observable(event.get("usage", {}))},
+            "details": {**base, "usage": sanitize_observable(event.get("usage", {}))},
             "artifact_refs": [],
         }
     if event_type in {"turn.failed", "error"}:
@@ -479,7 +346,7 @@ def _map_codex_event(
             "kind": "error",
             "summary": "Codex 执行过程中报告错误",
             "status": "failed",
-            "details": {**base, "error": _sanitize_observable(event.get("error", event))},
+            "details": {**base, "error": sanitize_observable(event.get("error", event))},
             "artifact_refs": [],
         }
     if event_type != "item.completed":
@@ -507,7 +374,7 @@ def _map_codex_event(
             "kind": "agent_message",
             "summary": "Agent 产生了一条可见答复",
             "status": _event_status(item),
-            "details": {**item_base, "role": "assistant", "content": _sanitize_observable(content)},
+            "details": {**item_base, "role": "assistant", "content": sanitize_observable(content)},
             "artifact_refs": [],
         }
     if item_type == "command_execution":
@@ -516,7 +383,7 @@ def _map_codex_event(
             "kind": "command",
             "summary": "执行命令：" + _short_command(command),
             "status": _event_status(item),
-            "details": {**item_base, **_sanitize_observable(item)},
+            "details": {**item_base, **sanitize_observable(item)},
             "artifact_refs": [],
         }
     if item_type == "file_change":
@@ -525,7 +392,7 @@ def _map_codex_event(
             "kind": "artifact_written" if refs else "tool_call",
             "summary": "Agent 写入了文件" if refs else "Codex 报告了文件变更",
             "status": _event_status(item),
-            "details": {**item_base, **_sanitize_observable(item)},
+            "details": {**item_base, **sanitize_observable(item)},
             "artifact_refs": refs,
         }
     if item_type == "error":
@@ -533,14 +400,14 @@ def _map_codex_event(
             "kind": "error",
             "summary": "Codex 返回了执行错误",
             "status": "failed",
-            "details": {**item_base, **_sanitize_observable(item)},
+            "details": {**item_base, **sanitize_observable(item)},
             "artifact_refs": [],
         }
     return {
         "kind": "tool_call",
         "summary": f"Codex 完成可观察事件：{item_type or 'unknown'}",
         "status": _event_status(item),
-        "details": {**item_base, **_sanitize_observable(item)},
+        "details": {**item_base, **sanitize_observable(item)},
         "artifact_refs": _relative_refs(item, repeat_root),
     }
 
@@ -552,7 +419,7 @@ def _command_from_event(event: dict[str, Any]) -> tuple[str, int | None] | None:
     if not isinstance(item, dict) or item.get("type") != "command_execution":
         return None
     raw = item.get("command", item.get("argv"))
-    command = raw if isinstance(raw, str) else _compact_json(raw)
+    command = raw if isinstance(raw, str) else compact_json(raw)
     exit_code = item.get("exit_code")
     return command, exit_code if isinstance(exit_code, int) else None
 
@@ -576,16 +443,6 @@ def _observed_policy_findings(
     return list(dict.fromkeys(forbidden)), list(dict.fromkeys(side_effects))
 
 
-def _terminate_process_group(process: subprocess.Popen[str]) -> None:
-    try:
-        if os.name == "posix":
-            os.killpg(process.pid, signal.SIGKILL)
-        else:
-            process.kill()
-    except (OSError, ProcessLookupError):
-        return
-
-
 def _record(
     *, assignment_path: Path, workspace: Path, mapped: dict[str, Any]
 ) -> dict[str, Any]:
@@ -604,21 +461,30 @@ def _record(
 def run_executor(args: argparse.Namespace) -> dict[str, Any]:
     workspace = args.workspace.resolve()
     assignment_path = args.assignment.resolve()
-    assignment, repeat_root, _trace_path, profile = _require_locked_assignment(
+    provider_environment = build_provider_environment(
+        pass_env=args.pass_env,
+        credential_env=args.credential_env,
+    )
+    locked = load_locked_assignment(
         assignment_path=assignment_path,
         workspace=workspace,
+        provider=CODEX_PROVIDER,
         full_access=args.full_access,
     )
+    assignment = locked.assignment
+    repeat_root = locked.repeat_root
+    profile = locked.profile
     sandbox_mode = "danger-full-access" if args.full_access else "workspace-write"
     skill_isolation = isolate_model_visible_skills(
         codex_bin=args.codex_bin,
         cwd=repeat_root,
+        environment=provider_environment.values,
     )
     expected = list(assignment["expected_artifacts"])
     last_message_relative = (
         "outputs/response.md" if "outputs/response.md" in expected else LAST_MESSAGE_FALLBACK
     )
-    last_message_path = _safe_artifact(repeat_root, last_message_relative)
+    last_message_path = safe_artifact(repeat_root, last_message_relative)
     last_message_path.parent.mkdir(parents=True, exist_ok=True)
     prompt = build_executor_prompt(
         assignment=assignment,
@@ -672,7 +538,10 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
             "status": "completed",
             "details": {
                 "executor": CODEX_HARNESS,
-                "codex_version": _codex_version(args.codex_bin),
+                "codex_version": _codex_version(
+                    args.codex_bin,
+                    environment=provider_environment.values,
+                ),
                 "sandbox_mode": sandbox_mode,
                 "approval_policy": "never",
                 "isolation_claim": profile.get("isolation"),
@@ -685,6 +554,13 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
                 "ambient_skill_paths_digest": skill_isolation["disabled_paths_digest"],
                 "prompt_input_discovery_digest": skill_isolation["discovery_digest"],
                 "prompt_input_verification_digest": skill_isolation["verification_digest"],
+                "provider_env_name_count": provider_environment.passed_name_count,
+                "provider_credential_name_count": (
+                    provider_environment.credential_name_count
+                ),
+                "provider_declared_env_digest": (
+                    provider_environment.declared_names_digest
+                ),
             },
             "artifact_refs": [],
         },
@@ -696,25 +572,158 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
     normalized_count = 0
     parse_errors = 0
     provider_failure_events = 0
+    credential_observation_count = 0
+    stderr_credential_observation_count = 0
     commands: list[tuple[str, int | None]] = []
     usage: dict[str, Any] = {}
-    stderr_lines: list[str] = []
     pending_items: dict[str, dict[str, Any]] = {}
-    timed_out = threading.Event()
     started = time.monotonic()
     source_stream_hasher = hashlib.sha256()
 
+    def redact_stderr_line(line: str) -> str:
+        nonlocal stderr_credential_observation_count
+        redacted = redact_text(line, provider_environment.credential_values)
+        if redacted != line:
+            stderr_credential_observation_count += 1
+        return redacted
+
     try:
-        process = subprocess.Popen(
-            command,
+        with ManagedProviderProcess(
+            command=command,
             cwd=repeat_root,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            bufsize=1,
-            env={**os.environ, "NO_COLOR": "1"},
-            start_new_session=(os.name == "posix"),
-        )
+            environment=provider_environment.values,
+            timeout_seconds=timeout,
+            redact_stderr=redact_stderr_line,
+        ) as process:
+            record_dispatch_receipt(
+                assignment_path=assignment_path,
+                workspace=workspace,
+                dispatch_id="dispatch-"
+                + sha256_text(
+                    "|".join(
+                        [
+                            str(assignment.get("run_id")),
+                            str(assignment.get("case_id")),
+                            str(assignment.get("arm")),
+                            str(assignment.get("repeat")),
+                            str(process.pid),
+                            str(time.time_ns()),
+                        ]
+                    )
+                )[:20],
+                worker_id=f"pid:{process.pid}",
+                batch_id=args.batch_id,
+            )
+
+            with raw_path.open("w", encoding="utf-8") as raw_handle:
+                for line in process.stdout:
+                    raw_count += 1
+                    source_stream_hasher.update(line.encode("utf-8"))
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    line_contains_credential = (
+                        redact_text(stripped, provider_environment.credential_values)
+                        != stripped
+                    )
+                    if line_contains_credential:
+                        credential_observation_count += 1
+                    try:
+                        event = json.loads(stripped)
+                    except json.JSONDecodeError:
+                        parse_errors += 1
+                        raw_handle.write(
+                            compact_json(
+                                {
+                                    "type": "unparseable",
+                                    "source_event_index": raw_count,
+                                    "source_sha256": sha256_text(stripped),
+                                    "source_bytes": len(line.encode("utf-8")),
+                                }
+                            )
+                            + "\n"
+                        )
+                        raw_handle.flush()
+                        _record(
+                            assignment_path=assignment_path,
+                            workspace=workspace,
+                            mapped={
+                                "kind": "error",
+                                "summary": "Codex JSONL 中出现无法解析的事件",
+                                "status": "failed",
+                                "details": {
+                                    "source_event_index": raw_count,
+                                    "source_sha256": sha256_text(stripped),
+                                    "source_bytes": len(line.encode("utf-8")),
+                                },
+                                "artifact_refs": [],
+                            },
+                        )
+                        normalized_count += 1
+                        continue
+                    if not line_contains_credential and contains_credential(
+                        event,
+                        provider_environment.credential_values,
+                    ):
+                        credential_observation_count += 1
+                    event = sanitize_observable(
+                        event,
+                        credential_values=provider_environment.credential_values,
+                    )
+                    if not isinstance(event, dict):
+                        parse_errors += 1
+                        raw_handle.write(
+                            compact_json(
+                                {
+                                    "type": "invalid",
+                                    "source_event_index": raw_count,
+                                    "source_sha256": sha256_text(stripped),
+                                }
+                            )
+                            + "\n"
+                        )
+                        raw_handle.flush()
+                        continue
+                    if event.get("type") in {"turn.failed", "error"}:
+                        provider_failure_events += 1
+                    raw_handle.write(compact_json(event) + "\n")
+                    raw_handle.flush()
+                    if event.get("type") == "item.started" and isinstance(
+                        event.get("item"), dict
+                    ):
+                        item = event["item"]
+                        item_id = item.get("id")
+                        if isinstance(item_id, str):
+                            pending_items[item_id] = item
+                    if event.get("type") == "item.completed" and isinstance(
+                        event.get("item"), dict
+                    ):
+                        item_id = event["item"].get("id")
+                        if isinstance(item_id, str):
+                            pending_items.pop(item_id, None)
+                    command_observation = _command_from_event(event)
+                    if command_observation is not None:
+                        commands.append(command_observation)
+                    if event.get("type") == "turn.completed" and isinstance(
+                        event.get("usage"), dict
+                    ):
+                        usage = event["usage"]
+                    mapped = _map_codex_event(
+                        event=event,
+                        source_index=raw_count,
+                        repeat_root=repeat_root,
+                    )
+                    if mapped is not None:
+                        _record(
+                            assignment_path=assignment_path,
+                            workspace=workspace,
+                            mapped=mapped,
+                        )
+                        normalized_count += 1
+            return_code = process.wait()
+            timed_out = process.timed_out
+            stderr_text = process.stderr_text
+            stderr_line_count = process.stderr_line_count
     except OSError as error:
         _record(
             assignment_path=assignment_path,
@@ -731,166 +740,83 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
             assignment_path=assignment_path,
             workspace=workspace,
             status="failed",
-            metrics={"duration_seconds": round(time.monotonic() - started, 3)},
+            metrics={
+                "duration_seconds": round(time.monotonic() - started, 3),
+                "provider_env_name_count": provider_environment.passed_name_count,
+                "provider_credential_name_count": (
+                    provider_environment.credential_name_count
+                ),
+            },
             forbidden_actions=[],
             side_effects=[],
             capture_source=CAPTURE_SOURCE,
         )
 
-    try:
-        record_dispatch_receipt(
-            assignment_path=assignment_path,
-            workspace=workspace,
-            dispatch_id="dispatch-"
-            + _sha256_text(
-                "|".join(
-                    [
-                        str(assignment.get("run_id")),
-                        str(assignment.get("case_id")),
-                        str(assignment.get("arm")),
-                        str(assignment.get("repeat")),
-                        str(process.pid),
-                        str(time.time_ns()),
-                    ]
-                )
-            )[:20],
-            worker_id=f"pid:{process.pid}",
-            batch_id=args.batch_id,
-        )
-    except ManifestError:
-        _terminate_process_group(process)
-        process.wait()
-        raise
-
-    def read_stderr() -> None:
-        assert process.stderr is not None
-        for line in process.stderr:
-            stderr_lines.append(line)
-
-    stderr_thread = threading.Thread(target=read_stderr, daemon=True)
-    stderr_thread.start()
-
-    def timeout_process() -> None:
-        timed_out.set()
-        _terminate_process_group(process)
-
-    timer = threading.Timer(timeout, timeout_process)
-    timer.daemon = True
-    timer.start()
-    assert process.stdout is not None
-    with raw_path.open("w", encoding="utf-8") as raw_handle:
-        for line in process.stdout:
-            raw_count += 1
-            source_stream_hasher.update(line.encode("utf-8"))
-            stripped = line.strip()
-            if not stripped:
-                continue
-            try:
-                event = json.loads(stripped)
-            except json.JSONDecodeError:
-                parse_errors += 1
-                raw_handle.write(
-                    _compact_json(
-                        {
-                            "type": "unparseable",
-                            "source_event_index": raw_count,
-                            "source_sha256": _sha256_text(stripped),
-                            "source_bytes": len(line.encode("utf-8")),
-                        }
-                    )
-                    + "\n"
-                )
-                raw_handle.flush()
-                _record(
-                    assignment_path=assignment_path,
-                    workspace=workspace,
-                    mapped={
-                        "kind": "error",
-                        "summary": "Codex JSONL 中出现无法解析的事件",
-                        "status": "failed",
-                        "details": {
-                            "source_event_index": raw_count,
-                            "source_sha256": _sha256_text(stripped),
-                            "source_bytes": len(line.encode("utf-8")),
-                        },
-                        "artifact_refs": [],
-                    },
-                )
-                normalized_count += 1
-                continue
-            if not isinstance(event, dict):
-                parse_errors += 1
-                raw_handle.write(
-                    _compact_json(
-                        {
-                            "type": "invalid",
-                            "source_event_index": raw_count,
-                            "source_sha256": _sha256_text(stripped),
-                        }
-                    )
-                    + "\n"
-                )
-                raw_handle.flush()
-                continue
-            if event.get("type") in {"turn.failed", "error"}:
-                provider_failure_events += 1
-            raw_handle.write(_compact_json(_redact_source_event(event)) + "\n")
-            raw_handle.flush()
-            if event.get("type") == "item.started" and isinstance(event.get("item"), dict):
-                item = event["item"]
-                item_id = item.get("id")
-                if isinstance(item_id, str):
-                    pending_items[item_id] = item
-            if event.get("type") == "item.completed" and isinstance(event.get("item"), dict):
-                item_id = event["item"].get("id")
-                if isinstance(item_id, str):
-                    pending_items.pop(item_id, None)
-            command_observation = _command_from_event(event)
-            if command_observation is not None:
-                commands.append(command_observation)
-            if event.get("type") == "turn.completed" and isinstance(event.get("usage"), dict):
-                usage = _sanitize_observable(event["usage"])
-            mapped = _map_codex_event(
-                event=event,
-                source_index=raw_count,
-                repeat_root=repeat_root,
-            )
-            if mapped is not None:
-                _record(
-                    assignment_path=assignment_path,
-                    workspace=workspace,
-                    mapped=mapped,
-                )
-                normalized_count += 1
-    return_code = process.wait()
-    timer.cancel()
-    stderr_thread.join(timeout=5)
-
     for item_id, item in pending_items.items():
         command_value = item.get("command", item.get("argv", ""))
         if item.get("type") == "command_execution":
-            commands.append((command_value if isinstance(command_value, str) else _compact_json(command_value), None))
+            commands.append((command_value if isinstance(command_value, str) else compact_json(command_value), None))
         _record(
             assignment_path=assignment_path,
             workspace=workspace,
             mapped={
                 "kind": "error",
                 "summary": "Codex 事件在执行结束前未完成",
-                "status": "timed_out" if timed_out.is_set() else "failed",
+                "status": "timed_out" if timed_out else "failed",
                 "details": {
                     "source_item_id": item_id,
                     "source_item_type": item.get("type"),
-                    "observable_item": _sanitize_observable(item),
+                    "observable_item": sanitize_observable(item),
                 },
                 "artifact_refs": [],
             },
         )
         normalized_count += 1
 
-    stderr_text = "".join(stderr_lines)
     if stderr_text:
         stderr_path.write_text(stderr_text, encoding="utf-8")
+    trace_relative = locked.trace_path.relative_to(repeat_root).as_posix()
+    credential_leak_paths = redact_retained_credentials(
+        root=repeat_root,
+        relative_paths=[
+            RAW_EVENT_ARTIFACT,
+            STDERR_ARTIFACT,
+            trace_relative,
+            last_message_relative,
+            *expected,
+        ],
+        credential_values=provider_environment.credential_values,
+    )
+    credential_leak_count = (
+        credential_observation_count
+        + stderr_credential_observation_count
+        + len(credential_leak_paths)
+    )
+    if credential_leak_count:
+        _record(
+            assignment_path=assignment_path,
+            workspace=workspace,
+            mapped={
+                "kind": "error",
+                "summary": "执行框架检测到并移除了供应商凭据",
+                "status": "failed",
+                "details": {
+                    "credential_observation_count": credential_observation_count,
+                    "stderr_credential_observation_count": (
+                        stderr_credential_observation_count
+                    ),
+                    "redacted_artifact_paths": credential_leak_paths,
+                },
+                "artifact_refs": credential_leak_paths,
+            },
+        )
+        normalized_count += 1
     raw_digest = sha256_file(raw_path)
+    retained_source_stream_digest = (
+        raw_digest
+        if credential_observation_count
+        else source_stream_hasher.hexdigest()
+    )
     retained_event_count = sum(
         1 for line in raw_path.read_text(encoding="utf-8").splitlines() if line.strip()
     )
@@ -907,7 +833,7 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
                 "size": raw_path.stat().st_size,
                 "source_event_count": raw_count,
                 "retained_event_count": retained_event_count,
-                "source_stream_digest": source_stream_hasher.hexdigest(),
+                "source_stream_digest": retained_source_stream_digest,
                 "redaction": "private-reasoning-fields-removed",
                 "adapter": CODEX_TARGET,
                 "format": SOURCE_FORMAT,
@@ -928,7 +854,7 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
                     "path": STDERR_ARTIFACT,
                     "digest": sha256_file(stderr_path),
                     "size": stderr_path.stat().st_size,
-                    "line_count": len(stderr_lines),
+                    "line_count": stderr_line_count,
                 },
                 "artifact_refs": [STDERR_ARTIFACT],
             },
@@ -936,7 +862,7 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
         normalized_count += 1
 
     missing_artifacts = [
-        relative for relative in expected if not _safe_artifact(repeat_root, relative).is_file()
+        relative for relative in expected if not safe_artifact(repeat_root, relative).is_file()
     ]
     if missing_artifacts:
         _record(
@@ -957,9 +883,19 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
         commands=commands,
         permissions=permissions,
     )
-    if timed_out.is_set():
+    if credential_leak_count:
+        forbidden_actions.append(
+            "provider credential appeared in retained output; exact values were redacted"
+        )
+    if timed_out:
         final_status = "timed_out"
-    elif return_code != 0 or provider_failure_events or parse_errors or missing_artifacts:
+    elif (
+        return_code != 0
+        or provider_failure_events
+        or parse_errors
+        or missing_artifacts
+        or credential_leak_count
+    ):
         final_status = "failed"
     else:
         final_status = "completed"
@@ -972,6 +908,9 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
         "provider_failure_event_count": provider_failure_events,
         "ambient_skills_disabled": skill_isolation["disabled_count"],
         "full_access_enabled": 1 if args.full_access else 0,
+        "credential_leak_count": credential_leak_count,
+        "provider_env_name_count": provider_environment.passed_name_count,
+        "provider_credential_name_count": provider_environment.credential_name_count,
     }
     for key, value in usage.items():
         if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -987,7 +926,7 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
         source_trace={
             "artifact": RAW_EVENT_ARTIFACT,
             "digest": raw_digest,
-            "source_stream_digest": source_stream_hasher.hexdigest(),
+            "source_stream_digest": retained_source_stream_digest,
             "source_event_count": raw_count,
             "retained_event_count": retained_event_count,
             "redaction": "private-reasoning-fields-removed",
@@ -1006,6 +945,23 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--codex-bin", default="codex")
     parser.add_argument("--model")
     parser.add_argument(
+        "--pass-env",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="Pass one named host environment value to Codex (repeatable).",
+    )
+    parser.add_argument(
+        "--credential-env",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help=(
+            "Pass one named credential to Codex and fail if its value reaches retained "
+            "output (repeatable)."
+        ),
+    )
+    parser.add_argument(
         "--batch-id",
         help="Optional paired-dispatch batch identifier shared across arms for one repeat.",
     )
@@ -1022,10 +978,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _interrupt_provider(_signum: int, _frame: object) -> None:
+    raise KeyboardInterrupt
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, _interrupt_provider)
     try:
         result = run_executor(args)
+    except KeyboardInterrupt:
+        print("error: Codex provider execution interrupted", file=sys.stderr)
+        return 130
     except ManifestError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2

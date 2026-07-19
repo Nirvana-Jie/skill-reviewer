@@ -14,15 +14,21 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
+from skill_eval_authority import load_json
+from skill_eval_contracts import ManifestError
+from skill_eval_execution import (
+    build_provider_environment,
+    redact_text,
+    terminate_process_group,
+)
 from skill_eval_runtime import (
-    ManifestError,
     grade_run,
-    load_json,
     verify_locked_inputs,
     write_json,
 )
@@ -132,6 +138,10 @@ def _executor_command(
     ]
     if args.model:
         command.extend(["--model", args.model])
+    for name in args.pass_env:
+        command.extend(["--pass-env", name])
+    for name in args.credential_env:
+        command.extend(["--credential-env", name])
     if args.full_access:
         command.append("--full-access")
     if args.timeout_seconds is not None:
@@ -147,6 +157,10 @@ def _run_batch(*, args: argparse.Namespace, batch: dict[str, Any]) -> dict[str, 
             f"--max-workers is {args.max_workers}; refusing to serialize paired arms"
         )
     started_at = _timestamp()
+    executor_environment = build_provider_environment(
+        pass_env=args.pass_env,
+        credential_env=args.credential_env,
+    )
     processes: list[tuple[dict[str, str], subprocess.Popen[str]]] = []
     try:
         for cell in assignments:
@@ -160,36 +174,47 @@ def _run_batch(*, args: argparse.Namespace, batch: dict[str, Any]) -> dict[str, 
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                env=executor_environment.values,
+                start_new_session=(os.name == "posix"),
             )
             processes.append((cell, process))
     except OSError as error:
         for _cell, process in processes:
-            process.kill()
-            process.wait()
+            terminate_process_group(process)
         raise ManifestError(f"unable to start paired Codex executors: {error}") from error
 
     results: list[dict[str, Any]] = []
-    for cell, process in processes:
-        stdout, stderr = process.communicate()
-        result: dict[str, Any] = {
-            "arm": cell["arm"],
-            "assignment": cell["assignment"],
-            "exit_code": process.returncode,
-        }
-        if stdout.strip():
-            try:
-                payload = json.loads(stdout)
-            except json.JSONDecodeError:
-                result["diagnostic"] = "executor returned non-JSON stdout"
-            else:
-                if isinstance(payload, dict):
-                    result["execution_status"] = payload.get("status")
-                    result["trace_digest_pending"] = payload.get("trace", {}).get(
-                        "digest"
-                    ) if isinstance(payload.get("trace"), dict) else None
-        if stderr.strip():
-            result["stderr"] = stderr.strip()[:2000]
-        results.append(result)
+    try:
+        for cell, process in processes:
+            stdout, stderr = process.communicate()
+            result: dict[str, Any] = {
+                "arm": cell["arm"],
+                "assignment": cell["assignment"],
+                "exit_code": process.returncode,
+            }
+            if stdout.strip():
+                try:
+                    payload = json.loads(stdout)
+                except json.JSONDecodeError:
+                    result["diagnostic"] = "executor returned non-JSON stdout"
+                else:
+                    if isinstance(payload, dict):
+                        result["execution_status"] = payload.get("status")
+                        result["trace_digest_pending"] = payload.get(
+                            "trace", {}
+                        ).get("digest") if isinstance(
+                            payload.get("trace"), dict
+                        ) else None
+            if stderr.strip():
+                result["stderr"] = redact_text(
+                    stderr.strip()[:2000],
+                    executor_environment.credential_values,
+                )
+            results.append(result)
+    finally:
+        for _cell, process in processes:
+            if process.poll() is None:
+                terminate_process_group(process)
     return {
         "batch_id": batch["batch_id"],
         "case_id": batch["case_id"],
@@ -255,6 +280,23 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--codex-bin", default="codex")
     parser.add_argument("--model")
     parser.add_argument(
+        "--pass-env",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="Pass one named ordinary environment value to every executor (repeatable).",
+    )
+    parser.add_argument(
+        "--credential-env",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help=(
+            "Pass one named credential to every executor with retained-output leak "
+            "detection (repeatable)."
+        ),
+    )
+    parser.add_argument(
         "--full-access",
         action="store_true",
         help="Pass explicit danger-full-access to every locked cell executor.",
@@ -278,6 +320,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
     try:
         result = run_plan(args)
+    except KeyboardInterrupt:
+        print("error: paired Codex execution interrupted", file=sys.stderr)
+        return 130
     except ManifestError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2

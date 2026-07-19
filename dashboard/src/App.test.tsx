@@ -2281,7 +2281,7 @@ describe("EvidenceDashboard", () => {
     expect(document.documentElement).toHaveAttribute("lang", "en");
     expect(document.documentElement).toHaveAttribute("data-theme", "light");
     expect(document.documentElement).toHaveAttribute("data-font-scale", "100");
-    expect(document.title).toBe("Skill Reviewer · Evidence Workbench");
+    expect(document.title).toBe("Skill Reviewer · Decision Review");
 
     expect(
       screen.queryByRole("button", { name: "Switch to Simplified Chinese" }),
@@ -2292,7 +2292,7 @@ describe("EvidenceDashboard", () => {
     );
 
     expect(document.documentElement).toHaveAttribute("lang", "zh-CN");
-    expect(document.title).toBe("Skill Reviewer · 证据工作台");
+    expect(document.title).toBe("Skill Reviewer · 决策审查");
     expect(screen.getAllByText("评审总览").length).toBeGreaterThan(0);
     expect(
       screen.getAllByText("证据完整性失败，暂不评价 Skill").length,

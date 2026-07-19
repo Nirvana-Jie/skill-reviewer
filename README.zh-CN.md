@@ -98,7 +98,7 @@ flowchart LR
 - 带 `问题 / 原因 / 修复方式` 的关键问题；
 - 触发分析、逐资源审查与可直接粘贴的改写；
 - 明确的验证证据、证据等级和局限；
-- 必要时提供 5–10 个可执行 Eval 场景。
+- 只有真实回归风险足以覆盖维护成本时，才提供可执行 Eval 场景。
 
 判定不是简单平均分：安全或触发可靠性触碰红线会直接阻塞；候选发布还必须同时满足硬门禁、Pareto 不退化和至少一个主要目标的实质提升。
 
@@ -135,6 +135,11 @@ python3 skills/skill-reviewer/scripts/run_codex_eval_plan.py \
   --full-access
 ```
 
+Provider 子进程只接收最小环境。普通必要变量使用可重复的
+`--pass-env NAME`；API Key 或其它密钥只能使用可重复的
+`--credential-env NAME`。声明过的凭据会从留存产物中移除，任何可观察泄漏
+都会使本次执行失败。
+
 Native subAgent 仍由 host 调度；harness 必须在行为事件之前记录真实的 host
 dispatch ID 和 worker/thread ID。该凭据可以防止 profile-only 的界面误判，
 但在没有 provider 签名 API 时仍属于可信 harness 证据，不是密码学证明。
@@ -151,44 +156,37 @@ SKILL_REVIEWER_REAL_AGENT_E2E=codex,claude \
 Eval 与 grader 在一次运行中不可变。发布级文本断言会在分发前使用已知正确/错误
 样例校准，采样次数也与输出确定性分开声明。系统只有先确认“证据完整、测量有效”，
 才会把结果归因给 Skill；无效实验会被隔离，且不消耗候选轮次。系统可以提出修改
-建议，但只有用户确认并重新锁定后才能成为新的评测权威。完整字段、信任边界和
-运行命令见[测量有效性协议](./skills/skill-reviewer/references/measurement-validity.md)、
-[可执行 Eval 协议](./skills/skill-reviewer/references/executable-evals.md)与
-[进化协议](./skills/skill-reviewer/references/evolution-workflow.md)。
+建议，但只有用户确认并重新锁定后才能成为新的评测权威。Agent 使用精炼后的
+[显式验证流程](./skills/skill-reviewer/references/verification-workflow.md)与
+[进化协议](./skills/skill-reviewer/references/evolution-workflow.md)；详细 Schema
+和信任规则由实现与测试负责。
 
-## Dashboard：可选的本地只读控制面
+## Dashboard：可选的本地决策界面
 
-Dashboard 按决策顺序回答四个问题：
+Dashboard 是只读投影，唯一任务是让发布决策容易核查。它按顺序回答四个问题：
 
 1. **证据可信么？** 验证 dispatch、Trace、产物和绑定关系。
 2. **测量可信么？** 在评价 Skill 前检查 Oracle 校准与配对采样。
 3. **候选是否真的更好？** 左右对比候选版与基线版的执行、得分、文件差异和重复轮次。
 4. **下一步做什么？** 展示状态机的 `next_action`、责任归因和需要人工介入的边界。
 
-评审总览是唯一的主结论入口。结论下方的“决策证据脊柱”可直达修改证据、
-执行覆盖和主要风险；Diff、Agent Trace 与默认折叠的审计档案仍是独立证据视图。
-下一步以侧滑抽屉打开，Inspector 只解释当前选中的证据。空 Diff 表示“未捕获
-修改证据”，不能据此断言没有修改。
+评审总览是唯一的主结论入口；Diff、Agent Trace 和审计档案负责解释结论。
+本地交接可以记录建议的下一步，但不能唤醒 Agent 或授予权限。评分与发布真相
+仍由 Runtime 负责。
 
-每份新 projection 都包含 `schema_version: 3`。界面会在渲染前校验嵌套决策和
-测量合同；完整的 v2/无版本数据只会迁移成“测量未验证”，不会自动补出绿色证据。
-遇到不兼容数据时展示可操作的重新生成页面，而不是白屏。
-
-它不是执行器，也不会直接修改 Eval、证据或发布状态。用户明确要求展示 Dashboard 时可直接启动；否则交互式主 Agent 必须用独立的结构化问题询问一次，并推荐打开。沉默不会授权下载或本地服务：
+只有用户明确要求时才启动 Dashboard：
 
 ```bash
 python3 skills/skill-reviewer/scripts/start_skill_dashboard.py \
   --workspace /tmp/skill-reviewer-run \
   --state /tmp/skill-reviewer-control/evolution-state.json \
-  --task-root /tmp/skill-reviewer-action-tasks \
   --user-approved-control-plane \
   --open
 ```
 
-- UI 从 GitHub Release 匿名下载，按归档摘要和文件树摘要双重校验后，在临时目录本地运行。
-- 页面与证据 API 只监听回环地址；用户 prompt、Trace、Run ID 和产物不会上传。
-- 不使用 GitHub Pages，不把 `dashboard/dist` 或压缩包放进 Skill 安装包。
-- 服务正常退出后删除临时 UI；没有控制面也不影响 Eval 执行。
+启动器会校验固定 UI bundle，只在回环地址提供页面与证据 API，并让运行数据留在
+本机。Schema 迁移、传输和供应链规则由代码与测试维护；详见
+[维护者架构](./docs/architecture.md)。
 
 ## 自动化与人工边界
 
@@ -221,13 +219,11 @@ Dashboard 的行动按钮只会创建带审计记录的本地交接任务，不�
 corepack enable
 pnpm install --frozen-lockfile
 
-python3 -m unittest discover -s tests
 pnpm test
 pnpm dashboard:build
 python3 skills/skill-reviewer/scripts/lint_skill_package.py \
   skills/skill-reviewer --format text --fail-on error
-python3 skills/skill-reviewer/scripts/validate_local_snapshot.py \
-  skills/skill-reviewer/evals/local-skill-review-snapshot.json
+python3 -m json.tool skills/skill-reviewer/evals/evals.json >/dev/null
 ```
 
 所有变更通过分支和 PR 进入 `main`。`Static Checks` 只运行确定性测试，不保存 API Key 或模型产物。Dashboard 由独立工作流构建为内容寻址的 GitHub Release asset；仓库不发布 npm 包，也不部署 GitHub Pages。
@@ -238,10 +234,12 @@ python3 skills/skill-reviewer/scripts/validate_local_snapshot.py \
 .
 ├── skills/skill-reviewer/   # skills add 安装的完整 Skill
 │   ├── SKILL.md
-│   ├── references/          # 规则、模板与运行协议
+│   ├── references/          # 4 份按分支加载的模型 reference
+│   ├── assets/              # 机器契约与固定 UI manifest
 │   ├── scripts/             # linter、runtime、executor、Dashboard launcher
-│   └── evals/               # Manifest、fixture 与 snapshot
+│   └── evals/               # 单一可执行 Manifest 及其 fixture
 ├── dashboard/               # React / TypeScript / Vite 源码，dist 不入库
+├── docs/                    # 维护者架构，不进入模型上下文
 ├── tests/                   # Python + Vitest
 └── assets/readme/           # README 正式视觉资产
 ```
@@ -249,14 +247,12 @@ python3 skills/skill-reviewer/scripts/validate_local_snapshot.py \
 ## 深入阅读
 
 - [评审评分规则](./skills/skill-reviewer/references/review-rubric.md)
-- [评审检查清单](./skills/skill-reviewer/references/review-checklist.md)
-- [可执行 Eval、Trace 与证据契约](./skills/skill-reviewer/references/executable-evals.md)
-- [Provider-neutral Agent Trace 契约](./skills/skill-reviewer/references/agent-trace-contract.md)
+- [评审输出契约](./skills/skill-reviewer/references/output-contract.md)
+- [显式验证流程](./skills/skill-reviewer/references/verification-workflow.md)
 - [有界持续进化](./skills/skill-reviewer/references/evolution-workflow.md)
-- [Dashboard 与行动中心](./skills/skill-reviewer/references/action-center.md)
-- [SubAgent 成对验证](./skills/skill-reviewer/references/subagent-eval-workflow.md)
+- [维护者架构](./docs/architecture.md)
 
-输出语言跟随请求。中文和英文模板会归一化为同一套机器可比较字段。
+输出语言跟随请求；一份语言无关契约让中英文保持机器可比较。
 
 ## License
 

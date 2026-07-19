@@ -19,6 +19,11 @@ from pathlib import Path
 from threading import RLock
 from urllib.parse import unquote, urlparse
 
+from skill_eval_contracts import (
+    DASHBOARD_AGENT_HANDOFF_CONTRACT,
+    DASHBOARD_SESSION_CONTRACT,
+)
+
 
 class DashboardServerError(ValueError):
     """Raised when the read-only dashboard cannot be served safely."""
@@ -96,7 +101,7 @@ def _is_loopback_hostname(hostname: str | None) -> bool:
         return False
 
 
-def _validate_loopback_bind_host(host: str) -> None:
+def validate_loopback_bind_host(host: str) -> None:
     if not _is_loopback_hostname(host):
         raise DashboardServerError(
             "dashboard control plane must bind to localhost or a loopback IP"
@@ -192,11 +197,11 @@ def _task_digest(record: dict[str, object]) -> str:
     return _sha256_bytes(_canonical_json(payload))
 
 
-def _agent_handoff(task_root: Path) -> dict[str, object]:
+def agent_handoff(task_root: Path) -> dict[str, object]:
     """Describe the real browser-to-Agent boundary without implying delivery."""
 
     return {
-        "contract": "skill-reviewer.dashboard-agent-handoff",
+        "contract": DASHBOARD_AGENT_HANDOFF_CONTRACT,
         "mode": "durable_local_ledger",
         "agent_session_state": "unbound",
         "can_wake_agent_session": False,
@@ -305,7 +310,7 @@ def _action_task_log(
         "evidence_mutation": False,
         "eval_mutation": False,
         "current_dashboard_digest": dashboard_digest,
-        "handoff": _agent_handoff(task_root),
+        "handoff": agent_handoff(task_root),
         "tasks": tasks,
     }
 
@@ -776,7 +781,7 @@ def validate_sources(
         "evidence_uploaded": False,
         "evidence_read_only": True,
         "action_requests_enabled": True,
-        "agent_handoff": _agent_handoff(task_root),
+        "agent_handoff": agent_handoff(task_root),
         "workspace": str(workspace),
         "task_root": str(task_root),
         "run_id": data.get("run", {}).get("id")
@@ -931,7 +936,7 @@ def create_handler(
             run_id = run.get("id") if isinstance(run, dict) else None
             return _canonical_json(
                 {
-                    "contract": "skill-reviewer.dashboard-session",
+                    "contract": DASHBOARD_SESSION_CONTRACT,
                     "run_id": run_id,
                     "session_transport": "fragment-to-header",
                     "session_header": SESSION_TOKEN_HEADER,
@@ -941,7 +946,7 @@ def create_handler(
                     "data_endpoint": "/dashboard-data.json",
                     "action_request_endpoint": "/dashboard-action-requests",
                     "action_audit_endpoint": "/dashboard-action-requests.json",
-                    "agent_handoff": _agent_handoff(task_root),
+                    "agent_handoff": agent_handoff(task_root),
                 }
             )
 
@@ -1261,7 +1266,7 @@ def create_handler(
                         "contract": "skill-reviewer.dashboard-action-task-response",
                         "created": created,
                         "task": task,
-                        "handoff": _agent_handoff(task_root),
+                        "handoff": agent_handoff(task_root),
                     }
                 )
             except (UnicodeDecodeError, json.JSONDecodeError, DashboardServerError) as error:
@@ -1302,7 +1307,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
     try:
-        _validate_loopback_bind_host(args.host)
+        validate_loopback_bind_host(args.host)
         report = validate_sources(args.workspace, args.task_root)
         if args.check:
             print(json.dumps(report, ensure_ascii=False, indent=2))

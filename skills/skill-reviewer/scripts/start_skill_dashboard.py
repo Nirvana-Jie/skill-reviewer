@@ -23,11 +23,12 @@ from dashboard_bundle import (
 )
 from serve_skill_dashboard import (
     DashboardServerError,
-    _validate_loopback_bind_host,
+    validate_loopback_bind_host,
     create_handler,
     validate_sources,
 )
-from skill_eval_runtime import ManifestError, project_dashboard
+from skill_eval_contracts import DASHBOARD_LAUNCH_SESSION_CONTRACT, ManifestError
+from skill_eval_runtime import project_dashboard
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -101,8 +102,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--user-approved-control-plane",
         action="store_true",
         help=(
-            "Assert that the current request or a structured consent question "
-            "explicitly authorized this temporary local control-plane session. "
+            "Assert that the current user request explicitly authorized this "
+            "temporary local control-plane session. "
             "Required unless --prepare-only is used."
         ),
     )
@@ -118,8 +119,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     if not args.prepare_only and not args.user_approved_control_plane:
         parser.error(
             "starting the optional Dashboard requires explicit user approval; "
-            "use an existing explicit Dashboard request or ask once with a "
-            "standalone structured question, then pass "
+            "use an existing explicit Dashboard request, then pass "
             "--user-approved-control-plane only after an affirmative answer"
         )
     return args
@@ -262,7 +262,7 @@ def _raise_keyboard_interrupt(_signum: int, _frame: object) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
     try:
-        _validate_loopback_bind_host(args.host)
+        validate_loopback_bind_host(args.host)
         report = prepare_dashboard(args)
         if args.prepare_only:
             print(
@@ -321,7 +321,7 @@ def main(argv: list[str] | None = None) -> int:
                         else 0
                     ),
                     "dashboard_session": {
-                        "contract": "skill-reviewer.dashboard-session",
+                        "contract": DASHBOARD_LAUNCH_SESSION_CONTRACT,
                         "run_id": report.get("run_id"),
                         "page_url": url,
                         "local_origin": origin,
@@ -334,14 +334,7 @@ def main(argv: list[str] | None = None) -> int:
                         "ui_downloaded": ui.temporary,
                         "ui_removed_on_exit": ui.temporary,
                         "browser_executes_actions": False,
-                        "agent_handoff": {
-                            "contract": "skill-reviewer.dashboard-agent-handoff",
-                            "mode": "durable_local_ledger",
-                            "agent_session_state": "unbound",
-                            "can_wake_agent_session": False,
-                            "persists_after_agent_session_end": True,
-                            "task_root": report.get("task_root"),
-                        },
+                        "agent_handoff": report.get("agent_handoff"),
                     },
                 }
                 print(json.dumps(launch_report, ensure_ascii=False), flush=True)

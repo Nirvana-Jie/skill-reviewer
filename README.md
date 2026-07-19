@@ -102,7 +102,7 @@ A full review always includes:
 - Critical Issues written as `Problem / Why / Fix`;
 - trigger analysis, per-resource review, and paste-ready rewrites;
 - explicit verification evidence, level, and limitations;
-- five to ten executable Eval cases when they materially reduce risk.
+- executable Eval cases only when their maintenance cost is justified by a real regression risk.
 
 The verdict is not a simple average. Safety and trigger red lines can block immediately. A release candidate must also satisfy every hard gate, avoid Pareto regression, and materially improve at least one primary objective.
 
@@ -140,6 +140,11 @@ python3 skills/skill-reviewer/scripts/run_codex_eval_plan.py \
   --full-access
 ```
 
+Provider children receive a minimal environment. Pass a required ordinary
+value with repeatable `--pass-env NAME`; pass API keys or other secrets only
+with repeatable `--credential-env NAME`. Declared credential values are removed
+from retained output, and any observed leak fails the execution.
+
 Native subagents remain host-owned. Their harness must record the real host
 dispatch and worker/thread IDs before behavior events. The receipt detects
 drift and prevents profile-only UI claims; without a provider-signed API it is
@@ -161,49 +166,40 @@ sampling is declared independently from output determinism. Evidence integrity
 and measurement validity must both pass before candidate quality is attributed.
 An invalid experiment is quarantined without consuming a candidate round. The
 system may propose changes, but only explicit user confirmation and a fresh
-lock can establish new evaluation authority. See the [measurement validity
-contract](./skills/skill-reviewer/references/measurement-validity.md),
-[executable Eval contract](./skills/skill-reviewer/references/executable-evals.md),
-and [evolution protocol](./skills/skill-reviewer/references/evolution-workflow.md)
-for schemas, commands, and trust boundaries.
+lock can establish new evaluation authority. Agents use the compact
+[verification workflow](./skills/skill-reviewer/references/verification-workflow.md)
+and [evolution protocol](./skills/skill-reviewer/references/evolution-workflow.md);
+the implementation and tests own detailed schemas and trust rules.
 
-## Dashboard: optional local, read-only control plane
+## Dashboard: optional local decision surface
 
-The Dashboard answers four questions in decision order:
+The Dashboard is a read-only projection for one job: make a release decision
+easy to inspect. It answers four questions in order:
 
 1. **Is the evidence trustworthy?** Verify dispatch, Trace, artifacts, and bindings.
 2. **Is the measurement trustworthy?** Inspect oracle calibration and paired sampling before judging the Skill.
 3. **Is the candidate actually better?** Compare candidate and baseline runs, scores, file diffs, and repeats side by side.
 4. **What happens next?** Project the state machine’s `next_action`, responsibility, and human boundary.
 
-Review Overview is the only primary verdict surface. Its decision-evidence
-spine links directly to change evidence, execution coverage, and the primary
-risk. Diff, Agent Trace, and the collapsed audit archive remain independent
-evidence views; next steps open in a side drawer, and the Inspector describes
-only the currently selected evidence. An empty Diff means change evidence was
-not captured—it is never treated as proof that nothing changed.
+Review Overview is the only primary verdict surface. Diff, Agent Trace, and the
+audit archive explain it; a local handoff can record a proposed next step but
+cannot wake an Agent or grant authority. The Runtime remains the source of
+grading and release truth.
 
-Every generated projection carries `schema_version: 3`. The UI validates the
-nested decision and measurement contracts before rendering. Complete v2 and
-unversioned projections migrate only to explicit `unverified` measurement—no
-green evidence is invented. Incompatible data gets an actionable regeneration
-page instead of a blank screen.
-
-It is not the executor and cannot mutate Eval, evidence, or release state. An explicit request to show the Dashboard is consent. Otherwise, an interactive lead Agent asks once with a standalone structured choice and recommends opening it; silence never authorizes a download or server:
+Start the Dashboard only when the user explicitly requests it:
 
 ```bash
 python3 skills/skill-reviewer/scripts/start_skill_dashboard.py \
   --workspace /tmp/skill-reviewer-run \
   --state /tmp/skill-reviewer-control/evolution-state.json \
-  --task-root /tmp/skill-reviewer-action-tasks \
   --user-approved-control-plane \
   --open
 ```
 
-- The UI is downloaded anonymously from a GitHub Release, then verified by both archive and extracted-tree digests before local execution.
-- UI and evidence APIs bind only to loopback; prompts, Trace, Run IDs, and artifacts are never uploaded.
-- GitHub Pages is not used, and neither `dashboard/dist` nor the archive ships inside the installed Skill.
-- Normal shutdown deletes the temporary UI. Eval execution does not depend on the Dashboard.
+The launcher verifies the pinned UI bundle, binds UI and evidence APIs to
+loopback, and keeps run data local. Schema migration, transport, and
+supply-chain rules live in code and tests; see the
+[maintainer architecture](./docs/architecture.md).
 
 ## Automation and human boundaries
 
@@ -236,13 +232,11 @@ This repository uses pnpm exclusively:
 corepack enable
 pnpm install --frozen-lockfile
 
-python3 -m unittest discover -s tests
 pnpm test
 pnpm dashboard:build
 python3 skills/skill-reviewer/scripts/lint_skill_package.py \
   skills/skill-reviewer --format text --fail-on error
-python3 skills/skill-reviewer/scripts/validate_local_snapshot.py \
-  skills/skill-reviewer/evals/local-skill-review-snapshot.json
+python3 -m json.tool skills/skill-reviewer/evals/evals.json >/dev/null
 ```
 
 All changes enter `main` through a branch and pull request. `Static Checks` runs deterministic tests only; it stores no API key or model output. A separate workflow builds the Dashboard as a content-addressed GitHub Release asset. The repository publishes neither an npm package nor GitHub Pages.
@@ -253,10 +247,12 @@ All changes enter `main` through a branch and pull request. `Static Checks` runs
 .
 ├── skills/skill-reviewer/   # complete payload installed by skills add
 │   ├── SKILL.md
-│   ├── references/          # rubric, templates, and runtime protocols
+│   ├── references/          # four branch-scoped model references
+│   ├── assets/              # machine contracts and pinned UI manifest
 │   ├── scripts/             # linter, runtime, executor, Dashboard launcher
-│   └── evals/               # Manifest, fixtures, and snapshots
+│   └── evals/               # One executable Manifest and its fixtures
 ├── dashboard/               # React / TypeScript / Vite source; dist ignored
+├── docs/                    # maintainer architecture; not model context
 ├── tests/                   # Python + Vitest
 └── assets/readme/           # canonical README visuals
 ```
@@ -264,14 +260,13 @@ All changes enter `main` through a branch and pull request. `Static Checks` runs
 ## Further reading
 
 - [Review rubric](./skills/skill-reviewer/references/review-rubric.md)
-- [Review checklist](./skills/skill-reviewer/references/review-checklist.md)
-- [Executable Eval, Trace, and evidence contract](./skills/skill-reviewer/references/executable-evals.md)
-- [Provider-neutral Agent Trace contract](./skills/skill-reviewer/references/agent-trace-contract.md)
+- [Review output contract](./skills/skill-reviewer/references/output-contract.md)
+- [Explicit verification workflow](./skills/skill-reviewer/references/verification-workflow.md)
 - [Bounded continuous evolution](./skills/skill-reviewer/references/evolution-workflow.md)
-- [Dashboard and Action Center](./skills/skill-reviewer/references/action-center.md)
-- [Paired SubAgent verification](./skills/skill-reviewer/references/subagent-eval-workflow.md)
+- [Maintainer architecture](./docs/architecture.md)
 
-Output language follows the request. English and Chinese templates normalize into the same machine-comparable contract fields.
+Output language follows the request; one language-neutral contract keeps both
+languages machine-comparable.
 
 ## License
 

@@ -14,18 +14,16 @@ This repository contains the `skill-reviewer` Codex skill and its eval fixtures.
 Run these before proposing changes:
 
 ```bash
-python3 -m unittest discover -s tests
 pnpm test
 python3 skills/skill-reviewer/scripts/lint_skill_package.py skills/skill-reviewer --format text --fail-on error
 python3 -m json.tool skills/skill-reviewer/evals/evals.json >/dev/null
-python3 skills/skill-reviewer/scripts/validate_local_snapshot.py skills/skill-reviewer/evals/local-skill-review-snapshot.json
 ```
 
 For syntax-only checks in restricted macOS sandboxes, direct pycache to a writable
 directory:
 
 ```bash
-env PYTHONPYCACHEPREFIX=/private/tmp/skill-reviewer-pycache python3 -m py_compile skills/skill-reviewer/scripts/dashboard_bundle.py skills/skill-reviewer/scripts/lint_skill_package.py skills/skill-reviewer/scripts/run_claude_eval_executor.py skills/skill-reviewer/scripts/run_codex_eval_executor.py skills/skill-reviewer/scripts/run_codex_eval_plan.py skills/skill-reviewer/scripts/run_codex_skill_evals.py skills/skill-reviewer/scripts/skill_eval_evidence.py skills/skill-reviewer/scripts/skill_eval_measurement.py skills/skill-reviewer/scripts/skill_eval_runtime.py skills/skill-reviewer/scripts/serve_skill_dashboard.py skills/skill-reviewer/scripts/start_skill_dashboard.py skills/skill-reviewer/scripts/validate_local_snapshot.py tests/test_run_codex_skill_evals.py
+env PYTHONPYCACHEPREFIX=/private/tmp/skill-reviewer-pycache python3 -m py_compile skills/skill-reviewer/scripts/dashboard_bundle.py skills/skill-reviewer/scripts/lint_skill_package.py skills/skill-reviewer/scripts/run_claude_eval_executor.py skills/skill-reviewer/scripts/run_codex_eval_executor.py skills/skill-reviewer/scripts/run_codex_eval_plan.py skills/skill-reviewer/scripts/skill_eval_authority.py skills/skill-reviewer/scripts/skill_eval_contracts.py skills/skill-reviewer/scripts/skill_eval_evidence.py skills/skill-reviewer/scripts/skill_eval_execution.py skills/skill-reviewer/scripts/skill_eval_measurement.py skills/skill-reviewer/scripts/skill_eval_runtime.py skills/skill-reviewer/scripts/serve_skill_dashboard.py skills/skill-reviewer/scripts/start_skill_dashboard.py
 ```
 
 ## Contribution Workflow
@@ -41,13 +39,14 @@ env PYTHONPYCACHEPREFIX=/private/tmp/skill-reviewer-pycache python3 -m py_compil
 ## Review Guidelines
 
 - For `skill-reviewer` PRs, focus on trigger reliability, safety constraints,
-  snapshot contract stability, fixture drift, and whether output sections remain
-  accepted by `skills/skill-reviewer/scripts/validate_local_snapshot.py`.
+  immutable run-contract stability, fixture drift, and whether the executable
+  manifest remains accepted by the Runtime compile and grade interfaces.
 - Treat changes to `skills/skill-reviewer/SKILL.md`,
   `skills/skill-reviewer/references/review-rubric.md`,
-  `skills/skill-reviewer/references/review-checklist.md`,
-  `skills/skill-reviewer/references/output-template-*.md`,
-  `skills/skill-reviewer/evals/local-skill-review-snapshot.json`, or
+  `skills/skill-reviewer/references/output-contract.md`,
+  `skills/skill-reviewer/references/verification-workflow.md`,
+  `skills/skill-reviewer/references/evolution-workflow.md`,
+  `skills/skill-reviewer/evals/evals.json`, or
   `skills/skill-reviewer/evals/fixtures/**` as eval-risk
   changes.
 - Run or account for the validation commands above before recommending merge.

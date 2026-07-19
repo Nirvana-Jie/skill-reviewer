@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import unquote
 
-from skill_eval_runtime import MANIFEST_CONTRACT, ManifestError, validate_manifest
+from skill_eval_authority import validate_manifest
+from skill_eval_contracts import MANIFEST_CONTRACT, ManifestError
 
 
 STATIC_ANALYSIS_CONTRACT = "skill-reviewer.static-analysis"

@@ -166,7 +166,7 @@ describe("serve_skill_dashboard.py", () => {
         }),
       );
       expect(report.dashboard_session).toEqual({
-        contract: "skill-reviewer.dashboard-session",
+        contract: "skill-reviewer.dashboard-launch-session",
         run_id: "run-single-command",
         page_url: report.url,
         local_origin: report.base_url,

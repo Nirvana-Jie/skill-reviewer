@@ -5,19 +5,10 @@ from __future__ import annotations
 
 from typing import Any
 
-
-DETERMINISTIC_ASSERTION_TYPES = {
-    "file_exists",
-    "text_contains",
-    "text_not_contains",
-    "text_matches",
-    "text_not_matches",
-    "json_path",
-    "event_absent",
-    "digest_equals",
-    "numeric_range",
-}
-SEMANTIC_ASSERTION_TYPES = {"semantic_pair"}
+from skill_eval_authority import (
+    DETERMINISTIC_ASSERTION_TYPES,
+    SEMANTIC_ASSERTION_TYPES,
+)
 
 
 def declared_assertion_artifacts(case: dict[str, Any]) -> list[str]:

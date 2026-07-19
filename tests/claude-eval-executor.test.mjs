@@ -152,17 +152,18 @@ if os.environ.get("FAKE_CLAUDE_DELAY_SECONDS"):
 if os.environ.get("FAKE_CLAUDE_COMPLETED"):
     pathlib.Path(os.environ["FAKE_CLAUDE_COMPLETED"]).write_text("completed", encoding="utf-8")
 
+credential = os.environ.get("SKILL_REVIEWER_TEST_CREDENTIAL")
 events = [
     {"type": "system", "subtype": "init", "session_id": "session-real-stream", "model": "claude-test", "tools": ["Read"]},
     {"type": "assistant", "message": {"content": [
         {"type": "thinking", "thinking": "PRIVATE_CHAIN_OF_THOUGHT"},
         {"type": "tool_use", "id": "tool-1", "name": "Read", "input": {"file_path": "SKILL.md"}},
-        {"type": "text", "text": "PASS"}
+        {"type": "text", "text": credential or "PASS"}
     ]}},
     {"type": "user", "message": {"content": [
         {"type": "tool_result", "tool_use_id": "tool-1", "content": "fixture", "is_error": False}
     ]}},
-    {"type": "result", "subtype": "success", "is_error": False, "session_id": "session-real-stream", "result": "PASS", "duration_ms": 12, "total_cost_usd": 0.001, "usage": {"input_tokens": 10, "output_tokens": 2}}
+    {"type": "result", "subtype": "success", "is_error": False, "session_id": "session-real-stream", "result": credential or "PASS", "duration_ms": 12, "total_cost_usd": 0.001, "usage": {"input_tokens": 10, "output_tokens": 2}}
 ]
 for event in events:
     print(json.dumps(event), flush=True)
@@ -241,6 +242,8 @@ describe("local Claude Code eval executor", () => {
             assignment(workspace, arm),
             "--claude-bin",
             fakeClaude,
+            "--pass-env",
+            "FAKE_CLAUDE_ARGV",
           ],
           { env: { FAKE_CLAUDE_ARGV: argvLog } },
         );
@@ -310,6 +313,93 @@ describe("local Claude Code eval executor", () => {
     }
   }, 30_000);
 
+  it("does not expose undeclared host credentials to Claude Code", () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-claude-env-isolation-"));
+    const secret = "host-only-secret-must-not-cross";
+    try {
+      const { workspace } = compileRun(root);
+      const result = run(
+        python,
+        [
+          executor,
+          "--workspace",
+          workspace,
+          "--assignment",
+          assignment(workspace, "with_skill"),
+          "--claude-bin",
+          makeFakeClaude(root),
+        ],
+        { env: { SKILL_REVIEWER_TEST_CREDENTIAL: secret } },
+      );
+
+      expectSuccess(result, "credential-isolated Claude execution");
+      const repeatRoot = join(
+        workspace,
+        "cases/observable-agent-trace/with_skill/repeat-1",
+      );
+      for (const relative of [
+        "outputs/response.md",
+        "agent-source-events.jsonl",
+        "agent-trace.jsonl",
+      ]) {
+        expect(readFileSync(join(repeatRoot, relative), "utf8")).not.toContain(secret);
+      }
+    } finally {
+      makeWritable(root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("detects escaped declared credentials and retains only redacted evidence", () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-claude-credential-"));
+    const secret = "凭据-escaped-secret";
+    try {
+      const { workspace } = compileRun(root);
+      const result = run(
+        python,
+        [
+          executor,
+          "--workspace",
+          workspace,
+          "--assignment",
+          assignment(workspace, "with_skill"),
+          "--claude-bin",
+          makeFakeClaude(root),
+          "--credential-env",
+          "SKILL_REVIEWER_TEST_CREDENTIAL",
+        ],
+        { env: { SKILL_REVIEWER_TEST_CREDENTIAL: secret } },
+      );
+
+      expect(result.status).toBe(1);
+      const repeatRoot = join(
+        workspace,
+        "cases/observable-agent-trace/with_skill/repeat-1",
+      );
+      const execution = JSON.parse(
+        readFileSync(join(repeatRoot, "execution.json"), "utf8"),
+      );
+      expect(execution.status).toBe("failed");
+      expect(execution.metrics.credential_leak_count).toBeGreaterThan(0);
+      expect(execution.forbidden_actions.join("\n")).toContain(
+        "provider credential appeared in retained output",
+      );
+      for (const relative of [
+        "outputs/response.md",
+        "agent-source-events.jsonl",
+        "agent-trace.jsonl",
+      ]) {
+        const retained = readFileSync(join(repeatRoot, relative), "utf8");
+        expect(retained).not.toContain(secret);
+        expect(retained).not.toContain("\\u51ed\\u636e");
+        expect(retained).toContain("[REDACTED_CREDENTIAL]");
+      }
+    } finally {
+      makeWritable(root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("rejects invalid locked artifact fields before starting the provider", () => {
     const root = mkdtempSync(join(tmpdir(), "skill-reviewer-claude-artifact-lock-"));
     try {
@@ -335,6 +425,8 @@ describe("local Claude Code eval executor", () => {
           assignmentPath,
           "--claude-bin",
           makeFakeClaude(root),
+          "--pass-env",
+          "FAKE_CLAUDE_STARTED",
         ],
         { env: { FAKE_CLAUDE_STARTED: started } },
       );
@@ -367,6 +459,12 @@ describe("local Claude Code eval executor", () => {
           makeFakeClaude(root),
           "--batch-id",
           "x".repeat(257),
+          "--pass-env",
+          "FAKE_CLAUDE_STARTED",
+          "--pass-env",
+          "FAKE_CLAUDE_DELAY_SECONDS",
+          "--pass-env",
+          "FAKE_CLAUDE_COMPLETED",
         ],
         {
           env: {
@@ -383,6 +481,67 @@ describe("local Claude Code eval executor", () => {
         providerPid = Number(readFileSync(started, "utf8"));
       }
       expect(existsSync(completed)).toBe(false);
+    } finally {
+      if (Number.isInteger(providerPid)) {
+        try {
+          process.kill(providerPid, "SIGKILL");
+        } catch {
+          // The expected path already reaped the provider process.
+        }
+      }
+      makeWritable(root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("times out the provider process group and finalizes failed evidence", () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-claude-timeout-"));
+    let providerPid = null;
+    try {
+      const { workspace } = compileRun(root);
+      const started = join(root, "provider-started");
+      const completed = join(root, "provider-completed");
+      const result = run(
+        python,
+        [
+          executor,
+          "--workspace",
+          workspace,
+          "--assignment",
+          assignment(workspace, "with_skill"),
+          "--claude-bin",
+          makeFakeClaude(root),
+          "--timeout-seconds",
+          "1",
+          "--pass-env",
+          "FAKE_CLAUDE_STARTED",
+          "--pass-env",
+          "FAKE_CLAUDE_DELAY_SECONDS",
+          "--pass-env",
+          "FAKE_CLAUDE_COMPLETED",
+        ],
+        {
+          env: {
+            FAKE_CLAUDE_STARTED: started,
+            FAKE_CLAUDE_DELAY_SECONDS: "5",
+            FAKE_CLAUDE_COMPLETED: completed,
+          },
+        },
+      );
+
+      expect(result.status).toBe(1);
+      if (existsSync(started)) {
+        providerPid = Number(readFileSync(started, "utf8"));
+      }
+      expect(existsSync(completed)).toBe(false);
+      const repeatRoot = join(
+        workspace,
+        "cases/observable-agent-trace/with_skill/repeat-1",
+      );
+      const execution = JSON.parse(
+        readFileSync(join(repeatRoot, "execution.json"), "utf8"),
+      );
+      expect(execution.status).toBe("timed_out");
     } finally {
       if (Number.isInteger(providerPid)) {
         try {

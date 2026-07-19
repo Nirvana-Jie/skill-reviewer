@@ -27,36 +27,38 @@ const python = process.env.PYTHON ?? "python3";
 
 const REQUIRED_FILES = [
   "SKILL.md",
-  "references/action-center.md",
-  "references/agent-trace-contract.md",
-  "references/dashboard-ui-bundle.json",
+  "assets/dashboard-ui-bundle.json",
+  "assets/semantic-grader-contract.md",
   "references/evolution-workflow.md",
-  "references/example-review-output.md",
-  "references/executable-evals.md",
-  "references/local-eval-snapshot.md",
-  "references/output-template-en.md",
-  "references/output-template-zh.md",
-  "references/review-checklist.md",
+  "references/output-contract.md",
   "references/review-rubric.md",
-  "references/semantic-grader-contract.md",
-  "references/subagent-eval-workflow.md",
+  "references/verification-workflow.md",
   "scripts/dashboard_bundle.py",
   "scripts/lint_skill_package.py",
   "scripts/run_codex_eval_executor.py",
+  "scripts/run_codex_eval_plan.py",
   "scripts/run_claude_eval_executor.py",
-  "scripts/run_codex_skill_evals.py",
   "scripts/serve_skill_dashboard.py",
+  "scripts/skill_eval_authority.py",
+  "scripts/skill_eval_contracts.py",
+  "scripts/skill_eval_evidence.py",
+  "scripts/skill_eval_execution.py",
+  "scripts/skill_eval_measurement.py",
   "scripts/start_skill_dashboard.py",
   "scripts/skill_eval_runtime.py",
-  "scripts/validate_local_snapshot.py",
   "evals/evals.json",
-  "evals/local-skill-review-snapshot.json",
   "evals/fixtures/README.md",
   "evals/fixtures/ready-csv-column-renamer/SKILL.md",
-  "evals/fixtures/ready-csv-column-renamer/expected.md",
   "evals/fixtures/needs-revision-meeting-note/SKILL.md",
-  "evals/fixtures/needs-revision-meeting-note/expected.md",
   "evals/fixtures/not-ready-repo-cleaner/SKILL.md",
+];
+
+const FORBIDDEN_FILES = [
+  "scripts/run_codex_skill_evals.py",
+  "scripts/validate_local_snapshot.py",
+  "evals/local-skill-review-snapshot.json",
+  "evals/fixtures/ready-csv-column-renamer/expected.md",
+  "evals/fixtures/needs-revision-meeting-note/expected.md",
   "evals/fixtures/not-ready-repo-cleaner/expected.md",
 ];
 
@@ -199,6 +201,9 @@ describe("skills CLI installation contract", () => {
         for (const path of REQUIRED_FILES) {
           expect(existsSync(join(installed, path)), path).toBe(true);
         }
+        for (const path of FORBIDDEN_FILES) {
+          expect(existsSync(join(installed, path)), path).toBe(false);
+        }
         expect(fileManifest(installed)).toEqual(sourceManifest);
         expect(existsSync(join(installed, "tests"))).toBe(false);
         expect(existsSync(join(installed, "docs"))).toBe(false);
@@ -233,17 +238,6 @@ describe("skills CLI installation contract", () => {
             installed,
           ),
           "installed eval manifest validation",
-        );
-        expectSuccess(
-          run(
-            python,
-            [
-              join(installed, "scripts", "validate_local_snapshot.py"),
-              join(installed, "evals", "local-skill-review-snapshot.json"),
-            ],
-            installed,
-          ),
-          "installed snapshot validation",
         );
         expectSuccess(
           run(

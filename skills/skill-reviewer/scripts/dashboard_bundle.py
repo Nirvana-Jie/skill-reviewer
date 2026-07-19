@@ -38,7 +38,7 @@ CANONICAL_RELEASE_BASE = (
 )
 DEFAULT_MANIFEST_PATH = (
     Path(__file__).resolve().parent.parent
-    / "references"
+    / "assets"
     / "dashboard-ui-bundle.json"
 )
 HARD_MAX_ARCHIVE_BYTES = 32 * 1024 * 1024

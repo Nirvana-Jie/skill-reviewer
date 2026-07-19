@@ -23,52 +23,60 @@ import tempfile
 from pathlib import Path
 from typing import Any, Iterable
 
+from skill_eval_authority import (
+    DETERMINISTIC_ASSERTION_TYPES,
+    SEMANTIC_ASSERTION_TYPES,
+    load_json,
+    load_json_value,
+    reject_unsupported_fields,
+    reject_json_constant,
+    require_finite_json,
+    require_number,
+    require_real_directory,
+    require_string,
+    safe_artifact,
+    safe_subject_file,
+    sha256_file,
+    sha256_json,
+    sha256_runtime_directory,
+    sha256_runtime_file,
+    validate_artifact_path,
+    validate_assertions,
+    validate_manifest,
+    validate_objectives,
+    trace_assignment_context,
+)
+from skill_eval_contracts import (
+    ACCEPTANCE_CONTRACT,
+    ASSIGNMENT_CONTRACT,
+    DASHBOARD_CONTRACT,
+    DASHBOARD_DIFF_CONTRACT,
+    DISPATCH_RECEIPT_CONTRACT,
+    EVOLUTION_STATE_CONTRACT,
+    EVOLUTION_TRANSITION_CONTRACT,
+    EXECUTION_CONTRACT,
+    MANIFEST_CONTRACT,
+    ManifestError,
+    PLAN_CONTRACT,
+    RUN_LOCK_CONTRACT,
+    SEMANTIC_JUDGMENT_CONTRACT,
+    TRACE_EVENT_CONTRACT,
+    VERIFICATION_CONTRACT,
+)
 from skill_eval_evidence import build_artifact_ownership
 from skill_eval_measurement import (
-    CALIBRATION_FIELDS,
-    TEXT_ASSERTION_TYPES,
     assess_oracle,
     assess_runtime_measurement,
     evaluate_text_assertion,
-    normalize_sampling,
 )
 
-
-MANIFEST_CONTRACT = "skill-reviewer.evals"
-PLAN_CONTRACT = "skill-reviewer.execution-plan"
-RUN_LOCK_CONTRACT = "skill-reviewer.run-lock"
-VERIFICATION_CONTRACT = "skill-reviewer.verification"
-ACCEPTANCE_CONTRACT = "skill-reviewer.acceptance-decision"
-ASSIGNMENT_CONTRACT = "skill-reviewer.executor-assignment"
-EXECUTION_CONTRACT = "skill-reviewer.executor-execution"
-DISPATCH_RECEIPT_CONTRACT = "skill-reviewer.dispatch-receipt"
-TRACE_EVENT_CONTRACT = "skill-reviewer.agent-trace-event"
-SEMANTIC_JUDGMENT_CONTRACT = "skill-reviewer.semantic-judgment"
-DASHBOARD_CONTRACT = "skill-reviewer.dashboard-data"
-DASHBOARD_DIFF_CONTRACT = "skill-reviewer.dashboard-diff"
-EVOLUTION_STATE_CONTRACT = "skill-reviewer.evolution-state"
-EVOLUTION_TRANSITION_CONTRACT = "skill-reviewer.evolution-transition"
 
 DASHBOARD_DIFF_RENDER_LIMIT_BYTES = 512 * 1024
 DASHBOARD_EVIDENCE_SOURCE_LIMIT_BYTES = 2 * 1024 * 1024
 MAX_PAIRED_DISPATCH_SKEW_MS = 5_000
 
-PATH_SAFE_SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 RUNTIME_SKILL_ENTRIES = ("SKILL.md", "references", "scripts", "assets")
 
-DETERMINISTIC_ASSERTION_TYPES = {
-    "file_exists",
-    "text_contains",
-    "text_not_contains",
-    "text_matches",
-    "text_not_matches",
-    "json_path",
-    "event_absent",
-    "digest_equals",
-    "numeric_range",
-}
-SEMANTIC_ASSERTION_TYPES = {"semantic_pair"}
-ASSERTION_TYPES = DETERMINISTIC_ASSERTION_TYPES | SEMANTIC_ASSERTION_TYPES
 RESERVED_ARM_RESULT_FIELDS = {
     "arm",
     "complete",
@@ -79,66 +87,6 @@ RESERVED_ARM_RESULT_FIELDS = {
     "binding_errors",
     "repeats",
     "artifacts",
-}
-PERMISSION_FIELDS = {
-    "network",
-    "network_allowlist",
-    "external_side_effects",
-    "writable_roots",
-}
-MANIFEST_FIELDS = {"contract", "skill_name", "defaults", "evals"}
-DEFAULT_FIELDS = {
-    "permissions",
-    "repeats",
-    "evolution",
-    "case_timeout_seconds",
-}
-REPEAT_FIELDS = {"deterministic", "stochastic"}
-EVOLUTION_FIELDS = {"max_rounds"}
-PUBLIC_EVAL_FIELDS = {
-    "id",
-    "purpose",
-    "split",
-    "prompt",
-    "files",
-    "determinism",
-    "assertions",
-    "objectives",
-    "holdout",
-    "timeout_seconds",
-    "permissions",
-    "sampling",
-}
-OPAQUE_EVAL_FIELDS = {
-    "id",
-    "purpose",
-    "split",
-    "determinism",
-    "holdout",
-    "timeout_seconds",
-    "permissions",
-    "sampling",
-}
-ASSERTION_COMMON_FIELDS = {"id", "type", "artifact", "severity"}
-ASSERTION_FIELDS = {
-    "file_exists": ASSERTION_COMMON_FIELDS,
-    "text_contains": ASSERTION_COMMON_FIELDS | {"expected", "calibration"},
-    "text_not_contains": ASSERTION_COMMON_FIELDS | {"expected", "calibration"},
-    "text_matches": ASSERTION_COMMON_FIELDS | {"pattern", "calibration"},
-    "text_not_matches": ASSERTION_COMMON_FIELDS | {"pattern", "calibration"},
-    "json_path": ASSERTION_COMMON_FIELDS | {"path", "operator", "expected"},
-    "event_absent": ASSERTION_COMMON_FIELDS | {"event"},
-    "digest_equals": ASSERTION_COMMON_FIELDS | {"expected_sha256"},
-    "numeric_range": ASSERTION_COMMON_FIELDS | {"path", "minimum", "maximum"},
-    "semantic_pair": ASSERTION_COMMON_FIELDS | {"rubric", "inputs"},
-}
-OBJECTIVE_FIELDS = {
-    "id",
-    "metric",
-    "direction",
-    "primary",
-    "min_material_delta",
-    "non_regression_tolerance",
 }
 EXECUTION_PROFILE_FIELDS = {
     "target",
@@ -285,51 +233,6 @@ AUDIT_AUTHORIZATION_FIELDS = {
 }
 
 
-class ManifestError(ValueError):
-    """Raised when an executable eval manifest violates its public contract."""
-
-
-def _require_finite_json(value: Any, label: str) -> None:
-    if isinstance(value, float) and not math.isfinite(value):
-        raise ManifestError(f"JSON artifact contains a non-finite number: {label}")
-    if isinstance(value, dict):
-        for key, item in value.items():
-            _require_finite_json(item, f"{label}.{key}")
-    elif isinstance(value, list):
-        for index, item in enumerate(value):
-            _require_finite_json(item, f"{label}[{index}]")
-
-
-def _reject_json_constant(constant: str) -> None:
-    raise ValueError(f"non-finite JSON constant: {constant}")
-
-
-def load_json_value(path: Path) -> Any:
-    try:
-        value = json.loads(
-            path.read_text(encoding="utf-8"), parse_constant=_reject_json_constant
-        )
-    except FileNotFoundError as error:
-        raise ManifestError(f"manifest does not exist: {path}") from error
-    except (OSError, UnicodeDecodeError) as error:
-        raise ManifestError(f"JSON artifact is unreadable: {path}") from error
-    except json.JSONDecodeError as error:
-        raise ManifestError(
-            f"manifest is not valid JSON at line {error.lineno}, column {error.colno}"
-        ) from error
-    except ValueError as error:
-        raise ManifestError(f"JSON artifact contains a non-finite number: {path}") from error
-    _require_finite_json(value, str(path))
-    return value
-
-
-def load_json(path: Path) -> dict[str, Any]:
-    value = load_json_value(path)
-    if not isinstance(value, dict):
-        raise ManifestError("manifest root must be an object")
-    return value
-
-
 def _load_execution_profile(
     path: Path, *, protected_roots: Iterable[Path]
 ) -> dict[str, Any]:
@@ -354,9 +257,9 @@ def _load_execution_profile(
         raise ManifestError(
             "execution profile contains unsupported fields: " + ", ".join(unknown)
         )
-    target = _require_string(raw.get("target"), "execution_profile.target")
-    harness = _require_string(raw.get("harness"), "execution_profile.harness")
-    dispatch_observation = _require_string(
+    target = require_string(raw.get("target"), "execution_profile.target")
+    harness = require_string(raw.get("harness"), "execution_profile.harness")
+    dispatch_observation = require_string(
         raw.get("dispatch_observation"),
         "execution_profile.dispatch_observation",
     )
@@ -379,7 +282,7 @@ def _load_execution_profile(
         raise ManifestError(
             "execution_profile.trace is missing fields: " + ", ".join(missing_trace)
         )
-    capture_source = _require_string(
+    capture_source = require_string(
         trace.get("capture_source"), "execution_profile.trace.capture_source"
     )
     if TRACE_CAPTURE_SOURCE_PATTERN.fullmatch(capture_source) is None:
@@ -404,16 +307,16 @@ def _load_execution_profile(
                 + ", ".join(missing_source)
             )
         normalized_source = {
-            "artifact": _validate_artifact_path(
+            "artifact": validate_artifact_path(
                 source.get("artifact"), "execution_profile.trace.source.artifact"
             ),
-            "format": _require_string(
+            "format": require_string(
                 source.get("format"), "execution_profile.trace.source.format"
             ),
         }
     else:
         raise ManifestError("execution_profile.trace.source must be an object or null")
-    isolation = _require_string(
+    isolation = require_string(
         raw.get("isolation"), "execution_profile.isolation"
     )
     if isolation not in {"trusted-orchestrator", "local-unattested"}:
@@ -433,7 +336,7 @@ def _load_execution_profile(
     sampling = raw.get("sampling")
     if not isinstance(sampling, dict) or not sampling:
         raise ManifestError("execution_profile.sampling must be a non-empty object")
-    _require_finite_json(sampling, "execution_profile.sampling")
+    require_finite_json(sampling, "execution_profile.sampling")
     normalized = {
         "target": target,
         "harness": harness,
@@ -523,98 +426,6 @@ def write_json_exclusive(path: Path, value: dict[str, Any]) -> None:
             temporary_path.unlink(missing_ok=True)
 
 
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    try:
-        with path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-    except OSError as error:
-        raise ManifestError(f"artifact is unreadable: {path}") from error
-    return digest.hexdigest()
-
-
-def sha256_json(value: Any) -> str:
-    encoded = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def sha256_runtime_file(path: Path) -> str:
-    return sha256_json(
-        {
-            "kind": "file",
-            "content_sha256": sha256_file(path),
-            "read_execute_bits": stat.S_IMODE(path.stat().st_mode) & 0o555,
-        }
-    )
-
-
-def sha256_runtime_directory(path: Path) -> str:
-    return sha256_json(
-        {
-            "kind": "directory",
-            "read_execute_bits": stat.S_IMODE(path.stat().st_mode) & 0o555,
-        }
-    )
-
-
-def iter_subject_files(root: Path) -> Iterable[Path]:
-    ignored_directories = {
-        ".git",
-        ".playwright-cli",
-        "node_modules",
-        "__pycache__",
-        "coverage",
-        ".codex-eval-workspace",
-        "skill-reviewer-workspace",
-    }
-    files: list[Path] = []
-    for current, directory_names, file_names in os.walk(root, followlinks=False):
-        current_path = Path(current)
-        retained_directories: list[str] = []
-        for name in sorted(directory_names):
-            path = current_path / name
-            if name in ignored_directories:
-                continue
-            if path.is_symlink():
-                raise ManifestError(f"subject tree contains a symbolic link: {path}")
-            retained_directories.append(name)
-        directory_names[:] = retained_directories
-        for name in sorted(file_names):
-            if name == ".DS_Store":
-                continue
-            path = current_path / name
-            metadata = path.lstat()
-            if stat.S_ISLNK(metadata.st_mode):
-                raise ManifestError(f"subject tree contains a symbolic link: {path}")
-            if not stat.S_ISREG(metadata.st_mode):
-                raise ManifestError(f"subject tree contains a special file: {path}")
-            if metadata.st_nlink != 1:
-                raise ManifestError(f"subject tree contains a hard-linked file: {path}")
-            files.append(path)
-    yield from sorted(files)
-
-
-def sha256_tree(root: Path) -> str:
-    if not root.is_dir():
-        raise ManifestError(f"subject is not a directory: {root}")
-    digest = hashlib.sha256()
-    for path in iter_subject_files(root):
-        relative = path.relative_to(root).as_posix().encode("utf-8")
-        digest.update(len(relative).to_bytes(8, "big"))
-        digest.update(relative)
-        content = path.read_bytes()
-        digest.update(len(content).to_bytes(8, "big"))
-        digest.update(content)
-    return digest.hexdigest()
-
-
 def iter_strict_files(
     root: Path, label: str, *, allow_hardlinks: bool = False
 ) -> Iterable[Path]:
@@ -632,10 +443,6 @@ def iter_strict_files(
             raise ManifestError(f"{label} contains a hard-linked file: {path}")
         if path.is_file():
             yield path
-
-
-def sha256_strict_tree(root: Path, label: str) -> str:
-    return sha256_json(strict_tree_manifest(root, label))
 
 
 def strict_tree_manifest(root: Path, label: str) -> dict[str, str]:
@@ -720,7 +527,7 @@ def _materialize_skill_snapshot(source: Path, destination: Path) -> str:
                 raise ManifestError(
                     f"runtime skill snapshot entry is hard-linked: {entry_name}"
                 )
-            safe_source = _safe_subject_file(
+            safe_source = safe_subject_file(
                 source, entry_name, "runtime skill snapshot entry"
             )
             shutil.copy2(safe_source, destination_entry)
@@ -746,7 +553,7 @@ def _materialize_skill_snapshot(source: Path, destination: Path) -> str:
             source_entry, f"runtime skill snapshot entry {entry_name}"
         ):
             relative = source_file.relative_to(source_entry)
-            safe_source = _safe_subject_file(
+            safe_source = safe_subject_file(
                 source, (Path(entry_name) / relative).as_posix(), "runtime skill snapshot entry"
             )
             destination_file = destination_entry / relative
@@ -772,7 +579,7 @@ def _build_authority(subject: Path, manifest_path: Path) -> dict[str, Any]:
         raise ManifestError("eval authority must stay inside the subject directory")
     semantic_contract_path = (
         Path(__file__).resolve().parents[1]
-        / "references"
+        / "assets"
         / "semantic-grader-contract.md"
     )
     if not semantic_contract_path.is_file():
@@ -807,7 +614,7 @@ def _build_authority(subject: Path, manifest_path: Path) -> dict[str, Any]:
                 if not isinstance(relative, str):
                     continue
                 target_digests[relative] = sha256_runtime_file(
-                    _safe_subject_file(subject, relative, "declared eval fixture")
+                    safe_subject_file(subject, relative, "declared eval fixture")
                 )
     shared_manifest = {
         key: value for key, value in manifest.items() if key != "evals"
@@ -841,527 +648,6 @@ def _build_authority(subject: Path, manifest_path: Path) -> dict[str, Any]:
     }
 
 
-def _require_string(value: Any, label: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ManifestError(f"{label} must be a non-empty string")
-    return value.strip()
-
-
-def _reject_unsupported_fields(
-    value: dict[str, Any], allowed: set[str], label: str
-) -> None:
-    unsupported = sorted(set(value) - allowed)
-    if unsupported:
-        raise ManifestError(
-            f"{label} contains unsupported fields: {', '.join(unsupported)}"
-        )
-
-
-def _safe_subject_file(subject: Path, relative: str, label: str) -> Path:
-    subject = subject.resolve()
-    path = Path(os.path.abspath(subject / relative))
-    try:
-        relative_path = path.relative_to(subject)
-    except ValueError as error:
-        raise ManifestError(f"{label} escapes the subject directory: {relative}") from error
-    current = subject
-    for part in relative_path.parts:
-        current = current / part
-        if current.is_symlink():
-            raise ManifestError(f"{label} contains a symbolic link: {relative}")
-    if not path.is_file() or path.resolve() != path:
-        raise ManifestError(f"{label} does not exist: {relative}")
-    metadata = path.lstat()
-    if not stat.S_ISREG(metadata.st_mode):
-        raise ManifestError(f"{label} must be a regular file: {relative}")
-    if metadata.st_nlink != 1:
-        raise ManifestError(f"{label} must not be hard-linked: {relative}")
-    return path
-
-
-def _validate_artifact_path(value: Any, label: str) -> str:
-    relative = _require_string(value, label)
-    path = Path(relative)
-    if path.is_absolute() or ".." in path.parts:
-        raise ManifestError(f"{label} must stay inside its execution root")
-    return path.as_posix()
-
-
-def _require_number(value: Any, label: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ManifestError(f"{label} must be a number")
-    try:
-        numeric = float(value)
-    except OverflowError as error:
-        raise ManifestError(f"{label} must be finite") from error
-    if not math.isfinite(numeric):
-        raise ManifestError(f"{label} must be finite")
-    return numeric
-
-
-def _validate_assertions(assertions: Any, label: str) -> list[dict[str, Any]]:
-    if not isinstance(assertions, list) or not assertions:
-        raise ManifestError(f"{label} must be a non-empty array")
-    seen: set[str] = set()
-    normalized: list[dict[str, Any]] = []
-    for index, assertion in enumerate(assertions):
-        assertion_label = f"{label}[{index}]"
-        if not isinstance(assertion, dict):
-            raise ManifestError(f"{assertion_label} must be an object")
-        assertion_id = _require_string(assertion.get("id"), f"{assertion_label}.id")
-        if assertion_id in seen:
-            raise ManifestError(f"duplicate assertion id in {label}: {assertion_id}")
-        seen.add(assertion_id)
-        assertion_type = assertion.get("type")
-        if assertion_type not in ASSERTION_TYPES:
-            raise ManifestError(
-                f"{assertion_label} uses unsupported assertion type: {assertion_type}"
-            )
-        _reject_unsupported_fields(
-            assertion, ASSERTION_FIELDS[assertion_type], assertion_label
-        )
-        artifact = _validate_artifact_path(
-            assertion.get("artifact"), f"{assertion_label}.artifact"
-        )
-        severity = assertion.get("severity", "must_pass")
-        allowed_severities = (
-            {"supplemental"}
-            if assertion_type in SEMANTIC_ASSERTION_TYPES
-            else {"must_pass", "should_pass"}
-        )
-        if severity not in allowed_severities:
-            raise ManifestError(
-                f"{assertion_label}.severity must be one of {sorted(allowed_severities)}"
-            )
-        if assertion_type in {"text_contains", "text_not_contains"}:
-            expected = assertion.get("expected")
-            if isinstance(expected, str):
-                expected_values = [expected]
-            elif isinstance(expected, list) and all(
-                isinstance(value, str) and value for value in expected
-            ):
-                expected_values = expected
-            else:
-                raise ManifestError(
-                    f"{assertion_label}.expected must be a string or non-empty string array"
-                )
-            if not expected_values:
-                raise ManifestError(f"{assertion_label}.expected must not be empty")
-        elif assertion_type in {"text_matches", "text_not_matches"}:
-            pattern = _require_string(
-                assertion.get("pattern"), f"{assertion_label}.pattern"
-            )
-            try:
-                re.compile(pattern)
-            except re.error as error:
-                raise ManifestError(
-                    f"{assertion_label}.pattern is invalid: {error}"
-                ) from error
-        elif assertion_type == "json_path":
-            pointer = _require_string(
-                assertion.get("path"), f"{assertion_label}.path"
-            )
-            if pointer != "" and not pointer.startswith("/"):
-                raise ManifestError(
-                    f"{assertion_label}.path must be an RFC 6901 JSON Pointer"
-                )
-            operator = assertion.get("operator", "equals")
-            if operator not in {"equals", "not_equals", "contains", "exists"}:
-                raise ManifestError(
-                    f"{assertion_label}.operator must be equals, not_equals, contains, or exists"
-                )
-            if operator != "exists" and "expected" not in assertion:
-                raise ManifestError(f"{assertion_label}.expected is required")
-        elif assertion_type == "event_absent":
-            _require_string(assertion.get("event"), f"{assertion_label}.event")
-        elif assertion_type == "digest_equals":
-            digest = _require_string(
-                assertion.get("expected_sha256"),
-                f"{assertion_label}.expected_sha256",
-            )
-            if not re.fullmatch(r"[a-f0-9]{64}", digest):
-                raise ManifestError(
-                    f"{assertion_label}.expected_sha256 must be a lowercase SHA-256 digest"
-                )
-        elif assertion_type == "numeric_range":
-            if "minimum" not in assertion and "maximum" not in assertion:
-                raise ManifestError(
-                    f"{assertion_label} requires minimum and/or maximum"
-                )
-            if "minimum" in assertion:
-                _require_number(assertion["minimum"], f"{assertion_label}.minimum")
-            if "maximum" in assertion:
-                _require_number(assertion["maximum"], f"{assertion_label}.maximum")
-            pointer = assertion.get("path")
-            if pointer is not None and (
-                not isinstance(pointer, str) or (pointer and not pointer.startswith("/"))
-            ):
-                raise ManifestError(
-                    f"{assertion_label}.path must be an RFC 6901 JSON Pointer"
-                )
-        elif assertion_type == "semantic_pair":
-            rubric = _require_string(
-                assertion.get("rubric"), f"{assertion_label}.rubric"
-            )
-            inputs = assertion.get("inputs")
-            if not isinstance(inputs, list) or not inputs:
-                raise ManifestError(
-                    f"{assertion_label}.inputs must be a non-empty array"
-                )
-            normalized_inputs = [
-                _validate_artifact_path(value, f"{assertion_label}.inputs[{index}]")
-                for index, value in enumerate(inputs)
-            ]
-            if len(set(normalized_inputs)) != len(normalized_inputs):
-                raise ManifestError(f"{assertion_label}.inputs must be unique")
-            assertion = {
-                **assertion,
-                "rubric": rubric,
-                "inputs": normalized_inputs,
-            }
-        if assertion_type in TEXT_ASSERTION_TYPES and "calibration" in assertion:
-            calibration = assertion.get("calibration")
-            if not isinstance(calibration, dict):
-                raise ManifestError(
-                    f"{assertion_label}.calibration must be an object"
-                )
-            _reject_unsupported_fields(
-                calibration, CALIBRATION_FIELDS, f"{assertion_label}.calibration"
-            )
-            normalized_calibration: dict[str, list[str]] = {}
-            for field in ("pass_examples", "fail_examples"):
-                examples = calibration.get(field)
-                if not isinstance(examples, list) or not examples or not all(
-                    isinstance(example, str) and example for example in examples
-                ):
-                    raise ManifestError(
-                        f"{assertion_label}.calibration.{field} must be a non-empty string array"
-                    )
-                normalized_calibration[field] = list(examples)
-            assertion = {**assertion, "calibration": normalized_calibration}
-            failed_pass = [
-                index
-                for index, example in enumerate(
-                    normalized_calibration["pass_examples"]
-                )
-                if not evaluate_text_assertion(assertion, example)
-            ]
-            failed_fail = [
-                index
-                for index, example in enumerate(
-                    normalized_calibration["fail_examples"]
-                )
-                if evaluate_text_assertion(assertion, example)
-            ]
-            if failed_pass or failed_fail:
-                failures = [
-                    *(f"pass_examples[{index}]" for index in failed_pass),
-                    *(f"fail_examples[{index}]" for index in failed_fail),
-                ]
-                raise ManifestError(
-                    f"{assertion_label}.calibration failed the declared predicate: "
-                    + ", ".join(failures)
-                )
-        normalized.append({**assertion, "artifact": artifact, "severity": severity})
-    return normalized
-
-
-def _validate_objectives(objectives: Any, label: str) -> list[dict[str, Any]]:
-    if not isinstance(objectives, list) or not objectives:
-        raise ManifestError(f"{label} must be a non-empty array")
-    seen: set[str] = set()
-    normalized: list[dict[str, Any]] = []
-    for index, objective in enumerate(objectives):
-        objective_label = f"{label}[{index}]"
-        if not isinstance(objective, dict):
-            raise ManifestError(f"{objective_label} must be an object")
-        _reject_unsupported_fields(objective, OBJECTIVE_FIELDS, objective_label)
-        objective_id = _require_string(objective.get("id"), f"{objective_label}.id")
-        if objective_id in seen:
-            raise ManifestError(f"duplicate objective id in {label}: {objective_id}")
-        seen.add(objective_id)
-        metric = _require_string(objective.get("metric"), f"{objective_label}.metric")
-        if not re.fullmatch(r"[a-z][a-z0-9_]*", metric):
-            raise ManifestError(f"{objective_label}.metric must be snake_case")
-        direction = objective.get("direction")
-        if direction not in {"maximize", "minimize"}:
-            raise ManifestError(
-                f"{objective_label}.direction must be maximize or minimize"
-            )
-        material = _require_number(
-            objective.get("min_material_delta", 0),
-            f"{objective_label}.min_material_delta",
-        )
-        tolerance = _require_number(
-            objective.get("non_regression_tolerance", 0),
-            f"{objective_label}.non_regression_tolerance",
-        )
-        if material < 0 or tolerance < 0:
-            raise ManifestError(
-                f"{objective_label} deltas and tolerances must be non-negative"
-            )
-        primary = objective.get("primary", True)
-        if not isinstance(primary, bool):
-            raise ManifestError(f"{objective_label}.primary must be boolean")
-        if primary and material <= 0:
-            raise ManifestError(
-                f"{objective_label}.min_material_delta must be greater than zero for a primary objective"
-            )
-        normalized.append(
-            {
-                **objective,
-                "id": objective_id,
-                "metric": metric,
-                "direction": direction,
-                "primary": primary,
-                "min_material_delta": material,
-                "non_regression_tolerance": tolerance,
-            }
-        )
-    return normalized
-
-
-def _normalize_permissions(
-    raw: dict[str, Any],
-    label: str,
-    inherited: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    unknown = sorted(set(raw) - PERMISSION_FIELDS)
-    if unknown:
-        raise ManifestError(
-            f"{label} contains unsupported fields: {', '.join(unknown)}"
-        )
-    merged = {**(inherited or {}), **raw}
-    network = merged.get("network")
-    if network not in {"deny", "allowlist"}:
-        raise ManifestError(f"{label}.network must be deny or allowlist")
-    if merged.get("external_side_effects", "deny") != "deny":
-        raise ManifestError(f"{label}.external_side_effects must remain deny")
-    writable_roots = merged.get("writable_roots")
-    if not isinstance(writable_roots, list) or not writable_roots:
-        raise ManifestError(f"{label}.writable_roots must be a non-empty array")
-    normalized = {
-        "network": network,
-        "external_side_effects": "deny",
-        "writable_roots": [
-            _validate_artifact_path(
-                raw_root, f"{label}.writable_roots[{index}]"
-            )
-            for index, raw_root in enumerate(writable_roots)
-        ],
-    }
-    if network == "allowlist":
-        allowlist = merged.get("network_allowlist")
-        if not isinstance(allowlist, list) or not allowlist or not all(
-            isinstance(value, str) and value.strip() for value in allowlist
-        ):
-            raise ManifestError(
-                f"{label}.network_allowlist must be a non-empty string array when network is allowlist"
-            )
-        normalized["network_allowlist"] = list(allowlist)
-    elif "network_allowlist" in raw:
-        raise ManifestError(
-            f"{label}.network_allowlist is allowed only when network is allowlist"
-        )
-    return normalized
-
-
-def validate_manifest(manifest: dict[str, Any], subject: Path) -> list[dict[str, Any]]:
-    _reject_unsupported_fields(manifest, MANIFEST_FIELDS, "manifest")
-    if manifest.get("contract") != MANIFEST_CONTRACT:
-        raise ManifestError(f"contract must be {MANIFEST_CONTRACT}")
-    _require_string(manifest.get("skill_name"), "skill_name")
-    defaults = manifest.get("defaults")
-    if not isinstance(defaults, dict):
-        raise ManifestError("defaults must be an object")
-    _reject_unsupported_fields(defaults, DEFAULT_FIELDS, "defaults")
-    repeats = defaults.get("repeats")
-    if not isinstance(repeats, dict):
-        raise ManifestError("defaults.repeats must be an object")
-    _reject_unsupported_fields(repeats, REPEAT_FIELDS, "defaults.repeats")
-    for key, expected in (("deterministic", 1), ("stochastic", 3)):
-        value = repeats.get(key)
-        if not isinstance(value, int) or value < 1:
-            raise ManifestError(f"defaults.repeats.{key} must be a positive integer")
-        if value != expected:
-            raise ManifestError(f"defaults.repeats.{key} must be {expected}")
-    evolution = defaults.get("evolution")
-    if not isinstance(evolution, dict):
-        raise ManifestError("defaults.evolution must be an object")
-    _reject_unsupported_fields(evolution, EVOLUTION_FIELDS, "defaults.evolution")
-    if evolution.get("max_rounds") != 3:
-        raise ManifestError("defaults.evolution.max_rounds must be 3")
-    default_timeout = defaults.get("case_timeout_seconds")
-    if (
-        not isinstance(default_timeout, int)
-        or isinstance(default_timeout, bool)
-        or default_timeout <= 0
-    ):
-        raise ManifestError(
-            "defaults.case_timeout_seconds must be a positive integer"
-        )
-    raw_permissions = defaults.get("permissions")
-    if not isinstance(raw_permissions, dict):
-        raise ManifestError("defaults.permissions must be an object")
-    permissions = _normalize_permissions(raw_permissions, "defaults.permissions")
-
-    evals = manifest.get("evals")
-    if not isinstance(evals, list) or not evals:
-        raise ManifestError("evals must be a non-empty array")
-    seen_ids: set[str] = set()
-    normalized: list[dict[str, Any]] = []
-    for index, item in enumerate(evals):
-        label = f"evals[{index}]"
-        if not isinstance(item, dict):
-            raise ManifestError(f"{label} must be an object")
-        eval_id = _require_string(item.get("id"), f"{label}.id")
-        if not PATH_SAFE_SLUG.fullmatch(eval_id):
-            raise ManifestError(
-                f"{label}.id must be a path-safe lowercase kebab-case slug"
-            )
-        if eval_id in seen_ids:
-            raise ManifestError(f"duplicate eval id: {eval_id}")
-        seen_ids.add(eval_id)
-        split = item.get("split")
-        if split not in {"development", "selection", "audit"}:
-            raise ManifestError(
-                f"{label}.split must be development, selection, or audit"
-            )
-        determinism = item.get("determinism")
-        if determinism not in {"deterministic", "stochastic"}:
-            raise ManifestError(
-                f"{label}.determinism must be deterministic or stochastic"
-            )
-        try:
-            sampling = normalize_sampling(
-                item.get("sampling"),
-                legacy_repeats=int(repeats[determinism]),
-                determinism=str(determinism),
-            )
-        except ValueError as error:
-            raise ManifestError(f"{label}.{error}") from error
-        _require_string(item.get("purpose"), f"{label}.purpose")
-        raw_holdout = item.get("holdout", {"visibility": "public"})
-        if not isinstance(raw_holdout, dict):
-            raise ManifestError(f"{label}.holdout must be an object")
-        holdout_unknown = sorted(set(raw_holdout) - {"visibility", "asset_id"})
-        if holdout_unknown:
-            raise ManifestError(
-                f"{label}.holdout contains unsupported fields: "
-                + ", ".join(holdout_unknown)
-            )
-        visibility = raw_holdout.get("visibility", "public")
-        if visibility not in {"public", "opaque"}:
-            raise ManifestError(
-                f"{label}.holdout.visibility must be public or opaque"
-            )
-        if visibility == "opaque":
-            if split != "audit":
-                raise ManifestError(
-                    f"{label}.holdout.visibility opaque is allowed only for audit"
-                )
-            exposed_oracle_fields = sorted(
-                {"prompt", "files", "assertions", "objectives"} & set(item)
-            )
-            if exposed_oracle_fields:
-                raise ManifestError(
-                    f"{label} opaque audit must not expose oracle fields: "
-                    + ", ".join(exposed_oracle_fields)
-                )
-            _reject_unsupported_fields(item, OPAQUE_EVAL_FIELDS, label)
-            asset_id = _require_string(
-                raw_holdout.get("asset_id"), f"{label}.holdout.asset_id"
-            )
-            if not PATH_SAFE_SLUG.fullmatch(asset_id):
-                raise ManifestError(
-                    f"{label}.holdout.asset_id must be a path-safe lowercase kebab-case slug"
-                )
-            holdout = {"visibility": "opaque", "asset_id": asset_id}
-            prompt: str | None = None
-            file_records: list[dict[str, Any]] = []
-            assertions: list[dict[str, Any]] = []
-            objectives: list[dict[str, Any]] = []
-        else:
-            _reject_unsupported_fields(item, PUBLIC_EVAL_FIELDS, label)
-            if "asset_id" in raw_holdout:
-                raise ManifestError(
-                    f"{label}.holdout.asset_id is allowed only for opaque holdout"
-                )
-            holdout = {"visibility": "public", "asset_id": None}
-            prompt = _require_string(item.get("prompt"), f"{label}.prompt")
-            files = item.get("files", [])
-            if not isinstance(files, list) or not all(
-                isinstance(value, str) for value in files
-            ):
-                raise ManifestError(f"{label}.files must be an array of paths")
-            files = [
-                _validate_artifact_path(value, f"{label}.files[{file_index}]")
-                for file_index, value in enumerate(files)
-            ]
-            if len(set(files)) != len(files):
-                raise ManifestError(f"{label}.files must be unique")
-            file_records = [
-                {
-                    "path": relative,
-                    "digest": sha256_runtime_file(
-                        _safe_subject_file(subject, relative, f"{label}.files")
-                    ),
-                }
-                for relative in files
-            ]
-            assertions = _validate_assertions(
-                item.get("assertions"), f"{label}.assertions"
-            )
-            if not any(
-                assertion.get("type") in DETERMINISTIC_ASSERTION_TYPES
-                and assertion.get("severity") == "must_pass"
-                for assertion in assertions
-            ):
-                raise ManifestError(
-                    f"{label}.assertions requires at least one deterministic must_pass assertion"
-                )
-            objectives = _validate_objectives(
-                item.get("objectives"), f"{label}.objectives"
-            )
-        oracle = assess_oracle(assertions)
-        if split in {"selection", "audit"} and visibility == "public" and oracle[
-            "status"
-        ] != "valid":
-            raise ManifestError(
-                f"{label}.assertions must calibrate every must_pass text predicate before {split}: "
-                + ", ".join(oracle["reasons"])
-            )
-        timeout_seconds = item.get("timeout_seconds", default_timeout)
-        if (
-            not isinstance(timeout_seconds, int)
-            or isinstance(timeout_seconds, bool)
-            or timeout_seconds <= 0
-        ):
-            raise ManifestError(f"{label}.timeout_seconds must be a positive integer")
-        item_permissions = item.get("permissions", {})
-        if not isinstance(item_permissions, dict):
-            raise ManifestError(f"{label}.permissions must be an object")
-        resolved_permissions = _normalize_permissions(
-            item_permissions, f"{label}.permissions", permissions
-        )
-        normalized.append(
-            {
-                **item,
-                **({"prompt": prompt} if prompt is not None else {}),
-                "files": file_records,
-                "holdout": holdout,
-                "assertions": assertions,
-                "objectives": objectives,
-                "sampling": sampling,
-                "oracle": oracle,
-                "repeats": sampling["repeats"],
-                "timeout_seconds": timeout_seconds,
-                "permissions": resolved_permissions,
-            }
-        )
-    return normalized
-
-
 def _resolve_holdout_cases(
     cases: list[dict[str, Any]],
     *,
@@ -1387,7 +673,7 @@ def _resolve_holdout_cases(
                 "digest": None,
             },
             {
-                (str(case["id"]), str(record["path"])): _safe_subject_file(
+                (str(case["id"]), str(record["path"])): safe_subject_file(
                     subject, str(record["path"]), "public eval fixture"
                 )
                 for case in cases
@@ -1416,7 +702,7 @@ def _resolve_holdout_cases(
     pack = load_json(pack_path)
     if set(pack) != {"issuer", "assets"}:
         raise ManifestError("holdout pack must contain only issuer and assets")
-    issuer = _require_string(pack.get("issuer"), "holdout_pack.issuer")
+    issuer = require_string(pack.get("issuer"), "holdout_pack.issuer")
     assets = pack.get("assets")
     if not isinstance(assets, dict):
         raise ManifestError("holdout_pack.assets must be an object")
@@ -1425,7 +711,7 @@ def _resolve_holdout_cases(
     fixture_digests: dict[str, str] = {}
     for case in cases:
         case_id = str(case["id"])
-        asset_id = _require_string(
+        asset_id = require_string(
             case.get("holdout", {}).get("asset_id"),
             f"eval {case_id}.holdout.asset_id",
         )
@@ -1437,14 +723,14 @@ def _resolve_holdout_cases(
             "objectives",
         }:
             raise ManifestError(f"opaque holdout asset is missing or invalid: {asset_id}")
-        prompt = _require_string(
+        prompt = require_string(
             asset.get("prompt"), f"holdout_pack.assets.{asset_id}.prompt"
         )
         asset_files = asset.get("files")
         if not isinstance(asset_files, dict):
             raise ManifestError(f"opaque holdout asset files are invalid: {asset_id}")
         logical_paths = [
-            _validate_artifact_path(
+            validate_artifact_path(
                 logical_path,
                 f"holdout_pack.assets.{asset_id}.files.{logical_path}",
             )
@@ -1452,7 +738,7 @@ def _resolve_holdout_cases(
         ]
         if len(set(logical_paths)) != len(logical_paths):
             raise ManifestError(f"opaque holdout asset files are duplicated: {asset_id}")
-        assertions = _validate_assertions(
+        assertions = validate_assertions(
             asset.get("assertions"),
             f"holdout_pack.assets.{asset_id}.assertions",
         )
@@ -1464,7 +750,7 @@ def _resolve_holdout_cases(
             raise ManifestError(
                 f"holdout_pack.assets.{asset_id}.assertions requires at least one deterministic must_pass assertion"
             )
-        objectives = _validate_objectives(
+        objectives = validate_objectives(
             asset.get("objectives"),
             f"holdout_pack.assets.{asset_id}.objectives",
         )
@@ -1554,7 +840,7 @@ def _cases_with_execution_arms(
             if applicable:
                 arms.append("without_skill")
             else:
-                extra["without_skill_na_reason"] = _require_string(
+                extra["without_skill_na_reason"] = require_string(
                     without_skill_config.get("reason"),
                     f"eval {case['id']}.without_skill.reason",
                 )
@@ -1589,7 +875,7 @@ def _runtime_skill_file_digests(source: Path) -> dict[str, str]:
                 raise ManifestError(
                     f"runtime skill snapshot entry is hard-linked: {entry_name}"
                 )
-            source_file = _safe_subject_file(
+            source_file = safe_subject_file(
                 source, entry_name, "runtime skill snapshot entry"
             )
             records[entry_name] = sha256_runtime_file(source_file)
@@ -1740,7 +1026,7 @@ def compile_manifest(
                 raise ManifestError(f"skill snapshot source is missing for arm {arm}")
             for repeat in range(1, int(case["repeats"]) + 1):
                 snapshot_key = f"{case['id']}/{arm}/repeat-{repeat}"
-                snapshot_path = _safe_artifact(
+                snapshot_path = safe_artifact(
                     workspace, f"skill-snapshots/{snapshot_key}"
                 )
                 snapshot_records[snapshot_key] = {
@@ -1819,7 +1105,7 @@ def compile_manifest(
                 )
                 repeat_root.mkdir(parents=True, exist_ok=False)
                 input_files: list[dict[str, Any]] = []
-                input_root = _safe_artifact(
+                input_root = safe_artifact(
                     workspace,
                     (
                         Path("inputs")
@@ -1840,7 +1126,7 @@ def compile_manifest(
                     source_path = fixture_sources[
                         (str(case["id"]), str(record["path"]))
                     ]
-                    isolated_path = _safe_artifact(
+                    isolated_path = safe_artifact(
                         workspace, input_relative.as_posix()
                     )
                     isolated_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1930,31 +1216,6 @@ def compile_manifest(
     return plan
 
 
-def _safe_artifact(root: Path, relative: str) -> Path:
-    resolved_root = root.resolve()
-    lexical = Path(os.path.abspath(root / relative))
-    try:
-        relative_path = lexical.relative_to(resolved_root)
-    except ValueError as error:
-        raise ManifestError(f"artifact path escapes its execution root: {relative}") from error
-    current = resolved_root
-    for part in relative_path.parts:
-        current = current / part
-        if current.is_symlink():
-            raise ManifestError(f"artifact path contains a symbolic link: {relative}")
-    if lexical.exists():
-        if lexical.resolve() != lexical:
-            raise ManifestError(f"artifact path is not canonical: {relative}")
-        metadata = lexical.lstat()
-        if stat.S_ISREG(metadata.st_mode) and metadata.st_nlink != 1:
-            raise ManifestError(f"artifact path is hard-linked: {relative}")
-        if not (
-            stat.S_ISREG(metadata.st_mode) or stat.S_ISDIR(metadata.st_mode)
-        ):
-            raise ManifestError(f"artifact path is a special file: {relative}")
-    return lexical
-
-
 def _trace_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace(
         "+00:00", "Z"
@@ -1980,8 +1241,8 @@ def _expected_dispatch_observation(profile: dict[str, Any]) -> str:
 def _bound_execution_profile(
     *, assignment_path: Path, workspace: Path, assignment: dict[str, Any]
 ) -> dict[str, Any]:
-    plan_path = _safe_artifact(workspace, "execution-plan.json")
-    lock_path = _safe_artifact(workspace, "run-lock.json")
+    plan_path = safe_artifact(workspace, "execution-plan.json")
+    lock_path = safe_artifact(workspace, "run-lock.json")
     if not plan_path.is_file() or not lock_path.is_file():
         raise ManifestError("dispatch receipt requires execution-plan.json and run-lock.json")
     plan = load_json(plan_path)
@@ -2015,7 +1276,7 @@ def record_dispatch_receipt(
 ) -> dict[str, Any]:
     workspace = workspace.resolve()
     assignment_path = assignment_path.resolve()
-    assignment, repeat_root, _trace_path = _trace_assignment_context(
+    assignment, repeat_root, _trace_path = trace_assignment_context(
         assignment_path=assignment_path, workspace=workspace
     )
     profile = _bound_execution_profile(
@@ -2023,12 +1284,12 @@ def record_dispatch_receipt(
         workspace=workspace,
         assignment=assignment,
     )
-    normalized_dispatch_id = _require_string(dispatch_id, "dispatch_id")
-    normalized_worker_id = _require_string(worker_id, "worker_id")
+    normalized_dispatch_id = require_string(dispatch_id, "dispatch_id")
+    normalized_worker_id = require_string(worker_id, "worker_id")
     if len(normalized_dispatch_id) > 256 or len(normalized_worker_id) > 256:
         raise ManifestError("dispatch_id and worker_id must not exceed 256 characters")
     normalized_batch_id = (
-        _require_string(batch_id, "batch_id")
+        require_string(batch_id, "batch_id")
         if batch_id is not None
         else "batch-"
         + sha256_json(
@@ -2041,10 +1302,10 @@ def record_dispatch_receipt(
     )
     if len(normalized_batch_id) > 256:
         raise ManifestError("batch_id must not exceed 256 characters")
-    artifact = _validate_artifact_path(
+    artifact = validate_artifact_path(
         assignment.get("dispatch_artifact"), "assignment.dispatch_artifact"
     )
-    receipt_path = _safe_artifact(repeat_root, artifact)
+    receipt_path = safe_artifact(repeat_root, artifact)
     if receipt_path.exists() or receipt_path.is_symlink():
         raise ManifestError("dispatch receipt is already recorded")
     receipt = {
@@ -2070,10 +1331,10 @@ def record_dispatch_receipt(
 def _dispatch_descriptor(
     *, assignment: dict[str, Any], repeat_root: Path
 ) -> dict[str, Any] | None:
-    artifact = _validate_artifact_path(
+    artifact = validate_artifact_path(
         assignment.get("dispatch_artifact"), "assignment.dispatch_artifact"
     )
-    receipt_path = _safe_artifact(repeat_root, artifact)
+    receipt_path = safe_artifact(repeat_root, artifact)
     if not receipt_path.is_file():
         return None
     receipt = load_json(receipt_path)
@@ -2104,7 +1365,7 @@ def _validate_dispatch_receipt(
     execution_profile: dict[str, Any],
 ) -> tuple[dict[str, Any], list[str]]:
     errors: list[str] = []
-    expected_artifact = _validate_artifact_path(
+    expected_artifact = validate_artifact_path(
         assignment.get("dispatch_artifact"), "assignment.dispatch_artifact"
     )
     if not isinstance(descriptor, dict):
@@ -2122,7 +1383,7 @@ def _validate_dispatch_receipt(
         )
     if descriptor.get("artifact") != expected_artifact:
         errors.append("execution dispatch artifact does not match the locked assignment")
-    receipt_path = _safe_artifact(repeat_root, expected_artifact)
+    receipt_path = safe_artifact(repeat_root, expected_artifact)
     if not receipt_path.is_file():
         return dict(descriptor), [*errors, "dispatch-receipt.json is missing"]
     actual_digest = sha256_file(receipt_path)
@@ -2190,7 +1451,7 @@ def _validate_source_trace(
     errors: list[str] = []
     locked_artifact = assignment.get("source_trace_artifact")
     expected_artifact = (
-        _validate_artifact_path(
+        validate_artifact_path(
             locked_artifact,
             "assignment.source_trace_artifact",
         )
@@ -2216,7 +1477,7 @@ def _validate_source_trace(
         errors.append("execution source trace is missing fields: " + ", ".join(missing))
     if descriptor.get("artifact") != expected_artifact:
         errors.append("execution source trace artifact does not match the locked assignment")
-    source_path = _safe_artifact(repeat_root, expected_artifact)
+    source_path = safe_artifact(repeat_root, expected_artifact)
     if not source_path.is_file():
         return dict(descriptor), [*errors, "source trace artifact is missing"]
     actual_digest = sha256_file(source_path)
@@ -2258,8 +1519,8 @@ def _validate_source_trace(
         retained_lines = []
     for index, line in enumerate(retained_lines, start=1):
         try:
-            event = json.loads(line, parse_constant=_reject_json_constant)
-            _require_finite_json(event, f"source trace line {index}")
+            event = json.loads(line, parse_constant=reject_json_constant)
+            require_finite_json(event, f"source trace line {index}")
         except (json.JSONDecodeError, ValueError, ManifestError) as error:
             errors.append(f"source trace line {index} is invalid JSON: {error}")
             continue
@@ -2351,8 +1612,8 @@ def _read_trace_jsonl(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
             errors.append(f"agent trace line {line_number} is empty")
             continue
         try:
-            value = json.loads(line, parse_constant=_reject_json_constant)
-            _require_finite_json(value, f"agent trace line {line_number}")
+            value = json.loads(line, parse_constant=reject_json_constant)
+            require_finite_json(value, f"agent trace line {line_number}")
         except (json.JSONDecodeError, ValueError, ManifestError) as error:
             errors.append(f"agent trace line {line_number} is invalid JSON: {error}")
             continue
@@ -2529,40 +1790,6 @@ def _trace_event_ids_by_artifact(
     return result
 
 
-def _trace_assignment_context(
-    *, assignment_path: Path, workspace: Path
-) -> tuple[dict[str, Any], Path, Path]:
-    workspace = workspace.resolve()
-    assignment = load_json(assignment_path)
-    if assignment.get("contract") != ASSIGNMENT_CONTRACT:
-        raise ManifestError(f"assignment contract must be {ASSIGNMENT_CONTRACT}")
-    case_id = _require_string(assignment.get("case_id"), "assignment.case_id")
-    arm = _require_string(assignment.get("arm"), "assignment.arm")
-    repeat = assignment.get("repeat")
-    if not isinstance(repeat, int) or isinstance(repeat, bool) or repeat < 1:
-        raise ManifestError("assignment.repeat must be a positive integer")
-    expected_assignment = _safe_artifact(
-        workspace,
-        (Path("assignments") / case_id / arm / f"repeat-{repeat}.json").as_posix(),
-    )
-    if assignment_path.resolve() != expected_assignment.resolve():
-        raise ManifestError("assignment path does not match its bound identity")
-    repeat_root = _require_real_directory(
-        workspace / "cases" / case_id / arm / f"repeat-{repeat}",
-        workspace,
-        "repeat root",
-    )
-    writable_root = Path(
-        _require_string(assignment.get("writable_root"), "assignment.writable_root")
-    ).resolve()
-    if writable_root != repeat_root:
-        raise ManifestError("assignment writable_root does not match its repeat root")
-    trace_artifact = _validate_artifact_path(
-        assignment.get("trace_artifact"), "assignment.trace_artifact"
-    )
-    return assignment, repeat_root, _safe_artifact(repeat_root, trace_artifact)
-
-
 def _append_trace_event(path: Path, event: dict[str, Any]) -> None:
     if path.is_symlink() or path.parent.resolve() != path.parent:
         raise ManifestError(f"refusing to append through a symbolic link: {path}")
@@ -2658,10 +1885,10 @@ def record_trace_event(
             + ", ".join(forbidden_keys)
         )
     normalized_artifact_refs = [
-        _validate_artifact_path(value, "Agent trace artifact reference")
+        validate_artifact_path(value, "Agent trace artifact reference")
         for value in artifact_refs
     ]
-    assignment, _repeat_root, trace_path = _trace_assignment_context(
+    assignment, _repeat_root, trace_path = trace_assignment_context(
         assignment_path=assignment_path, workspace=workspace
     )
     if capture_source is None:
@@ -2670,7 +1897,7 @@ def record_trace_event(
             workspace=workspace.resolve(),
             assignment=assignment,
         )
-        capture_source = _require_string(
+        capture_source = require_string(
             execution_profile.get("trace", {}).get("capture_source"),
             "execution_profile.trace.capture_source",
         )
@@ -2737,7 +1964,7 @@ def finalize_execution(
 ) -> dict[str, Any]:
     if status not in {"completed", "failed", "timed_out", "interrupted"}:
         raise ManifestError(f"unsupported execution status: {status}")
-    assignment, repeat_root, trace_path = _trace_assignment_context(
+    assignment, repeat_root, trace_path = trace_assignment_context(
         assignment_path=assignment_path, workspace=workspace
     )
     execution_profile = _bound_execution_profile(
@@ -2748,7 +1975,7 @@ def finalize_execution(
     trace_profile = execution_profile.get("trace")
     if not isinstance(trace_profile, dict):
         raise ManifestError("execution profile trace contract is missing")
-    expected_capture_source = _require_string(
+    expected_capture_source = require_string(
         trace_profile.get("capture_source"),
         "execution_profile.trace.capture_source",
     )
@@ -2761,9 +1988,9 @@ def finalize_execution(
     source_profile = trace_profile.get("source")
     if source_profile is not None and not isinstance(source_profile, dict):
         raise ManifestError("execution profile trace source contract is invalid")
-    execution_path = _safe_artifact(
+    execution_path = safe_artifact(
         repeat_root,
-        _validate_artifact_path(
+        validate_artifact_path(
             assignment.get("execution_artifact"), "assignment.execution_artifact"
         ),
     )
@@ -2796,7 +2023,7 @@ def finalize_execution(
         if isinstance(ref, str)
     }
     for artifact in expected_artifacts:
-        artifact_path = _safe_artifact(repeat_root, artifact)
+        artifact_path = safe_artifact(repeat_root, artifact)
         if not artifact_path.is_file():
             continue
         digest = sha256_file(artifact_path)
@@ -2945,8 +2172,8 @@ def _failed_assertion(
 
 
 def grade_assertion(assertion: dict[str, Any], repeat_root: Path) -> dict[str, Any]:
-    assertion_id = _require_string(assertion.get("id"), "assertion.id")
-    assertion_type = _require_string(assertion.get("type"), "assertion.type")
+    assertion_id = require_string(assertion.get("id"), "assertion.id")
+    assertion_type = require_string(assertion.get("type"), "assertion.type")
     if assertion_type not in DETERMINISTIC_ASSERTION_TYPES:
         raise ManifestError(
             f"assertion {assertion_id} is not a deterministic assertion: {assertion_type}"
@@ -2954,8 +2181,8 @@ def grade_assertion(assertion: dict[str, Any], repeat_root: Path) -> dict[str, A
     severity = assertion.get("severity", "must_pass")
     if severity not in {"must_pass", "should_pass"}:
         raise ManifestError(f"assertion {assertion_id} has invalid severity")
-    artifact = _require_string(assertion.get("artifact"), f"assertion {assertion_id}.artifact")
-    artifact_path = _safe_artifact(repeat_root, artifact)
+    artifact = require_string(assertion.get("artifact"), f"assertion {assertion_id}.artifact")
+    artifact_path = safe_artifact(repeat_root, artifact)
     if assertion_type == "file_exists":
         passed = artifact_path.is_file()
         evidence: Any = {
@@ -2994,7 +2221,7 @@ def grade_assertion(assertion: dict[str, Any], repeat_root: Path) -> dict[str, A
             return _failed_assertion(
                 assertion_id, assertion_type, severity, f"unreadable text artifact: {error}"
             )
-        pattern = _require_string(
+        pattern = require_string(
             assertion.get("pattern"), f"assertion {assertion_id}.pattern"
         )
         try:
@@ -3051,7 +2278,7 @@ def grade_assertion(assertion: dict[str, Any], repeat_root: Path) -> dict[str, A
         else:
             try:
                 numeric = (
-                    _require_number(actual, f"assertion {assertion_id}.actual")
+                    require_number(actual, f"assertion {assertion_id}.actual")
                     if found
                     else None
                 )
@@ -3072,7 +2299,7 @@ def grade_assertion(assertion: dict[str, Any], repeat_root: Path) -> dict[str, A
                 "maximum": maximum,
             }
     elif assertion_type == "event_absent":
-        event = _require_string(
+        event = require_string(
             assertion.get("event"), f"assertion {assertion_id}.event"
         )
         observed: list[str] = []
@@ -3084,9 +2311,9 @@ def grade_assertion(assertion: dict[str, Any], repeat_root: Path) -> dict[str, A
                     continue
                 record = json.loads(
                     line,
-                    parse_constant=_reject_json_constant,
+                    parse_constant=reject_json_constant,
                 )
-                _require_finite_json(
+                require_finite_json(
                     record, f"event log line {line_number}"
                 )
                 if not isinstance(record, dict):
@@ -3111,7 +2338,7 @@ def grade_assertion(assertion: dict[str, Any], repeat_root: Path) -> dict[str, A
             "observed": sorted(set(observed)),
         }
     elif assertion_type == "digest_equals":
-        expected_digest = _require_string(
+        expected_digest = require_string(
             assertion.get("expected_sha256"),
             f"assertion {assertion_id}.expected_sha256",
         )
@@ -3154,15 +2381,15 @@ def grade_arm(
     binding_errors: list[str] = []
     artifacts: list[str] = []
     metric_samples: dict[str, list[float]] = {}
-    case_root = _require_real_directory(
+    case_root = require_real_directory(
         workspace / "cases" / str(case["id"]), workspace, "case root"
     )
-    arm_root = _require_real_directory(case_root / arm, workspace, "arm root")
+    arm_root = require_real_directory(case_root / arm, workspace, "arm root")
     for repeat in range(1, int(case["repeats"]) + 1):
-        repeat_root = _require_real_directory(
+        repeat_root = require_real_directory(
             arm_root / f"repeat-{repeat}", workspace, "repeat root"
         )
-        execution_path = _safe_artifact(repeat_root, "execution.json")
+        execution_path = safe_artifact(repeat_root, "execution.json")
         assignment_relative = (
             Path("assignments")
             / str(case["id"])
@@ -3174,7 +2401,7 @@ def grade_arm(
             raise ManifestError(
                 f"run lock is missing assignment digest: {assignment_relative}"
             )
-        assignment_path = _safe_artifact(workspace, assignment_relative)
+        assignment_path = safe_artifact(workspace, assignment_relative)
         assignment = load_json(assignment_path)
         for key, expected_value in {
             "contract": ASSIGNMENT_CONTRACT,
@@ -3249,14 +2476,14 @@ def grade_arm(
         repeat_binding_errors.extend(dispatch_errors)
         dispatch_artifact = dispatch_descriptor.get("artifact")
         if isinstance(dispatch_artifact, str):
-            dispatch_path = _safe_artifact(repeat_root, dispatch_artifact)
+            dispatch_path = safe_artifact(repeat_root, dispatch_artifact)
             if dispatch_path.is_file():
                 artifacts.append(str(dispatch_path.relative_to(workspace)))
-        trace_artifact = _validate_artifact_path(
+        trace_artifact = validate_artifact_path(
             assignment.get("trace_artifact"),
             f"locked assignment trace_artifact: {assignment_relative}",
         )
-        trace_path = _safe_artifact(repeat_root, trace_artifact)
+        trace_path = safe_artifact(repeat_root, trace_artifact)
         if trace_path.is_file():
             artifacts.append(str(trace_path.relative_to(workspace)))
         trace_events, trace_descriptor, trace_errors = _validate_agent_trace(
@@ -3298,7 +2525,7 @@ def grade_arm(
         if isinstance(source_trace_descriptor, dict):
             source_artifact = source_trace_descriptor.get("artifact")
             if isinstance(source_artifact, str):
-                source_path = _safe_artifact(repeat_root, source_artifact)
+                source_path = safe_artifact(repeat_root, source_artifact)
                 if source_path.is_file():
                     artifacts.append(str(source_path.relative_to(workspace)))
         trace_event_ids = _trace_event_ids_by_artifact(trace_events)
@@ -3316,7 +2543,7 @@ def grade_arm(
             artifact_digests = {}
         actual_artifact_digests: dict[str, str] = {}
         for artifact in expected_artifacts:
-            artifact_path = _safe_artifact(repeat_root, artifact)
+            artifact_path = safe_artifact(repeat_root, artifact)
             if not artifact_path.is_file():
                 continue
             actual_artifact_digests[artifact] = sha256_file(artifact_path)
@@ -3371,7 +2598,7 @@ def grade_arm(
                     )
                     continue
                 try:
-                    normalized_metrics[metric] = _require_number(
+                    normalized_metrics[metric] = require_number(
                         value, f"execution metric {metric}"
                     )
                 except ManifestError as error:
@@ -3558,8 +2785,8 @@ def _semantic_judgment_binding(
     candidate_arm: str,
     baseline_arm: str,
 ) -> dict[str, Any]:
-    assertion_id = _require_string(assertion.get("id"), "semantic assertion.id")
-    rubric = _require_string(
+    assertion_id = require_string(assertion.get("id"), "semantic assertion.id")
+    rubric = require_string(
         assertion.get("rubric"), f"semantic assertion {assertion_id}.rubric"
     )
     inputs = assertion.get("inputs")
@@ -3568,7 +2795,7 @@ def _semantic_judgment_binding(
             f"semantic assertion {assertion_id}.inputs must be a non-empty array"
         )
     normalized_inputs = [
-        _validate_artifact_path(value, f"semantic assertion {assertion_id}.inputs")
+        validate_artifact_path(value, f"semantic assertion {assertion_id}.inputs")
         for value in inputs
     ]
     artifacts: dict[str, list[dict[str, Any]]] = {}
@@ -3578,13 +2805,13 @@ def _semantic_judgment_binding(
         for repeat in range(1, repeats + 1):
             repeat_root = case_root / arm / f"repeat-{repeat}"
             digests: dict[str, str | None] = {}
-            trace_path = _safe_artifact(repeat_root, "agent-trace.jsonl")
+            trace_path = safe_artifact(repeat_root, "agent-trace.jsonl")
             trace_events, _trace_errors = (
                 _read_trace_jsonl(trace_path) if trace_path.is_file() else ([], [])
             )
             trace_event_ids = _trace_event_ids_by_artifact(trace_events)
             for relative in normalized_inputs:
-                artifact_path = _safe_artifact(repeat_root, relative)
+                artifact_path = safe_artifact(repeat_root, relative)
                 digests[relative] = (
                     sha256_file(artifact_path) if artifact_path.is_file() else None
                 )
@@ -3623,11 +2850,11 @@ def grade_semantic_assertion(
     candidate_arm: str,
     baseline_arm: str,
 ) -> dict[str, Any]:
-    assertion_id = _require_string(assertion.get("id"), "semantic assertion.id")
-    artifact = _require_string(
+    assertion_id = require_string(assertion.get("id"), "semantic assertion.id")
+    artifact = require_string(
         assertion.get("artifact"), f"semantic assertion {assertion_id}.artifact"
     )
-    artifact_path = _safe_artifact(case_root, artifact)
+    artifact_path = safe_artifact(case_root, artifact)
     base = {
         "id": assertion_id,
         "type": "semantic_pair",
@@ -3842,23 +3069,6 @@ def _strict_tree_file_digests(root: Path) -> dict[str, str]:
     }
 
 
-def _require_real_directory(path: Path, root: Path, label: str) -> Path:
-    root = root.resolve()
-    lexical = Path(os.path.abspath(path))
-    try:
-        relative = lexical.relative_to(root)
-    except ValueError as error:
-        raise ManifestError(f"{label} escapes the run workspace") from error
-    current = root
-    for part in relative.parts:
-        current = current / part
-        if current.is_symlink():
-            raise ManifestError(f"{label} contains a symbolic link: {current}")
-    if not lexical.is_dir() or lexical.resolve() != lexical:
-        raise ManifestError(f"{label} must be a canonical real directory")
-    return lexical
-
-
 def verify_locked_inputs(
     *, plan_path: Path, workspace: Path, plan: dict[str, Any]
 ) -> dict[str, Any]:
@@ -3866,7 +3076,7 @@ def verify_locked_inputs(
     plan_path = plan_path.resolve()
     if plan_path != workspace / "execution-plan.json":
         raise ManifestError("execution plan path is not canonical")
-    lock_path = _safe_artifact(workspace, "run-lock.json")
+    lock_path = safe_artifact(workspace, "run-lock.json")
     if not lock_path.is_file():
         raise ManifestError("run-lock.json is required before grading")
     lock = load_json(lock_path)
@@ -3885,10 +3095,10 @@ def verify_locked_inputs(
             "execution plan is missing manifest, subject, or baseline metadata"
         )
     subject_path = Path(
-        _require_string(subject.get("path"), "plan.subject.path")
+        require_string(subject.get("path"), "plan.subject.path")
     ).resolve()
     manifest_path = Path(
-        _require_string(manifest.get("path"), "plan.manifest.path")
+        require_string(manifest.get("path"), "plan.manifest.path")
     ).resolve()
     if manifest_path != (subject_path / "evals" / "evals.json").resolve():
         raise ManifestError("execution plan manifest path is not canonical")
@@ -3912,7 +3122,7 @@ def verify_locked_inputs(
     baseline_path: Path | None = None
     if baseline_kind == "old_skill":
         baseline_path = Path(
-            _require_string(baseline.get("path"), "plan.baseline.path")
+            require_string(baseline.get("path"), "plan.baseline.path")
         ).resolve()
         baseline_digest = runtime_skill_digest(baseline_path)
         expected_baseline = {
@@ -3960,7 +3170,7 @@ def verify_locked_inputs(
             "run workspace overlaps the candidate or baseline package"
         )
     profile_path = Path(
-        _require_string(
+        require_string(
             execution_profile.get("source_path"),
             "plan.execution_profile.source_path",
         )
@@ -4320,7 +3530,7 @@ def grade_run(
         if persist:
             for arm, arm_result in graded.items():
                 write_json(
-                    _safe_artifact(
+                    safe_artifact(
                         workspace,
                         (Path("cases") / str(case["id"]) / str(arm) / "grading.json").as_posix(),
                     ),
@@ -4667,7 +3877,7 @@ def _compute_decision_core(
         if not isinstance(candidate, dict) or not isinstance(baseline, dict):
             continue
         for objective in case.get("objectives", []):
-            metric = _require_string(objective.get("metric"), "objective.metric")
+            metric = require_string(objective.get("metric"), "objective.metric")
             candidate_value = candidate.get(metric)
             baseline_value = baseline.get(metric)
             unusable_metrics = result.get("missing_objective_metrics", [])
@@ -4826,10 +4036,10 @@ def _validate_bound_decision(
     if decision.get("contract") != ACCEPTANCE_CONTRACT:
         raise ManifestError(f"acceptance decision contract must be {ACCEPTANCE_CONTRACT}")
     plan_path = Path(
-        _require_string(decision.get("plan_path"), "decision.plan_path")
+        require_string(decision.get("plan_path"), "decision.plan_path")
     )
     evidence_path = Path(
-        _require_string(decision.get("evidence_path"), "decision.evidence_path")
+        require_string(decision.get("evidence_path"), "decision.evidence_path")
     )
     if not plan_path.is_file() or sha256_file(plan_path) != decision.get(
         "plan_digest"
@@ -4918,7 +4128,7 @@ def _plan_snapshot_path(plan: dict[str, Any], arm: str) -> Path:
     ]
     if not records:
         raise ManifestError(f"candidate plan has no {arm} snapshot")
-    path = Path(_require_string(records[0].get("path"), f"{arm} snapshot.path"))
+    path = Path(require_string(records[0].get("path"), f"{arm} snapshot.path"))
     expected_digest = records[0].get("digest")
     if not path.is_dir() or runtime_skill_digest(path) != expected_digest:
         raise ManifestError(f"candidate plan {arm} snapshot changed")
@@ -5016,7 +4226,7 @@ def _dashboard_skill_diffs(
         ):
             if digest is None:
                 continue
-            source = _safe_subject_file(
+            source = safe_subject_file(
                 snapshot, relative_path, f"dashboard {side} diff source"
             )
             text, size = _dashboard_diff_text(source)
@@ -5093,7 +4303,7 @@ def _candidate_authorization(
     candidate = plan.get("subject")
     if not isinstance(candidate, dict):
         raise ManifestError("candidate plan subject is missing")
-    candidate_digest = _require_string(
+    candidate_digest = require_string(
         candidate.get("digest"), "plan.subject.digest"
     )
     change = _candidate_change(
@@ -5103,12 +4313,12 @@ def _candidate_authorization(
     return {
         "phase": "selection",
         "round": round_number,
-        "run_id": _require_string(plan.get("run_id"), "plan.run_id"),
+        "run_id": require_string(plan.get("run_id"), "plan.run_id"),
         "plan_path": str(plan_path.resolve()),
         "plan_digest": sha256_file(plan_path.resolve()),
         "parent_digest": parent_digest,
         "candidate_digest": candidate_digest,
-        "subject_path": _require_string(candidate.get("path"), "plan.subject.path"),
+        "subject_path": require_string(candidate.get("path"), "plan.subject.path"),
         "change": {
             "added": change["added"],
             "removed": change["removed"],
@@ -5143,10 +4353,10 @@ def _audit_authorization(
     return {
         "phase": "audit",
         "round": round_number,
-        "run_id": _require_string(plan.get("run_id"), "plan.run_id"),
+        "run_id": require_string(plan.get("run_id"), "plan.run_id"),
         "plan_path": str(plan_path.resolve()),
         "plan_digest": sha256_file(plan_path.resolve()),
-        "candidate_digest": _require_string(
+        "candidate_digest": require_string(
             subject.get("digest"), "plan.subject.digest"
         ),
         "holdout_visibility": holdout.get("visibility"),
@@ -5166,10 +4376,10 @@ def initialize_evolution(*, plan_path: Path, workspace: Path) -> dict[str, Any]:
     if not isinstance(subject, dict) or not isinstance(baseline, dict):
         raise ManifestError("evolution plan is missing subject or baseline metadata")
     subject_path = Path(
-        _require_string(subject.get("path"), "plan.subject.path")
+        require_string(subject.get("path"), "plan.subject.path")
     )
     baseline_path = Path(
-        _require_string(baseline.get("path"), "plan.baseline.path")
+        require_string(baseline.get("path"), "plan.baseline.path")
     )
     workspace = workspace.resolve()
     _ensure_empty_workspace(
@@ -5178,10 +4388,10 @@ def initialize_evolution(*, plan_path: Path, workspace: Path) -> dict[str, Any]:
     verify_locked_inputs(
         plan_path=plan_path, workspace=plan_path.parent, plan=plan
     )
-    authority_digest = _require_string(
+    authority_digest = require_string(
         plan.get("authority", {}).get("digest"), "plan.authority.digest"
     )
-    execution_profile_digest = _require_string(
+    execution_profile_digest = require_string(
         plan.get("execution_profile", {}).get("digest"),
         "plan.execution_profile.digest",
     )
@@ -5282,7 +4492,7 @@ def authorize_evolution(
             raise ManifestError("selection authorization requires --parent-digest")
         if continuity not in {"continue", "reset"}:
             raise ManifestError("continuity must be continue or reset")
-        baseline_digest = _require_string(
+        baseline_digest = require_string(
             state.get("baseline", {}).get("digest"), "state.baseline.digest"
         )
         if parent_digest != baseline_digest:
@@ -5377,13 +4587,13 @@ def advance_evolution(*, state_path: Path, decision_path: Path) -> dict[str, Any
     ).get("digest"):
         raise ManifestError("execution profile changed during evolution")
     decision_plan_path = Path(
-        _require_string(decision.get("plan_path"), "decision.plan_path")
+        require_string(decision.get("plan_path"), "decision.plan_path")
     ).resolve()
     _validate_evolution_state(
         state, plan, state_path, decision_plan_path
     )
     staging_root = Path(
-        _require_string(state.get("control_workspace"), "state.control_workspace")
+        require_string(state.get("control_workspace"), "state.control_workspace")
     ) / ".transition-staging"
     for staged in staging_root.iterdir():
         staged.unlink()
@@ -5401,7 +4611,7 @@ def advance_evolution(*, state_path: Path, decision_path: Path) -> dict[str, Any
     seen_run_ids = state.get("seen_run_ids")
     if not isinstance(seen_run_ids, list):
         raise ManifestError("evolution seen_run_ids must be an array")
-    run_id = _require_string(decision.get("run_id"), "decision.run_id")
+    run_id = require_string(decision.get("run_id"), "decision.run_id")
     if run_id in seen_run_ids:
         raise ManifestError("the same evaluation run cannot advance evolution twice")
     authorized_query = state.get("authorized_query")
@@ -5421,7 +4631,7 @@ def advance_evolution(*, state_path: Path, decision_path: Path) -> dict[str, Any
     if not history:
         initialized_plan = load_json(
             Path(
-                _require_string(
+                require_string(
                     state.get("initialized_from_plan"),
                     "state.initialized_from_plan",
                 )
@@ -5555,8 +4765,8 @@ def advance_evolution(*, state_path: Path, decision_path: Path) -> dict[str, Any
     state["history"] = history
     state["seen_run_ids"] = [*seen_run_ids, run_id]
     state["authorized_query"] = None
-    transition_path = _safe_artifact(
-        Path(_require_string(state.get("control_workspace"), "state.control_workspace"))
+    transition_path = safe_artifact(
+        Path(require_string(state.get("control_workspace"), "state.control_workspace"))
         / "transitions",
         f"{len(history):04d}.json",
     )
@@ -5606,7 +4816,7 @@ def _validate_authorization_plan(
     label: str,
 ) -> tuple[Path, dict[str, Any]]:
     plan_path = Path(
-        _require_string(authorization.get("plan_path"), f"{label}.plan_path")
+        require_string(authorization.get("plan_path"), f"{label}.plan_path")
     )
     if (
         not plan_path.is_absolute()
@@ -5655,7 +4865,7 @@ def _validate_candidate_lineage(
 ) -> dict[str, dict[str, Any]]:
     if not lineage or len(lineage) > 3:
         raise ManifestError("candidate lineage must contain one to three queries")
-    baseline_digest = _require_string(
+    baseline_digest = require_string(
         baseline.get("digest"), "state.baseline.digest"
     )
     by_run_id: dict[str, dict[str, Any]] = {}
@@ -5672,7 +4882,7 @@ def _validate_candidate_lineage(
             or record.get("parent_digest") != baseline_digest
         ):
             raise ManifestError(f"{label} phase, round, or parent is invalid")
-        run_id = _require_string(record.get("run_id"), f"{label}.run_id")
+        run_id = require_string(record.get("run_id"), f"{label}.run_id")
         if run_id in by_run_id or (index == 0 and run_id != initialized_run_id):
             raise ManifestError("candidate lineage run sequence is invalid")
         plan_path, candidate_plan = _validate_authorization_plan(
@@ -5773,36 +4983,36 @@ def _validate_evolution_state(
         for value in (plan_authority, baseline, subject)
     ):
         raise ManifestError("dashboard plan authority, subject, and baseline must be objects")
-    authority_digest = _require_string(
+    authority_digest = require_string(
         plan_authority.get("digest"), "plan.authority.digest"
     )
-    execution_profile_digest = _require_string(
+    execution_profile_digest = require_string(
         plan.get("execution_profile", {}).get("digest"),
         "plan.execution_profile.digest",
     )
     control_workspace = Path(
-        _require_string(state.get("control_workspace"), "state.control_workspace")
+        require_string(state.get("control_workspace"), "state.control_workspace")
     )
     if not control_workspace.is_absolute():
         raise ManifestError("state.control_workspace must be an absolute path")
-    control_workspace = _require_real_directory(
+    control_workspace = require_real_directory(
         control_workspace,
         Path(control_workspace.anchor),
         "evolution control workspace",
     )
-    canonical_state_path = _safe_artifact(
+    canonical_state_path = safe_artifact(
         control_workspace, "evolution-state.json"
     )
     if state_path.is_symlink() or state_path.resolve() != canonical_state_path:
         raise ManifestError(
             "evolution state must stay at its canonical control workspace path"
         )
-    transitions_root = _require_real_directory(
+    transitions_root = require_real_directory(
         control_workspace / "transitions",
         control_workspace,
         "evolution transition journal",
     )
-    staging_root = _require_real_directory(
+    staging_root = require_real_directory(
         control_workspace / ".transition-staging",
         control_workspace,
         "evolution transition staging",
@@ -5820,7 +5030,7 @@ def _validate_evolution_state(
         raise ManifestError("dashboard state evolution id is invalid")
 
     initialized_plan_path = Path(
-        _require_string(
+        require_string(
             state.get("initialized_from_plan"), "state.initialized_from_plan"
         )
     )
@@ -5844,9 +5054,9 @@ def _validate_evolution_state(
     ):
         raise ManifestError("dashboard state initialization plan does not match")
     protected_roots = [
-        Path(_require_string(subject.get("path"), "plan.subject.path")),
+        Path(require_string(subject.get("path"), "plan.subject.path")),
         plan_path.resolve().parent,
-        Path(_require_string(initialized_subject.get("path"), "initialized subject.path")),
+        Path(require_string(initialized_subject.get("path"), "initialized subject.path")),
         initialized_plan_path.parent,
     ]
     for baseline_record, label in (
@@ -5855,7 +5065,7 @@ def _validate_evolution_state(
     ):
         if baseline_record.get("kind") == "old_skill":
             protected_roots.append(
-                Path(_require_string(baseline_record.get("path"), label))
+                Path(require_string(baseline_record.get("path"), label))
             )
     if any(
         _is_within(control_workspace, root)
@@ -5904,7 +5114,7 @@ def _validate_evolution_state(
         authority_digest=authority_digest,
         baseline=baseline,
         execution_profile_digest=execution_profile_digest,
-        initialized_run_id=_require_string(
+        initialized_run_id=require_string(
             initialized_plan.get("run_id"), "initialized plan.run_id"
         ),
     )
@@ -5998,7 +5208,7 @@ def _validate_evolution_state(
     )
     for index, record in enumerate(history):
         decision_path = Path(
-            _require_string(
+            require_string(
                 record.get("decision_path"),
                 f"state.history[{index}].decision_path",
             )
@@ -6010,9 +5220,9 @@ def _validate_evolution_state(
         decision = load_json(decision_path)
         decision_plan, _ = _validate_bound_decision(decision, decision_path)
         decision_plan_path = Path(
-            _require_string(decision.get("plan_path"), "decision.plan_path")
+            require_string(decision.get("plan_path"), "decision.plan_path")
         ).resolve()
-        run_id = _require_string(decision.get("run_id"), "decision.run_id")
+        run_id = require_string(decision.get("run_id"), "decision.run_id")
         expected_record = {
             "phase": decision.get("phase"),
             "iteration": decision.get("iteration"),
@@ -6048,7 +5258,7 @@ def _validate_evolution_state(
                 baseline=baseline,
                 execution_profile_digest=execution_profile_digest,
                 round_number=int(projection["current_round"]),
-                selected_subject_digest=_require_string(
+                selected_subject_digest=require_string(
                     projection.get("selected_subject_digest"),
                     "selected subject digest",
                 ),
@@ -6188,7 +5398,7 @@ def _validate_evolution_state(
         raise ManifestError("authorized query must be an object or null")
     consumed_prefix = set(history_run_ids[:state_history_length])
     if isinstance(active_authorization, dict):
-        active_run_id = _require_string(
+        active_run_id = require_string(
             active_authorization.get("run_id"), "authorized_query.run_id"
         )
         if active_run_id in consumed_prefix:
@@ -6221,7 +5431,7 @@ def _validate_evolution_state(
                 baseline=baseline,
                 execution_profile_digest=execution_profile_digest,
                 round_number=int(state_projection["current_round"]),
-                selected_subject_digest=_require_string(
+                selected_subject_digest=require_string(
                     state_projection.get("selected_subject_digest"),
                     "selected subject digest",
                 ),
@@ -6336,7 +5546,7 @@ def _dashboard_evidence_fields(
         return {"content_unavailable_reason": "opaque"}
     if Path(relative_path).is_absolute():
         return {}
-    artifact_path = _safe_artifact(workspace, relative_path)
+    artifact_path = safe_artifact(workspace, relative_path)
     if not artifact_path.is_file():
         return {}
     size = artifact_path.stat().st_size
@@ -7150,7 +6360,7 @@ def project_dashboard(
     if state is not None:
         initialized_plan = load_json(
             Path(
-                _require_string(
+                require_string(
                     state.get("initialized_from_plan"),
                     "state.initialized_from_plan",
                 )
@@ -7578,7 +6788,7 @@ def project_dashboard(
                         )
             for artifact_index, artifact_path in enumerate(sorted(artifact_paths)):
                 artifact_node_id = f"artifact:{case_id}:{arm_id}:{artifact_index}"
-                artifact_exists = _safe_artifact(
+                artifact_exists = safe_artifact(
                     workspace, artifact_path
                 ).is_file()
                 artifact_node = {
@@ -7938,8 +7148,8 @@ def project_dashboard(
 
 def _parse_cli_object(raw: str, label: str) -> dict[str, Any]:
     try:
-        value = json.loads(raw, parse_constant=_reject_json_constant)
-        _require_finite_json(value, label)
+        value = json.loads(raw, parse_constant=reject_json_constant)
+        require_finite_json(value, label)
     except (json.JSONDecodeError, ValueError, ManifestError) as error:
         raise ManifestError(f"{label} must be a finite JSON object: {error}") from error
     if not isinstance(value, dict):

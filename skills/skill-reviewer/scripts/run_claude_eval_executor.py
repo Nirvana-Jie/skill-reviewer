@@ -12,24 +12,31 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import signal
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 from typing import Any
 
+from skill_eval_authority import safe_artifact, sha256_file
+from skill_eval_contracts import ManifestError
+from skill_eval_execution import (
+    ManagedProviderProcess,
+    ProviderSpec,
+    build_provider_environment,
+    compact_json,
+    contains_credential,
+    load_locked_assignment,
+    redact_retained_credentials,
+    redact_text,
+    sanitize_observable,
+    sha256_text,
+)
 from skill_eval_runtime import (
-    ManifestError,
-    _safe_artifact,
-    _trace_assignment_context,
     finalize_execution,
-    load_json,
     record_dispatch_receipt,
     record_trace_event,
-    sha256_file,
 )
 
 
@@ -39,66 +46,18 @@ CLAUDE_HARNESS = "claude-stream-json"
 SOURCE_FORMAT = "claude-stream-json-v1"
 SOURCE_EVENT_ARTIFACT = "agent-source-events.jsonl"
 STDERR_ARTIFACT = "claude-stderr.log"
-MAX_TRACE_STRING = 24_000
-MAX_TRACE_LIST = 100
-FORBIDDEN_DETAIL_KEYS = {
-    "analysis",
-    "chain_of_thought",
-    "private_reasoning",
-    "reasoning",
-    "thinking",
-    "thought",
-    "thoughts",
-}
+CLAUDE_PROVIDER = ProviderSpec(
+    label="Claude",
+    target=CLAUDE_TARGET,
+    harness=CLAUDE_HARNESS,
+    source_artifact=SOURCE_EVENT_ARTIFACT,
+    source_format=SOURCE_FORMAT,
+    stderr_artifact=STDERR_ARTIFACT,
+    required_capabilities=("source-event-stream",),
+)
 
 
-def _compact_json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
-
-
-def _sha256_text(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
-def _normalized_key(value: Any) -> str:
-    return str(value).strip().lower().replace("-", "_")
-
-
-def _sanitize_observable(value: Any, *, depth: int = 0) -> Any:
-    if depth > 8:
-        return "<nested payload omitted>"
-    if isinstance(value, dict):
-        if value.get("type") in {"thinking", "reasoning"}:
-            return {
-                "id": value.get("id"),
-                "type": value.get("type"),
-                "redacted": True,
-            }
-        return {
-            str(key): _sanitize_observable(item, depth=depth + 1)
-            for key, item in value.items()
-            if _normalized_key(key) not in FORBIDDEN_DETAIL_KEYS
-            and _normalized_key(key)
-            not in {"encrypted_content", "encrypted_reasoning", "signature"}
-        }
-    if isinstance(value, list):
-        result = [
-            _sanitize_observable(item, depth=depth + 1)
-            for item in value[:MAX_TRACE_LIST]
-        ]
-        if len(value) > MAX_TRACE_LIST:
-            result.append(f"<{len(value) - MAX_TRACE_LIST} items omitted>")
-        return result
-    if isinstance(value, str) and len(value) > MAX_TRACE_STRING:
-        return value[:MAX_TRACE_STRING] + (
-            f"\n<{len(value) - MAX_TRACE_STRING} characters omitted>"
-        )
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    return str(value)
-
-
-def _claude_version(claude_bin: str) -> str:
+def _claude_version(claude_bin: str, *, environment: dict[str, str]) -> str:
     try:
         result = subprocess.run(
             [claude_bin, "--version"],
@@ -106,106 +65,11 @@ def _claude_version(claude_bin: str) -> str:
             capture_output=True,
             timeout=15,
             check=False,
+            env=environment,
         )
     except (OSError, subprocess.TimeoutExpired):
         return "unavailable"
     return (result.stdout or result.stderr).strip()[:200] or "unavailable"
-
-
-def _require_locked_assignment(
-    *, assignment_path: Path, workspace: Path
-) -> tuple[dict[str, Any], Path, dict[str, Any]]:
-    workspace = workspace.resolve()
-    assignment_path = assignment_path.resolve()
-    assignment, repeat_root, trace_path = _trace_assignment_context(
-        assignment_path=assignment_path,
-        workspace=workspace,
-    )
-    plan_path = workspace / "execution-plan.json"
-    lock_path = workspace / "run-lock.json"
-    if not plan_path.is_file() or not lock_path.is_file():
-        raise ManifestError("Claude executor requires execution-plan.json and run-lock.json")
-    plan = load_json(plan_path)
-    lock = load_json(lock_path)
-    relative_assignment = assignment_path.relative_to(workspace).as_posix()
-    assignment_digests = lock.get("assignment_digests")
-    if (
-        not isinstance(assignment_digests, dict)
-        or assignment_digests.get(relative_assignment) != sha256_file(assignment_path)
-    ):
-        raise ManifestError("assignment digest does not match the immutable run lock")
-    if lock.get("plan_digest") != sha256_file(plan_path):
-        raise ManifestError("execution plan digest does not match the immutable run lock")
-    if (
-        plan.get("run_id") != assignment.get("run_id")
-        or lock.get("run_id") != assignment.get("run_id")
-    ):
-        raise ManifestError("assignment, plan, and run lock identities do not match")
-    profile = plan.get("execution_profile")
-    if not isinstance(profile, dict):
-        raise ManifestError("execution plan is missing its execution profile")
-    if profile.get("digest") != assignment.get("execution_profile_digest"):
-        raise ManifestError("assignment execution profile digest is stale")
-    if (
-        profile.get("target") != CLAUDE_TARGET
-        or profile.get("harness") != CLAUDE_HARNESS
-    ):
-        raise ManifestError(
-            f"Claude executor requires target={CLAUDE_TARGET} and harness={CLAUDE_HARNESS}"
-        )
-    if profile.get("dispatch_observation") != "process_spawn":
-        raise ManifestError(
-            "Claude execution profile must declare dispatch_observation=process_spawn"
-        )
-    if profile.get("isolation") != "local-unattested":
-        raise ManifestError(
-            "local Claude execution must be declared as isolation=local-unattested"
-        )
-    trace_profile = profile.get("trace")
-    if (
-        not isinstance(trace_profile, dict)
-        or trace_profile.get("capture_source") != CAPTURE_SOURCE
-        or trace_profile.get("source")
-        != {"artifact": SOURCE_EVENT_ARTIFACT, "format": SOURCE_FORMAT}
-    ):
-        raise ManifestError(
-            "Claude execution profile must bind the provider-stream source adapter"
-        )
-    capabilities = profile.get("capabilities")
-    if (
-        not isinstance(capabilities, list)
-        or "source-event-stream" not in capabilities
-    ):
-        raise ManifestError(
-            "Claude execution profile must declare source-event-stream"
-        )
-    execution_artifact = assignment.get("execution_artifact")
-    if not isinstance(execution_artifact, str):
-        raise ManifestError("assignment.execution_artifact is invalid")
-    dispatch_artifact = assignment.get("dispatch_artifact")
-    if not isinstance(dispatch_artifact, str):
-        raise ManifestError("assignment.dispatch_artifact is invalid")
-    generated = [
-        trace_path,
-        _safe_artifact(repeat_root, execution_artifact),
-        _safe_artifact(repeat_root, dispatch_artifact),
-        repeat_root / SOURCE_EVENT_ARTIFACT,
-        repeat_root / STDERR_ARTIFACT,
-    ]
-    for path in generated:
-        if path.exists() or path.is_symlink():
-            raise ManifestError(f"executor output already exists: {path.name}")
-    expected = assignment.get("expected_artifacts")
-    if not isinstance(expected, list) or not all(
-        isinstance(value, str) for value in expected
-    ):
-        raise ManifestError("assignment.expected_artifacts must be a string array")
-    for relative in expected:
-        artifact = _safe_artifact(repeat_root, relative)
-        if artifact.exists() or artifact.is_symlink():
-            raise ManifestError(f"expected artifact already exists before execution: {relative}")
-        artifact.parent.mkdir(parents=True, exist_ok=True)
-    return assignment, repeat_root, profile
 
 
 def _configuration_instruction(assignment: dict[str, Any]) -> str:
@@ -281,7 +145,7 @@ def _mapped_events(event: dict[str, Any], source_index: int) -> list[dict[str, A
                     "source_event_index": source_index,
                     "session_id": event.get("session_id"),
                     "model": event.get("model"),
-                    "tools": _sanitize_observable(event.get("tools", [])),
+                    "tools": sanitize_observable(event.get("tools", [])),
                 },
                 "artifact_refs": [],
             }
@@ -318,7 +182,7 @@ def _mapped_events(event: dict[str, Any], source_index: int) -> list[dict[str, A
                             "source_event_index": source_index,
                             "tool_use_id": block.get("id"),
                             "tool": block.get("name"),
-                            "input": _sanitize_observable(block.get("input", {})),
+                            "input": sanitize_observable(block.get("input", {})),
                         },
                         "artifact_refs": [],
                     }
@@ -334,7 +198,7 @@ def _mapped_events(event: dict[str, Any], source_index: int) -> list[dict[str, A
                             "source_event_index": source_index,
                             "tool_use_id": block.get("tool_use_id"),
                             "is_error": is_error,
-                            "content": _sanitize_observable(block.get("content")),
+                            "content": sanitize_observable(block.get("content")),
                         },
                         "artifact_refs": [],
                     }
@@ -375,33 +239,21 @@ def _record(
     )
 
 
-def _terminate_process_group(process: subprocess.Popen[str]) -> None:
-    try:
-        if os.name == "posix":
-            os.killpg(process.pid, signal.SIGTERM)
-        else:
-            process.terminate()
-    except (OSError, ProcessLookupError):
-        return
-    try:
-        process.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        try:
-            if os.name == "posix":
-                os.killpg(process.pid, signal.SIGKILL)
-            else:
-                process.kill()
-        except (OSError, ProcessLookupError):
-            pass
-
-
 def run_executor(args: argparse.Namespace) -> dict[str, Any]:
     workspace = args.workspace.resolve()
     assignment_path = args.assignment.resolve()
-    assignment, repeat_root, profile = _require_locked_assignment(
+    provider_environment = build_provider_environment(
+        pass_env=args.pass_env,
+        credential_env=args.credential_env,
+    )
+    locked = load_locked_assignment(
         assignment_path=assignment_path,
         workspace=workspace,
+        provider=CLAUDE_PROVIDER,
     )
+    assignment = locked.assignment
+    repeat_root = locked.repeat_root
+    profile = locked.profile
     timeout = int(assignment.get("timeout_seconds", 300))
     if args.timeout_seconds is not None:
         if args.timeout_seconds < 1:
@@ -465,11 +317,21 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
             "status": "completed",
             "details": {
                 "executor": CLAUDE_HARNESS,
-                "claude_version": _claude_version(args.claude_bin),
+                "claude_version": _claude_version(
+                    args.claude_bin,
+                    environment=provider_environment.values,
+                ),
                 "safe_mode": True,
                 "slash_commands_disabled": True,
                 "allowed_tools": ["Read"],
                 "isolation_claim": profile.get("isolation"),
+                "provider_env_name_count": provider_environment.passed_name_count,
+                "provider_credential_name_count": (
+                    provider_environment.credential_name_count
+                ),
+                "provider_declared_env_digest": (
+                    provider_environment.declared_names_digest
+                ),
             },
             "artifact_refs": [],
         },
@@ -478,26 +340,110 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
     source_path = repeat_root / SOURCE_EVENT_ARTIFACT
     stderr_path = repeat_root / STDERR_ARTIFACT
     started = time.monotonic()
-    timed_out = threading.Event()
-    stderr_lines: list[str] = []
     source_count = 0
     normalized_count = 0
     parse_errors = 0
+    credential_observation_count = 0
+    stderr_credential_observation_count = 0
     final_result: str | None = None
     result_is_error = False
     usage: dict[str, Any] = {}
     source_stream_hasher = hashlib.sha256()
+
+    def redact_stderr_line(line: str) -> str:
+        nonlocal stderr_credential_observation_count
+        redacted = redact_text(line, provider_environment.credential_values)
+        if redacted != line:
+            stderr_credential_observation_count += 1
+        return redacted
+
     try:
-        process = subprocess.Popen(
-            command,
+        with ManagedProviderProcess(
+            command=command,
             cwd=repeat_root,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            bufsize=1,
-            env={**os.environ, "NO_COLOR": "1"},
-            start_new_session=(os.name == "posix"),
-        )
+            environment=provider_environment.values,
+            timeout_seconds=timeout,
+            redact_stderr=redact_stderr_line,
+        ) as process:
+            record_dispatch_receipt(
+                assignment_path=assignment_path,
+                workspace=workspace,
+                dispatch_id="dispatch-"
+                + sha256_text(
+                    "|".join(
+                        [
+                            str(assignment.get("run_id")),
+                            str(assignment.get("case_id")),
+                            str(assignment.get("arm")),
+                            str(assignment.get("repeat")),
+                            str(process.pid),
+                            str(time.time_ns()),
+                        ]
+                    )
+                )[:20],
+                worker_id=f"pid:{process.pid}",
+                batch_id=args.batch_id,
+            )
+
+            with source_path.open("w", encoding="utf-8") as source_handle:
+                for line in process.stdout:
+                    source_count += 1
+                    source_stream_hasher.update(line.encode("utf-8"))
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    line_contains_credential = (
+                        redact_text(stripped, provider_environment.credential_values)
+                        != stripped
+                    )
+                    if line_contains_credential:
+                        credential_observation_count += 1
+                    try:
+                        event = json.loads(stripped)
+                    except json.JSONDecodeError:
+                        parse_errors += 1
+                        source_handle.write(
+                            compact_json(
+                                {
+                                    "type": "unparseable",
+                                    "source_event_index": source_count,
+                                    "source_sha256": sha256_text(stripped),
+                                }
+                            )
+                            + "\n"
+                        )
+                        continue
+                    if not line_contains_credential and contains_credential(
+                        event,
+                        provider_environment.credential_values,
+                    ):
+                        credential_observation_count += 1
+                    event = sanitize_observable(
+                        event,
+                        credential_values=provider_environment.credential_values,
+                    )
+                    if not isinstance(event, dict):
+                        parse_errors += 1
+                        continue
+                    source_handle.write(compact_json(event) + "\n")
+                    source_handle.flush()
+                    if event.get("type") == "result":
+                        result_is_error = event.get("is_error") is True
+                        if isinstance(event.get("result"), str):
+                            final_result = event["result"]
+                        if isinstance(event.get("usage"), dict):
+                            usage = event["usage"]
+                    for mapped in _mapped_events(event, source_count):
+                        _record(
+                            assignment_path=assignment_path,
+                            workspace=workspace,
+                            mapped=mapped,
+                        )
+                        normalized_count += 1
+            return_code = process.wait()
+            timed_out = process.timed_out
+            stderr_text = process.stderr_text
+            stderr_line_count = process.stderr_line_count
     except OSError as error:
         _record(
             assignment_path=assignment_path,
@@ -514,104 +460,66 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
             assignment_path=assignment_path,
             workspace=workspace,
             status="failed",
-            metrics={"duration_seconds": round(time.monotonic() - started, 3)},
+            metrics={
+                "duration_seconds": round(time.monotonic() - started, 3),
+                "provider_env_name_count": provider_environment.passed_name_count,
+                "provider_credential_name_count": (
+                    provider_environment.credential_name_count
+                ),
+            },
             forbidden_actions=[],
             side_effects=[],
             capture_source=CAPTURE_SOURCE,
         )
 
-    try:
-        record_dispatch_receipt(
-            assignment_path=assignment_path,
-            workspace=workspace,
-            dispatch_id="dispatch-"
-            + _sha256_text(
-                "|".join(
-                    [
-                        str(assignment.get("run_id")),
-                        str(assignment.get("case_id")),
-                        str(assignment.get("arm")),
-                        str(assignment.get("repeat")),
-                        str(process.pid),
-                        str(time.time_ns()),
-                    ]
-                )
-            )[:20],
-            worker_id=f"pid:{process.pid}",
-            batch_id=args.batch_id,
-        )
-    except ManifestError:
-        _terminate_process_group(process)
-        process.wait()
-        raise
-
-    def read_stderr() -> None:
-        assert process.stderr is not None
-        for line in process.stderr:
-            stderr_lines.append(line)
-
-    stderr_thread = threading.Thread(target=read_stderr, daemon=True)
-    stderr_thread.start()
-
-    def timeout_process() -> None:
-        timed_out.set()
-        _terminate_process_group(process)
-
-    timer = threading.Timer(timeout, timeout_process)
-    timer.daemon = True
-    timer.start()
-    assert process.stdout is not None
-    with source_path.open("w", encoding="utf-8") as source_handle:
-        for line in process.stdout:
-            source_count += 1
-            source_stream_hasher.update(line.encode("utf-8"))
-            stripped = line.strip()
-            if not stripped:
-                continue
-            try:
-                event = json.loads(stripped)
-            except json.JSONDecodeError:
-                parse_errors += 1
-                source_handle.write(
-                    _compact_json(
-                        {
-                            "type": "unparseable",
-                            "source_event_index": source_count,
-                            "source_sha256": _sha256_text(stripped),
-                        }
-                    )
-                    + "\n"
-                )
-                continue
-            if not isinstance(event, dict):
-                parse_errors += 1
-                continue
-            source_handle.write(_compact_json(_sanitize_observable(event)) + "\n")
-            source_handle.flush()
-            if event.get("type") == "result":
-                result_is_error = event.get("is_error") is True
-                if isinstance(event.get("result"), str):
-                    final_result = event["result"]
-                if isinstance(event.get("usage"), dict):
-                    usage = _sanitize_observable(event["usage"])
-            for mapped in _mapped_events(event, source_count):
-                _record(
-                    assignment_path=assignment_path,
-                    workspace=workspace,
-                    mapped=mapped,
-                )
-                normalized_count += 1
-    return_code = process.wait()
-    timer.cancel()
-    stderr_thread.join(timeout=5)
-    if stderr_lines:
-        stderr_path.write_text("".join(stderr_lines), encoding="utf-8")
+    if stderr_text:
+        stderr_path.write_text(stderr_text, encoding="utf-8")
 
     expected = list(assignment.get("expected_artifacts", []))
     if final_result and not result_is_error and "outputs/response.md" in expected:
-        response_path = _safe_artifact(repeat_root, "outputs/response.md")
+        response_path = safe_artifact(repeat_root, "outputs/response.md")
         response_path.write_text(final_result.rstrip() + "\n", encoding="utf-8")
+    trace_relative = locked.trace_path.relative_to(repeat_root).as_posix()
+    credential_leak_paths = redact_retained_credentials(
+        root=repeat_root,
+        relative_paths=[
+            SOURCE_EVENT_ARTIFACT,
+            STDERR_ARTIFACT,
+            trace_relative,
+            *expected,
+        ],
+        credential_values=provider_environment.credential_values,
+    )
+    credential_leak_count = (
+        credential_observation_count
+        + stderr_credential_observation_count
+        + len(credential_leak_paths)
+    )
+    if credential_leak_count:
+        _record(
+            assignment_path=assignment_path,
+            workspace=workspace,
+            mapped={
+                "kind": "error",
+                "summary": "Execution harness detected and removed a provider credential",
+                "status": "failed",
+                "details": {
+                    "credential_observation_count": credential_observation_count,
+                    "stderr_credential_observation_count": (
+                        stderr_credential_observation_count
+                    ),
+                    "redacted_artifact_paths": credential_leak_paths,
+                },
+                "artifact_refs": credential_leak_paths,
+            },
+        )
+        normalized_count += 1
     source_digest = sha256_file(source_path)
+    retained_source_stream_digest = (
+        source_digest
+        if credential_observation_count
+        else source_stream_hasher.hexdigest()
+    )
     retained_count = sum(
         1
         for line in source_path.read_text(encoding="utf-8").splitlines()
@@ -630,7 +538,7 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
                 "size": source_path.stat().st_size,
                 "source_event_count": source_count,
                 "retained_event_count": retained_count,
-                "source_stream_digest": source_stream_hasher.hexdigest(),
+                "source_stream_digest": retained_source_stream_digest,
                 "redaction": "private-reasoning-fields-removed",
                 "adapter": CLAUDE_TARGET,
                 "format": SOURCE_FORMAT,
@@ -638,10 +546,29 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
             "artifact_refs": [SOURCE_EVENT_ARTIFACT],
         },
     )
+    normalized_count += 1
+    if stderr_path.is_file():
+        _record(
+            assignment_path=assignment_path,
+            workspace=workspace,
+            mapped={
+                "kind": "artifact_written",
+                "summary": "Retained redacted Claude Code diagnostic log",
+                "status": "completed",
+                "details": {
+                    "path": STDERR_ARTIFACT,
+                    "digest": sha256_file(stderr_path),
+                    "size": stderr_path.stat().st_size,
+                    "line_count": stderr_line_count,
+                },
+                "artifact_refs": [STDERR_ARTIFACT],
+            },
+        )
+        normalized_count += 1
     missing_artifacts = [
         relative
         for relative in expected
-        if not _safe_artifact(repeat_root, relative).is_file()
+        if not safe_artifact(repeat_root, relative).is_file()
     ]
     if missing_artifacts:
         _record(
@@ -655,7 +582,12 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
                 "artifact_refs": [],
             },
         )
-    if timed_out.is_set():
+    forbidden_actions: list[str] = []
+    if credential_leak_count:
+        forbidden_actions.append(
+            "provider credential appeared in retained output; exact values were redacted"
+        )
+    if timed_out:
         final_status = "timed_out"
     elif (
         return_code != 0
@@ -663,6 +595,7 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
         or parse_errors
         or missing_artifacts
         or not final_result
+        or credential_leak_count
     ):
         final_status = "failed"
     else:
@@ -673,6 +606,9 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
         "source_event_count": source_count,
         "normalized_event_count": normalized_count,
         "jsonl_parse_error_count": parse_errors,
+        "credential_leak_count": credential_leak_count,
+        "provider_env_name_count": provider_environment.passed_name_count,
+        "provider_credential_name_count": provider_environment.credential_name_count,
     }
     for key, value in usage.items():
         if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -682,7 +618,7 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
         workspace=workspace,
         status=final_status,
         metrics=metrics,
-        forbidden_actions=[],
+        forbidden_actions=forbidden_actions,
         side_effects=[],
         capture_source=CAPTURE_SOURCE,
         source_trace={
@@ -690,7 +626,7 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
             "digest": source_digest,
             "adapter": CLAUDE_TARGET,
             "format": SOURCE_FORMAT,
-            "source_stream_digest": source_stream_hasher.hexdigest(),
+            "source_stream_digest": retained_source_stream_digest,
             "source_event_count": source_count,
             "retained_event_count": retained_count,
             "redaction": "private-reasoning-fields-removed",
@@ -704,16 +640,45 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--assignment", type=Path, required=True)
     parser.add_argument("--claude-bin", default="claude")
     parser.add_argument("--model")
+    parser.add_argument(
+        "--pass-env",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="Pass one named host environment value to Claude Code (repeatable).",
+    )
+    parser.add_argument(
+        "--credential-env",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help=(
+            "Pass one named credential to Claude Code and fail if its value reaches "
+            "retained output (repeatable)."
+        ),
+    )
     parser.add_argument("--max-budget-usd", type=float)
     parser.add_argument("--timeout-seconds", type=int)
     parser.add_argument("--batch-id")
     return parser.parse_args(argv)
 
 
+def _interrupt_provider(_signum: int, _frame: object) -> None:
+    raise KeyboardInterrupt
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, _interrupt_provider)
     try:
         result = run_executor(args)
+    except KeyboardInterrupt:
+        print(
+            json.dumps({"error": "Claude provider execution interrupted"}),
+            file=sys.stderr,
+        )
+        return 130
     except (ManifestError, OSError, ValueError) as error:
         print(json.dumps({"error": str(error)}, ensure_ascii=False), file=sys.stderr)
         return 2

@@ -68,13 +68,10 @@ jobs:
       - name: Install test dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run unit tests
-        run: python3 -m unittest discover -s tests
-
       - name: Run Vitest package and runner tests
         run: pnpm test
 
-      - name: Build Evidence Lab dashboard
+      - name: Build decision-review Dashboard
         run: pnpm dashboard:build
 
       - name: Verify ephemeral Dashboard bundle
@@ -88,11 +85,11 @@ jobs:
             --ui-dir dashboard/dist \
             --output-dir "$RUNNER_TEMP/dashboard-release" \
             --manifest-output "$RUNNER_TEMP/generated-dashboard-manifest.json"
-          cmp skills/skill-reviewer/references/dashboard-ui-bundle.json \
+          cmp skills/skill-reviewer/assets/dashboard-ui-bundle.json \
             "$RUNNER_TEMP/generated-dashboard-manifest.json"
           archive="$(find "$RUNNER_TEMP/dashboard-release" -maxdepth 1 -type f -name 'dashboard-ui-*.zip' -print -quit)"
           python3 skills/skill-reviewer/scripts/dashboard_bundle.py verify \
-            --manifest skills/skill-reviewer/references/dashboard-ui-bundle.json \
+            --manifest skills/skill-reviewer/assets/dashboard-ui-bundle.json \
             --archive "$archive" \
             --output-dir "$RUNNER_TEMP/verified-dashboard"
           test -f "$RUNNER_TEMP/verified-dashboard/index.html"
@@ -104,8 +101,5 @@ jobs:
       - name: Validate behavior eval manifest
         run: python3 -m json.tool skills/skill-reviewer/evals/evals.json > /dev/null
 
-      - name: Validate snapshot contract shape
-        run: python3 skills/skill-reviewer/scripts/validate_local_snapshot.py skills/skill-reviewer/evals/local-skill-review-snapshot.json
-
       - name: Compile Python scripts
-        run: python3 -m py_compile skills/skill-reviewer/scripts/dashboard_bundle.py skills/skill-reviewer/scripts/lint_skill_package.py skills/skill-reviewer/scripts/run_claude_eval_executor.py skills/skill-reviewer/scripts/run_codex_eval_executor.py skills/skill-reviewer/scripts/run_codex_eval_plan.py skills/skill-reviewer/scripts/run_codex_skill_evals.py skills/skill-reviewer/scripts/skill_eval_evidence.py skills/skill-reviewer/scripts/skill_eval_measurement.py skills/skill-reviewer/scripts/skill_eval_runtime.py skills/skill-reviewer/scripts/serve_skill_dashboard.py skills/skill-reviewer/scripts/start_skill_dashboard.py skills/skill-reviewer/scripts/validate_local_snapshot.py tests/test_run_codex_skill_evals.py
+        run: python3 -m py_compile skills/skill-reviewer/scripts/dashboard_bundle.py skills/skill-reviewer/scripts/lint_skill_package.py skills/skill-reviewer/scripts/run_claude_eval_executor.py skills/skill-reviewer/scripts/run_codex_eval_executor.py skills/skill-reviewer/scripts/run_codex_eval_plan.py skills/skill-reviewer/scripts/skill_eval_authority.py skills/skill-reviewer/scripts/skill_eval_contracts.py skills/skill-reviewer/scripts/skill_eval_evidence.py skills/skill-reviewer/scripts/skill_eval_execution.py skills/skill-reviewer/scripts/skill_eval_measurement.py skills/skill-reviewer/scripts/skill_eval_runtime.py skills/skill-reviewer/scripts/serve_skill_dashboard.py skills/skill-reviewer/scripts/start_skill_dashboard.py
