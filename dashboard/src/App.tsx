@@ -37,8 +37,7 @@ import {
 } from "react";
 
 import { CommandPalette, type DashboardCommand } from "./CommandPalette";
-import { ActionCenter, nextActionMessageKey } from "./ActionCenter";
-import { copyText, downloadDashboardData } from "./dashboard-actions";
+import { copyText, downloadDashboardData } from "./dashboard-export";
 import {
   currentDashboardSource,
   fetchDashboardResource,
@@ -364,9 +363,6 @@ function useDashboardData() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [lastSuccessfulAt, setLastSuccessfulAt] = useState<number | null>(null);
   const [lastAttemptAt, setLastAttemptAt] = useState<number | null>(null);
-  const [actionsEnabled, setActionsEnabled] = useState(
-    () => currentDashboardSource().mode === "configured",
-  );
   const activeRef = useRef(true);
   const pausedRef = useRef(paused);
   const timerRef = useRef<number | undefined>(undefined);
@@ -412,10 +408,6 @@ function useDashboardData() {
       setError(null);
       setCompatibilityError(null);
       setConnectionState("live");
-      setActionsEnabled(
-        source.mode === "configured" ||
-          Boolean(session?.action_requests_enabled),
-      );
       setLastSuccessfulAt(Date.now());
       scheduleNext(next.refresh_interval_ms);
     } catch (cause) {
@@ -432,7 +424,6 @@ function useDashboardData() {
       setCompatibilityError(
         cause instanceof DashboardCompatibilityError ? cause : null,
       );
-      setActionsEnabled(false);
       setConnectionState((current) =>
         current === "connecting" ? "connecting" : "stale",
       );
@@ -478,7 +469,6 @@ function useDashboardData() {
 
   return {
     data,
-    actionsEnabled,
     error,
     compatibilityError,
     connectionState,
@@ -875,12 +865,10 @@ export function EvidenceDashboard({
   data,
   connectionState,
   refreshControls,
-  actionsEnabled = true,
 }: {
   data: DashboardData;
   connectionState: ConnectionState;
   refreshControls?: DashboardRefreshControls;
-  actionsEnabled?: boolean;
 }) {
   const { locale, theme, setLocale, setTheme, t } = useUiPreferences();
   const [initialView] = useState<DashboardViewState>(() =>
@@ -920,7 +908,6 @@ export function EvidenceDashboard({
       ? "none"
       : initialView.panel,
   );
-  const actionOpen = panel === "action";
   const workspaceLayout = useWorkspaceLayout(canvasView);
   const evidencePanelIsOverlay =
     panel === "evidence" &&
@@ -937,9 +924,6 @@ export function EvidenceDashboard({
   const caseSearchRef = useRef<HTMLInputElement>(null);
   const inspectorRef = useRef<HTMLElement>(null);
   const inspectorBodyRef = useRef<HTMLDivElement>(null);
-  const actionDialogRef = useRef<HTMLElement>(null);
-  const actionCloseButtonRef = useRef<HTMLButtonElement>(null);
-  const actionReturnFocusRef = useRef<HTMLElement | null>(null);
   const evidenceDrawerCloseButtonRef = useRef<HTMLButtonElement>(null);
   const evidenceDrawerReturnFocusRef = useRef<HTMLElement | null>(null);
   const notificationTimerRef = useRef<number | undefined>(undefined);
@@ -1214,20 +1198,20 @@ export function EvidenceDashboard({
 
   const updateDisplayPreferencesOpen = useCallback((open: boolean) => {
     if (open) {
-      if (actionOpen || evidencePanelIsOverlay) setPanel("none");
+      if (evidencePanelIsOverlay) setPanel("none");
       setCommandsOpen(false);
     }
     setDisplayPreferencesOpen(open);
-  }, [actionOpen, evidencePanelIsOverlay]);
+  }, [evidencePanelIsOverlay]);
 
   useEffect(() => {
     if (
       displayPreferencesOpen &&
-      (actionOpen || evidencePanelIsOverlay || commandsOpen)
+      (evidencePanelIsOverlay || commandsOpen)
     ) {
       setDisplayPreferencesOpen(false);
     }
-  }, [actionOpen, commandsOpen, displayPreferencesOpen, evidencePanelIsOverlay]);
+  }, [commandsOpen, displayPreferencesOpen, evidencePanelIsOverlay]);
 
   const toggleEvidenceGroup = useCallback((node: SpineNode) => {
     const isExpanded = expandedNodeIds.has(node.id);
@@ -1280,49 +1264,6 @@ export function EvidenceDashboard({
   useEffect(() => {
     if (canvasView !== "changes") setFocusMode(false);
   }, [canvasView]);
-
-  useEffect(() => {
-    if (!actionOpen) return;
-
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    setCommandsOpen(false);
-    actionReturnFocusRef.current =
-      document.activeElement instanceof HTMLElement
-        ? document.activeElement
-        : null;
-    actionCloseButtonRef.current?.focus();
-
-    const handleActionDialogKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setPanel("none");
-        return;
-      }
-      if (event.key !== "Tab") return;
-
-      const focusable = dialogFocusables(actionDialogRef.current);
-      if (focusable.length === 0) return;
-      const first = focusable[0]!;
-      const last = focusable[focusable.length - 1]!;
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-
-    document.addEventListener("keydown", handleActionDialogKeyDown);
-    return () => {
-      document.removeEventListener("keydown", handleActionDialogKeyDown);
-      document.body.style.overflow = previousOverflow;
-      const returnFocus = actionReturnFocusRef.current;
-      actionReturnFocusRef.current = null;
-      if (returnFocus?.isConnected) returnFocus.focus();
-    };
-  }, [actionOpen]);
 
   useEffect(() => {
     if (
@@ -1538,10 +1479,6 @@ export function EvidenceDashboard({
     locale,
     refreshControls?.lastAttemptAt ?? null,
   );
-  const nextActionLabel = t(
-    nextActionMessageKey(data.action_center.next_action) ??
-      "nextActionReviewEvidence",
-  );
   const reviewSelected = canvasView === "review";
 
   const renderEvidenceNode = (
@@ -1704,15 +1641,6 @@ export function EvidenceDashboard({
       label: t("showDiff"),
       detail: t("runtimeFilesChanged", { count: data.diffs.length }),
       run: () => showCanvas("changes"),
-    },
-    {
-      id: "action-show-action-center",
-      group: t("actionGroup"),
-      label: t("showActionCenter"),
-      detail: t("actionCenterContext", {
-        action: nextActionLabel,
-      }),
-      run: () => setPanel("action"),
     },
     {
       id: "action-attention",
@@ -2264,7 +2192,6 @@ export function EvidenceDashboard({
                 if (executionCase) setSelectedId(`case:${executionCase.id}`);
                 showCanvas("runs");
               }}
-              onOpenActionCenter={() => setPanel("action")}
             />
           ) : canvasView === "audit" ? (
             <div className="evidence-stage audit-evidence-stage">
@@ -2460,50 +2387,6 @@ export function EvidenceDashboard({
           )}
           </div>
         </section>
-
-        {actionOpen && (
-          <div
-            className="action-center-drawer-backdrop"
-            onMouseDown={(event) => {
-              if (event.target === event.currentTarget) setPanel("none");
-            }}
-          >
-            <aside
-              ref={actionDialogRef}
-              className="action-center-drawer"
-              role="dialog"
-              aria-label={t("actionCenter")}
-              aria-modal="true"
-            >
-              <header>
-                <div>
-                  <span className="pane-kicker">{t("recommendedNextStep")}</span>
-                  <h2>{t("actionCenter")}</h2>
-                </div>
-                <button
-                  ref={actionCloseButtonRef}
-                  type="button"
-                  className="icon-button"
-                  aria-label={t("closeNextSteps")}
-                  onClick={() => setPanel("none")}
-                >
-                  <X size={16} aria-hidden="true" />
-                </button>
-              </header>
-              <ActionCenter
-                data={data}
-                interactive={actionsEnabled}
-                connectionState={connectionState}
-                onOpenEvidence={(evidenceId) => {
-                  const node = data.spine.find((item) => item.id === evidenceId);
-                  if (node) {
-                    openEvidence(node);
-                  }
-                }}
-              />
-            </aside>
-          </div>
-        )}
 
         {auditInspectorVisible && (
           <WorkspacePaneResizeHandle
@@ -2987,7 +2870,6 @@ export function EvidenceDashboard({
 export default function App() {
   const {
     data,
-    actionsEnabled,
     error,
     compatibilityError,
     connectionState,
@@ -3041,7 +2923,6 @@ export default function App() {
     <EvidenceDashboard
       data={data}
       connectionState={connectionState}
-      actionsEnabled={actionsEnabled}
       refreshControls={{
         paused,
         isRefreshing,

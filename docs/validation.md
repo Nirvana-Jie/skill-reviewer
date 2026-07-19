@@ -1,12 +1,12 @@
 # Validation record
 
-This record preserves the current result boundary for the generic Agent runner,
-adapter registry, and Dashboard provenance change. It is maintainer evidence and
-is not installed as Agent context.
+This record preserves the current result boundary for the evidence-first
+Dashboard and repeat-consistent decision/runtime governance change. It is
+maintainer evidence and is not installed as Agent context.
 
 ## Code under test
 
-- Branch: `codex/dashboard-decision-first-ui`
+- Branch: `codex/mjs-dashboard-evidence-audit`
 - Date: 2026-07-20 (Asia/Shanghai)
 - Execution API: `scripts/run_agent_eval.mjs`
 - Registry: `assets/agent-adapter-registry.json`
@@ -19,7 +19,7 @@ generated run workspaces.
 
 The worktree passed:
 
-- `pnpm test`: 30 files; 29 passed, 1 explicitly skipped; 372 tests; 370 passed,
+- `pnpm test`: 28 files; 27 passed, 1 explicitly skipped; 364 tests; 362 passed,
   2 explicitly skipped;
 - Dashboard TypeScript checking and production build;
 - all native ESM runtime files through `node --check`;
@@ -30,11 +30,21 @@ The installable Skill contains one native ESM runtime and no language bridge;
 neither no-op nor deleted commands are represented as quality evidence.
 
 - Skill package lint digest:
-  `20706e3759092768c3843620b6c4d17823ab8f24441d160445530be7e86e3444`
+  `f00cb9fb167e47839defd7cd4f950b1008f7235d44ff90ca78d35d2867c32be1`
 - Dashboard tree SHA-256:
-  `fa8b1f1fad2a386b3fdb679ddf6df0918dff6a8f14387b8b59e630709b5997e5`
+  `10679ded0098f80e4687eef26b2a01f16baae569a702ec83d27da6737a53b617`
 - Dashboard archive SHA-256:
-  `0d2ff7aa65bf38277bfe856c78518c51d245103211113139e94f0fd4ad392040`
+  `8f62929c52a20cad6e506fa787120591c36b90151beadf2dfad52defdaa64cc5`
+
+Decision tests additionally prove that a favorable mean cannot hide a
+repeat-level regression or claim material improvement when any paired repeat
+misses its threshold. Three repeats remain a conservative consistency gate,
+not a statistical-confidence claim. Supplemental semantic judgments add
+limitations but do not overrule complete deterministic paired evidence or
+create Dashboard blockers. Mixed repeat directions remain valid measurement
+evidence, are attributed to candidate variability, and are rejected by the
+same all-repeat objective gate. Projection and UI tests prove that a
+repeat-level regression remains visible in the case flag and attention filter.
 
 ## Real Agent canary
 
@@ -46,8 +56,7 @@ SKILL_REVIEWER_REAL_AGENT_E2E=codex,claude \
   pnpm exec vitest run dashboard/src/real-agent-trace.e2e.test.ts
 ```
 
-Result: 1 file passed, 2/2 tests passed, total duration 62.36 seconds after the
-version-policy, runtime-binding, paired-cancellation, and tool-correlation fixes.
+Result: 1 file passed, 2/2 tests passed, total duration 58.80 seconds.
 
 Each test compiled a fresh locked development case from a minimal registry-based
 profile, invoked the real local CLI, retained and normalized the source stream,
@@ -63,6 +72,21 @@ entries. Their registry records preserve researched source identity, protocol
 stability, and evidence limits; they are not presented as executable support.
 OpenTelemetry GenAI is telemetry rather than an executing Agent and therefore
 stays outside the execution registry.
+
+## Real Dashboard inspection
+
+The current production build opened an existing real Codex canary projection
+through the authenticated loopback server. Review and Runs were inspected at
+1440×1000 and 390×844. The narrow layout had no horizontal overflow
+(`scrollWidth = innerWidth = 390`) and the Review page was 1453 px tall. The
+decision and next state appeared in the hero, followed by validity, three
+evidence entry points, and one primary blocker. Runs ordered anomaly summary,
+execution matrix, technical provenance, then the event timeline.
+
+The check also caught and prevented an accidental schema-v3 break: legacy
+`pareto` remains a wire compatibility token while the UI and algorithm call it
+objective non-regression. The Dashboard exposes no task ledger; server tests
+confirm write methods return 405 and the old action-ledger routes return 404.
 
 ## Claim boundary
 

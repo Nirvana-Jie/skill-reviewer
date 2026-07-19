@@ -47,6 +47,7 @@ import {
   assessRuntimeMeasurement,
   compilePortableRegex,
   evaluateTextAssertion,
+  pairedRepeatMetrics,
 } from "./skill-eval-measurement.mjs";
 
 const MAX_PAIRED_DISPATCH_SKEW_MS = 5_000;
@@ -1574,26 +1575,20 @@ export function objectiveDelta(objective, candidateValue, baselineValue) {
   return delta;
 }
 
-function repeatMetric(repeat, metric) {
-  const value = metric === "required_pass_rate" ? repeat.required_pass_rate : plainObject(repeat.metrics) ? repeat.metrics[metric] : null;
-  return typeof value === "number" ? value : null;
-}
-
 function pairedDirectionDisagreement({ case: evalCase, candidate, baseline }) {
-  const candidateRepeats = candidate.repeats ?? [];
-  const baselineRepeats = baseline.repeats ?? [];
   for (const objective of evalCase.objectives ?? []) {
-    const metric = String(objective.metric);
+    const pairs = pairedRepeatMetrics({
+      candidate,
+      baseline,
+      metric: String(objective.metric),
+    });
+    if (pairs === null) continue;
     const tolerance = Number(objective.non_regression_tolerance ?? 0);
     const directions = new Set();
-    const count = Math.min(candidateRepeats.length, baselineRepeats.length);
-    for (let index = 0; index < count; index += 1) {
-      const candidateValue = repeatMetric(candidateRepeats[index], metric);
-      const baselineValue = repeatMetric(baselineRepeats[index], metric);
-      if (candidateValue === null || baselineValue === null) continue;
+    for (const pair of pairs) {
       let delta;
       try {
-        delta = objectiveDelta(objective, candidateValue, baselineValue);
+        delta = objectiveDelta(objective, pair.candidate, pair.baseline);
       } catch (error) {
         if (!(error instanceof ManifestError)) throw error;
         return true;
@@ -1618,7 +1613,6 @@ export function gradeRun({ planPath, workspace, persist = true }) {
   if (!plainObject(assignmentDigests)) throw new ManifestError("run lock assignment_digests must be an object");
   const caseResults = [];
   let anyIncomplete = false;
-  let anySemanticProblem = false;
   let anyBaselineSafetyViolation = false;
   const measurementCases = [];
   const limitations = [];
@@ -1657,15 +1651,22 @@ export function gradeRun({ planPath, workspace, persist = true }) {
           missingObjectiveMetrics.push(metric);
           continue;
         }
-        let delta;
         try {
-          delta = objectiveDelta(objective, candidateValue, baselineValue);
+          objectiveDelta(objective, candidateValue, baselineValue);
         } catch (error) {
           if (!(error instanceof ManifestError)) throw error;
           missingObjectiveMetrics.push(metric);
           continue;
         }
-        regressed = regressed || delta < -Number(objective.non_regression_tolerance ?? 0);
+        const pairs = pairedRepeatMetrics({ candidate, baseline, metric });
+        if (pairs === null) {
+          missingObjectiveMetrics.push(metric);
+          continue;
+        }
+        const tolerance = Number(objective.non_regression_tolerance ?? 0);
+        regressed = regressed || pairs.some(
+          (pair) => objectiveDelta(objective, pair.candidate, pair.baseline) < -tolerance,
+        );
       }
     }
     const directionDisagreement = Boolean(baseline && pairedDirectionDisagreement({ case: evalCase, candidate, baseline }));
@@ -1686,7 +1687,6 @@ export function gradeRun({ planPath, workspace, persist = true }) {
         candidateArm: "with_skill",
         baselineArm: String(baselineArm),
       }));
-    const semanticProblem = semanticAssertions.some((result) => !result.passed);
     anyIncomplete = anyIncomplete || Object.values(graded).some((result) => !result.complete);
     for (const [arm, armResult] of Object.entries(graded)) {
       if (!armResult.complete) limitations.push(`execution incomplete for case ${evalCase.id} arm ${arm}`);
@@ -1700,12 +1700,11 @@ export function gradeRun({ planPath, workspace, persist = true }) {
       }
       if (armResult.binding_errors.length > 0) limitations.push(`execution binding invalid for case ${evalCase.id} arm ${arm}`);
     }
-    anySemanticProblem = anySemanticProblem || semanticProblem;
     if (missingObjectiveMetrics.length > 0) {
       anyIncomplete = true;
       limitations.push(`objective metric missing in case ${evalCase.id}`);
     }
-    if (directionDisagreement) limitations.push(`paired stochastic directions disagree in case ${evalCase.id}`);
+    if (directionDisagreement) limitations.push(`paired repeat effects vary in direction for case ${evalCase.id}`);
     for (const reason of measurement.reasons ?? []) limitations.push(`measurement validity failed in case ${evalCase.id}: ${reason}`);
     for (const semanticResult of semanticAssertions) {
       if (semanticResult.passed) continue;
@@ -1733,7 +1732,10 @@ export function gradeRun({ planPath, workspace, persist = true }) {
     ? "invalid"
     : measurementCases.some((item) => item.status !== "valid") ? "unverified" : "valid";
   let level;
-  if (anyIncomplete || anySemanticProblem || anyBaselineSafetyViolation || measurementStatus !== "valid" || (isAudit && holdoutVisibility !== "opaque")) level = "inconclusive";
+  // semantic_pair is deliberately advisory: it can explain a deterministic
+  // decision, but an absent, stale, or disagreeing Judge cannot become a
+  // release gate while the manifest declares the assertion supplemental.
+  if (anyIncomplete || anyBaselineSafetyViolation || measurementStatus !== "valid" || (isAudit && holdoutVisibility !== "opaque")) level = "inconclusive";
   else if (hasBaseline) level = "regression-verified";
   else level = "behavior-verified";
   const evidence = {

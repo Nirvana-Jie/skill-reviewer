@@ -1,6 +1,6 @@
 export type DashboardSourceMode =
   | "configured"
-  | "local_control_plane"
+  | "local_dashboard"
   | "invalid";
 
 export interface DashboardSource {
@@ -21,18 +21,7 @@ export interface DashboardSession {
   session_header: "X-Skill-Reviewer-Session";
   evidence_read_only: true;
   eval_mutation: false;
-  action_requests_enabled: boolean;
   data_endpoint: "/dashboard-data.json";
-  action_request_endpoint: "/dashboard-action-requests";
-  action_audit_endpoint: "/dashboard-action-requests.json";
-  agent_handoff: {
-    contract: "skill-reviewer.dashboard-agent-handoff";
-    mode: "durable_local_ledger";
-    agent_session_state: "unbound";
-    can_wake_agent_session: false;
-    persists_after_agent_session_end: true;
-    task_root: string;
-  };
 }
 
 export const dashboardSessionHeader = "X-Skill-Reviewer-Session";
@@ -78,7 +67,7 @@ export function resolveDashboardSource(
   const page = new URL(pageHref);
   const pageBaseUrl = new URL(basePath || "/", page).href;
   if (page.hash.length > 4096) {
-    return invalidSource(pageBaseUrl, "本机控制面链接过长；请重新启动临时会话。");
+    return invalidSource(pageBaseUrl, "本机 Dashboard 链接过长；请重新启动临时会话。");
   }
   const fragment = new URLSearchParams(
     page.hash.startsWith("#") ? page.hash.slice(1) : page.hash,
@@ -87,7 +76,7 @@ export function resolveDashboardSource(
   if (fragment.has("bridge")) {
     return invalidSource(
       pageBaseUrl,
-      "控制面不接受远端数据服务地址；请使用 Skill Reviewer 启动的本机页面。",
+      "Dashboard 不接受远端数据服务地址；请使用 Skill Reviewer 启动的本机页面。",
     );
   }
   if (sessionToken !== null) {
@@ -101,16 +90,16 @@ export function resolveDashboardSource(
     ) {
       return invalidSource(
         pageBaseUrl,
-        "本机控制面会话无效；请通过 Skill Reviewer 启动命令重新创建临时会话。",
+        "本机 Dashboard 会话无效；请通过 Skill Reviewer 启动命令重新创建临时会话。",
       );
     }
-    const controlPlane = new URL("/", page.origin);
+    const dashboardOrigin = new URL("/", page.origin);
     return {
-      mode: "local_control_plane",
+      mode: "local_dashboard",
       pageBaseUrl,
-      resourceBaseUrl: controlPlane.href,
-      dataUrl: new URL("dashboard-data.json", controlPlane).href,
-      sessionUrl: new URL("dashboard-session.json", controlPlane).href,
+      resourceBaseUrl: dashboardOrigin.href,
+      dataUrl: new URL("dashboard-data.json", dashboardOrigin).href,
+      sessionUrl: new URL("dashboard-session.json", dashboardOrigin).href,
       sessionToken,
       localNetwork: true,
       error: null,
@@ -129,7 +118,7 @@ export function resolveDashboardSource(
     ) {
       return invalidSource(
         pageBaseUrl,
-        "开发数据源必须与本机控制面保持同源。",
+        "开发数据源必须与本机 Dashboard 保持同源。",
       );
     }
     return {
@@ -146,7 +135,7 @@ export function resolveDashboardSource(
 
   return invalidSource(
     pageBaseUrl,
-    "当前页面没有本机控制面会话；请从 Skill Reviewer 的启动结果打开页面。",
+    "当前页面没有本机 Dashboard 会话；请从 Skill Reviewer 的启动结果打开页面。",
   );
 }
 
@@ -156,7 +145,7 @@ export function currentDashboardSource(): DashboardSource {
     import.meta.env.BASE_URL,
     import.meta.env.VITE_DASHBOARD_DATA_URL,
   );
-  if (source.mode === "local_control_plane" && source.sessionToken) {
+  if (source.mode === "local_dashboard" && source.sessionToken) {
     try {
       const page = new URL(window.location.href);
       const fragment = new URLSearchParams(
@@ -260,7 +249,7 @@ export async function loadDashboardSession(
   source: DashboardSource = currentDashboardSource(),
   signal?: AbortSignal,
 ): Promise<DashboardSession | null> {
-  if (source.mode !== "local_control_plane") return null;
+  if (source.mode !== "local_dashboard") return null;
   if (!source.sessionUrl) throw new Error("dashboard session endpoint is unavailable");
   const response = await fetchDashboardResource(
     source.sessionUrl,
@@ -277,21 +266,10 @@ export async function loadDashboardSession(
     payload.session_header !== dashboardSessionHeader ||
     payload.evidence_read_only !== true ||
     payload.eval_mutation !== false ||
-    typeof payload.action_requests_enabled !== "boolean" ||
-    payload.data_endpoint !== "/dashboard-data.json" ||
-    payload.action_request_endpoint !== "/dashboard-action-requests" ||
-    payload.action_audit_endpoint !== "/dashboard-action-requests.json" ||
-    payload.agent_handoff?.contract !==
-      "skill-reviewer.dashboard-agent-handoff" ||
-    payload.agent_handoff.mode !== "durable_local_ledger" ||
-    payload.agent_handoff.agent_session_state !== "unbound" ||
-    payload.agent_handoff.can_wake_agent_session !== false ||
-    payload.agent_handoff.persists_after_agent_session_end !== true ||
-    typeof payload.agent_handoff.task_root !== "string" ||
-    !payload.agent_handoff.task_root
+    payload.data_endpoint !== "/dashboard-data.json"
   ) {
     throw new Error(
-      "dashboard session is not bound to the expected local control-plane contract",
+      "dashboard session is not bound to the expected local Dashboard contract",
     );
   }
   return payload as DashboardSession;

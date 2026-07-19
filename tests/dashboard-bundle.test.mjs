@@ -222,7 +222,7 @@ describe("temporary Dashboard UI bundle", () => {
     }
   });
 
-  it("removes a verified temporary UI when its control-plane context exits", async () => {
+  it("removes a verified temporary UI when its Dashboard session exits", async () => {
     const root = mkdtempSync(join(tmpdir(), "skill-reviewer-dashboard-bundle-"));
     try {
       const ui = join(root, "ui");

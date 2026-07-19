@@ -6,7 +6,8 @@ Agent's decision context.
 
 ## Goal
 
-The system answers three independent questions:
+The system minimizes the time needed to reach a justified Skill decision without
+weakening the evidence chain. It answers three independent questions:
 
 1. Is the Skill package well designed?
 2. Does retained execution evidence support a behavior claim?
@@ -14,6 +15,26 @@ The system answers three independent questions:
 
 Those questions map to three interfaces. Do not merge them back into one prose
 contract.
+
+## First-principles governance
+
+The five-step method is applied in order:
+
+1. **Question requirements:** every reference, Runtime field, and UI region must
+   help judge design, evidence validity, candidate effect, or the next boundary.
+2. **Delete:** remove duplicate verdict surfaces, browser write/task machinery,
+   unbound “training trace” labels, and the unused “optimizer buffer.”
+3. **Simplify:** keep one Review verdict surface and progressive drill-down into
+   changes, runs, and the raw evidence archive.
+4. **Accelerate:** put the execution matrix before detailed provenance and show
+   objective deltas before requiring reviewers to inspect every event.
+5. **Automate last:** Runtime projection and gates automate only deterministic,
+   predeclared rules; release and authority changes remain human decisions.
+
+The Dashboard is justified only as an evidence-compression interface. Removing
+it would force reviewers to reconcile several digest-bound JSON and Trace
+artifacts manually. Expanding it into a task manager would not improve judgment
+and would create a second, ambiguous workflow engine.
 
 ## Interfaces
 
@@ -30,6 +51,11 @@ branch:
 
 Machine manifests, source-Agent contracts, Dashboard transport, and long examples
 are not model references.
+
+The four-file split is intentional progressive disclosure, not a completeness
+inventory: review loads the rubric; response rendering loads the output
+contract; Verify adds its workflow; only Evolve adds the evolution workflow.
+Merging them would reduce file count while increasing irrelevant model context.
 
 ### Runtime interface
 
@@ -92,19 +118,60 @@ Domain modules may depend only on another module's public interface. Private
 helpers remain local to their owner; the local `skill_eval_*` import graph must
 remain acyclic. A Vitest architecture guard enforces both constraints.
 
+### Decision algorithm and claim boundary
+
+For objective `j` and paired repeat `r`, the Runtime computes a
+direction-normalized delta `d[j,r]` (positive is better). Automatic selection
+uses a conjunction:
+
+- every evidence and safety hard gate passes;
+- `d[j,r] >= -tolerance[j]` for every declared objective and paired repeat;
+- at least one primary objective satisfies
+  `d[j,r] >= material_delta[j]` for every paired repeat.
+
+The aggregate mean remains display evidence; it cannot hide a regressing or
+sub-threshold repeat. Three stochastic repeats and three candidate rounds are
+bounded governance defaults, not statistical confidence, convergence, or a
+Pareto-frontier claim. With only three same-sign observations, even a simple
+one-sided sign test gives `p = 1/8 = 0.125`, not conventional significance. A
+project that needs population-level inference must predeclare a larger sampling
+and analysis plan rather than reinterpret this gate after seeing results.
+Mixed repeat directions describe candidate variability; they do not by
+themselves invalidate a calibrated Oracle or correctly bound paired execution.
+
+This boundary follows the research without pretending to reproduce a paper's
+optimizer: [SkillLens](https://arxiv.org/abs/2605.23899) motivates paired,
+target-specific utility; [SkillOpt](https://arxiv.org/abs/2605.23904) and
+[GEPA](https://arxiv.org/abs/2507.19457) motivate frozen evaluation authority,
+optimizer/evaluator separation, and retained feedback;
+[SkillsBench](https://arxiv.org/abs/2602.12670) and
+[SkillLearnBench](https://arxiv.org/abs/2604.20087) caution against treating
+static quality or self-generated tasks as downstream utility; and
+[Accounting for Variance](https://arxiv.org/abs/2103.03098) motivates reporting
+repeat variability rather than only a mean. `semantic_pair` remains an
+order-swapped advisory explanation because LLM judges are not ground truth; a
+missing, stale, or disagreeing supplemental judgment adds a limitation but does
+not override complete deterministic paired evidence.
+
 ### Dashboard interface
 
 The Dashboard consumes only validated `dashboard-data.json` and digest-bound
 sidecars. It is a decision surface, not another acceptance engine.
 
-Its primary view presents one ordered validity chain:
+Its primary view presents one decision path:
 
-1. evidence integrity;
-2. measurement validity;
-3. candidate quality.
+1. verdict plus evidence and measurement validity;
+2. primary blocker or repeat-level objective deltas;
+3. the read-only next state and human boundary.
 
-Diff, Trace, and the audit spine explain that decision. Any local handoff record
-is outside evidence authority and must be revalidated by a receiving Agent.
+Changes, Runs, and Evidence archive progressively explain that decision. The
+execution matrix appears before detailed provenance and timeline. The local
+server exposes evidence through GET/HEAD and rejects writes; the browser has no
+task ledger, Agent wake-up path, or state mutation route. The legacy
+`action_center` wire key is retained only for projection compatibility and now
+contains read-only decision support. Its v3 criterion ID `pareto` is likewise a
+compatibility token; the product label and actual algorithm are objective
+non-regression against one fixed baseline, not Pareto-frontier search.
 
 ## Authority map
 
@@ -149,6 +216,8 @@ replaced by a pointer to its authority.
 - Put maintainer explanations in `docs/`.
 - Put examples used for calibration in `evals/fixtures/`.
 - Preserve the evidence → measurement → candidate order across Runtime and UI.
+- Treat the Dashboard as evidence compression: a new primary card must replace
+  an existing decision step or prove that it reduces decision time.
 - Keep cross-domain imports public and the `skill_eval_*` dependency graph
   acyclic.
 - Keep the top-level execution CLI and core free of named Agent products. Add a

@@ -216,12 +216,6 @@ describe("dashboard schema against runtime failure projections", () => {
         acceptance: { status: "measurement-unverified", accepted: null },
         attribution: { primary: null },
       });
-      expect(
-        migrated.action_center.actions.every(
-          (action) => !action.available && !action.recommended,
-        ),
-      ).toBe(true);
-
       const inconsistentCaseMeasurement = structuredClone(data);
       inconsistentCaseMeasurement.cases[0].measurement.status = "invalid";
       inconsistentCaseMeasurement.run.measurement.cases[0].status = "invalid";

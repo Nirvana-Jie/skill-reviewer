@@ -260,7 +260,6 @@ describe("skills CLI installation contract", () => {
           expect.objectContaining({
             ok: true,
             evidence_read_only: true,
-            action_requests_enabled: true,
             run_id: "installed-package-check",
           }),
         );
@@ -284,7 +283,7 @@ describe("skills CLI installation contract", () => {
             projection_source: "existing_projection",
             run_id: "installed-package-check",
             dashboard_hosted: false,
-            control_plane_started: false,
+            dashboard_session_started: false,
             evidence_uploaded: false,
             ui_downloaded: false,
           }),

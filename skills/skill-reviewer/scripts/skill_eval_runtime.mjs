@@ -53,7 +53,7 @@ const COMMAND_OPTIONS = new Map([
   ["decide", new Set(["plan", "evidence", "workspace", "iteration", "phase"])],
   ["evolution-init", new Set(["plan", "workspace"])],
   ["evolution-advance", new Set(["state", "decision"])],
-  ["evolution-authorize", new Set(["state", "plan", "parent-digest", "training-trace", "continuity"])],
+  ["evolution-authorize", new Set(["state", "plan", "parent-digest", "continuity"])],
   ["project-dashboard", new Set(["workspace", "output", "state"])],
 ]);
 
@@ -63,7 +63,6 @@ const REPEATED_OPTIONS = new Set([
   "artifact-ref",
   "forbidden-action",
   "side-effect",
-  "training-trace",
 ]);
 const BOOLEAN_OPTIONS = new Set([]);
 
@@ -284,7 +283,6 @@ export async function runRuntime(argv, { stdin } = {}) {
         statePath: pathOption(args, "state", "state"),
         planPath: pathOption(args, "plan", "plan"),
         parentDigest: args.parentDigest,
-        trainingTraceIds: args.trainingTrace,
         continuity: assertOneOf(args.continuity ?? "continue", ["continue", "reset"], "--continuity"),
       });
     case "project-dashboard":

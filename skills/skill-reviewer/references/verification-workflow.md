@@ -83,17 +83,21 @@ Apply the validity chain in order:
 
 1. **Evidence:** identity, locks, receipts, Trace, artifacts, and digests bind.
 2. **Measurement:** required text predicates pass positive and negative
-   calibration; paired repeats do not point in contradictory directions.
+   calibration, and paired execution identities and bindings are valid.
 3. **Candidate:** required assertions pass, forbidden effects are absent,
    objectives do not regress, and any required primary delta is material.
 
-An invalid Oracle or contradictory sampling quarantines the experiment and
-routes to Eval repair. It does not reject the Skill or consume an evolution
-candidate round.
+An invalid Oracle or broken pairing/binding quarantines the experiment and
+routes to Eval repair. Mixed repeat effects are candidate variability, not an
+invalid instrument: retain them as a limitation and let the predeclared
+all-repeat objective gates reject or retain the candidate. Invalid measurement
+does not reject the Skill or consume an evolution candidate round.
 
 Deterministic assertions run before any semantic comparison. A `semantic_pair`
 uses exactly two blind, order-swapped judgments under its frozen task rubric;
-disagreement or stale binding cannot support a preference.
+disagreement or stale binding cannot support a preference. It is always
+supplemental: failure adds a limitation but does not weaken otherwise complete
+deterministic paired evidence or enter the mechanical release gate.
 
 ## 4. Decide and project
 
@@ -122,14 +126,14 @@ Start it only after an explicit user request:
 node scripts/start_skill_dashboard.mjs \
   --workspace <workspace> \
   --state <optional-evolution-state.json> \
-  --user-approved-control-plane --open
+  --user-approved-dashboard --open
 ```
 
 The launcher verifies the pinned manifest in
 `assets/dashboard-ui-bundle.json`, serves one loopback origin, and keeps run
 data local. The Dashboard presents the ordered validity chain and retained
 evidence. It cannot change Eval authority, grading, evolution state, or release.
-Any saved local handoff must be revalidated by the receiving Agent.
+It exposes no Agent-task ledger or write route.
 
 ## Completion
 

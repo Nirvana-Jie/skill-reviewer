@@ -1,33 +1,20 @@
 #!/usr/bin/env node
 
-/** Serve immutable evidence plus an external, append-only action task gateway. */
+/** Serve immutable review evidence through a temporary loopback Dashboard session. */
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
-  chmodSync,
-  closeSync,
-  constants,
   existsSync,
-  fsyncSync,
-  linkSync,
   lstatSync,
-  mkdirSync,
-  openSync,
   readFileSync,
-  readdirSync,
   realpathSync,
   statSync,
-  unlinkSync,
-  writeSync,
 } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { isIP } from "node:net";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
-import {
-  DASHBOARD_AGENT_HANDOFF_CONTRACT,
-  DASHBOARD_SESSION_CONTRACT,
-} from "./lib/skill-eval-contracts.mjs";
+import { DASHBOARD_SESSION_CONTRACT } from "./lib/skill-eval-contracts.mjs";
 import { isMainModule } from "./lib/module-entrypoint.mjs";
 import { decodeUtf8, readUtf8File } from "./lib/strict-utf8.mjs";
 
@@ -40,12 +27,8 @@ export class DashboardServerError extends Error {
 
 const DIFF_ID_PATTERN = /^[a-f0-9]{24}$/;
 const DIGEST_PATTERN = /^[a-f0-9]{64}$/;
-const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_.:-]{8,128}$/;
-const ACTION_ID_PATTERN = /^[a-z][a-z0-9_]{2,63}$/;
-const TASK_ID_PATTERN = /^task-[a-f0-9]{16}$/;
 const SESSION_TOKEN_PATTERN = /^[A-Za-z0-9_-]{32,256}$/;
 
-export const ACTION_REQUEST_LIMIT_BYTES = 16 * 1024;
 export const SESSION_TOKEN_HEADER = "X-Skill-Reviewer-Session";
 export const DASHBOARD_DIFF_RENDER_LIMIT_BYTES = 512 * 1024;
 export const DASHBOARD_EVIDENCE_SOURCE_LIMIT_BYTES = 2 * 1024 * 1024;
@@ -137,7 +120,7 @@ function isLoopbackHostname(hostname) {
 export function validateLoopbackBindHost(host) {
   if (!isLoopbackHostname(host)) {
     throw new DashboardServerError(
-      "dashboard control plane must bind to localhost or a loopback IP",
+      "dashboard server must bind to localhost or a loopback IP",
     );
   }
 }
@@ -202,299 +185,6 @@ function canonicalValue(value) {
 
 function canonicalJson(value) {
   return Buffer.from(JSON.stringify(canonicalValue(value)), "utf8");
-}
-
-function displayJson(value) {
-  if (Array.isArray(value)) return `[${value.map(displayJson).join(", ")}]`;
-  if (value !== null && typeof value === "object") {
-    return `{${Object.entries(value).map(([key, item]) => `${JSON.stringify(key)}: ${displayJson(item)}`).join(", ")}}`;
-  }
-  return JSON.stringify(value);
-}
-
-function validatedTaskRoot(workspacePath, taskRootPath) {
-  const workspace = realpathLoose(workspacePath);
-  const unresolved = resolve(taskRootPath);
-  if (
-    Buffer.byteLength(unresolved, "utf8") > 4096 ||
-    [...unresolved].some((character) => {
-      const code = character.codePointAt(0);
-      return code < 32 || code === 127;
-    })
-  ) {
-    throw new DashboardServerError("dashboard action task root is not display-safe");
-  }
-  const unresolvedMetadata = lstatMaybe(unresolved);
-  if (unresolvedMetadata?.isSymbolicLink()) {
-    throw new DashboardServerError("dashboard action task root cannot be a symlink");
-  }
-  const taskRoot = realpathLoose(unresolved);
-  if (pathWithin(taskRoot, workspace)) {
-    throw new DashboardServerError(
-      "dashboard action tasks must be stored outside the evidence workspace",
-    );
-  }
-  const metadata = lstatMaybe(taskRoot);
-  if (metadata && (metadata.isSymbolicLink() || !metadata.isDirectory())) {
-    throw new DashboardServerError("dashboard action task root is not a safe directory");
-  }
-  return taskRoot;
-}
-
-function taskDigest(record) {
-  const payload = Object.fromEntries(Object.entries(record).filter(([key]) => key !== "digest"));
-  return sha256Bytes(canonicalJson(payload));
-}
-
-export function agentHandoff(taskRoot) {
-  return {
-    contract: DASHBOARD_AGENT_HANDOFF_CONTRACT,
-    mode: "durable_local_ledger",
-    agent_session_state: "unbound",
-    can_wake_agent_session: false,
-    persists_after_agent_session_end: true,
-    task_root: taskRoot,
-  };
-}
-
-const TASK_FIELDS = [
-  "contract", "sequence", "created_at", "previous_digest", "run_id",
-  "dashboard_digest", "expected_next_action", "action_id", "owner",
-  "requested_by", "status", "delivery_mode", "agent_session_id",
-  "human_confirmation_required", "evidence_ids", "idempotency_key", "id", "digest",
-].sort();
-
-function sameFields(value, fields) {
-  return JSON.stringify(Object.keys(value).sort()) === JSON.stringify(fields);
-}
-
-function loadActionTasks(taskRoot) {
-  if (!existsSync(taskRoot)) return [];
-  const rootMetadata = lstatSync(taskRoot);
-  if (rootMetadata.isSymbolicLink() || !rootMetadata.isDirectory()) {
-    throw new DashboardServerError("dashboard action task root changed identity");
-  }
-  const names = readdirSync(taskRoot).filter((name) => name.endsWith(".json")).sort();
-  const tasks = [];
-  let previousDigest = null;
-  for (let offset = 0; offset < names.length; offset += 1) {
-    const sequence = offset + 1;
-    const name = names[offset];
-    const path = join(taskRoot, name);
-    const metadata = lstatMaybe(path);
-    if (!metadata || metadata.isSymbolicLink() || !metadata.isFile() || dirname(path) !== taskRoot) {
-      throw new DashboardServerError("dashboard action task ledger contains an unsafe entry");
-    }
-    let task;
-    try {
-      task = JSON.parse(readUtf8File(path, `dashboard action task ${name}`));
-    } catch (error) {
-      throw new DashboardServerError(`dashboard action task is invalid: ${name}`, { cause: error });
-    }
-    if (!task || typeof task !== "object" || Array.isArray(task) || task.contract !== "skill-reviewer.dashboard-action-task") {
-      throw new DashboardServerError(`dashboard action task contract is invalid: ${name}`);
-    }
-    if (!sameFields(task, TASK_FIELDS)) {
-      throw new DashboardServerError("dashboard action task fields are invalid");
-    }
-    const evidenceIds = task.evidence_ids;
-    if (
-      typeof task.created_at !== "string" ||
-      typeof task.run_id !== "string" || !task.run_id ||
-      typeof task.expected_next_action !== "string" || !task.expected_next_action ||
-      typeof task.dashboard_digest !== "string" || !DIGEST_PATTERN.test(task.dashboard_digest) ||
-      typeof task.action_id !== "string" || !ACTION_ID_PATTERN.test(task.action_id) ||
-      task.owner !== "lead_agent" || task.requested_by !== "human_reviewer" ||
-      task.status !== "awaiting_agent" || task.delivery_mode !== "durable_local_ledger" ||
-      task.agent_session_id !== null || typeof task.human_confirmation_required !== "boolean" ||
-      !Array.isArray(evidenceIds) || evidenceIds.length > 32 ||
-      evidenceIds.some((value) => typeof value !== "string" || !value) ||
-      new Set(evidenceIds).size !== evidenceIds.length ||
-      typeof task.idempotency_key !== "string" || !IDEMPOTENCY_KEY_PATTERN.test(task.idempotency_key) ||
-      typeof task.id !== "string" || !TASK_ID_PATTERN.test(task.id)
-    ) {
-      throw new DashboardServerError("dashboard action task binding is invalid");
-    }
-    if (task.sequence !== sequence) {
-      throw new DashboardServerError("dashboard action task sequence is not contiguous");
-    }
-    if (task.previous_digest !== previousDigest) {
-      throw new DashboardServerError("dashboard action task digest chain is broken");
-    }
-    if (typeof task.digest !== "string" || task.digest !== taskDigest(task)) {
-      throw new DashboardServerError("dashboard action task digest is invalid");
-    }
-    if (name !== `${String(sequence).padStart(6, "0")}-${task.id}.json`) {
-      throw new DashboardServerError("dashboard action task filename is invalid");
-    }
-    tasks.push(task);
-    previousDigest = task.digest;
-  }
-  return tasks;
-}
-
-function actionTaskLog({ taskRoot, runId, dashboardDigest }) {
-  return {
-    contract: "skill-reviewer.dashboard-action-task-log",
-    run_id: runId,
-    owner: "lead_agent",
-    evidence_mutation: false,
-    eval_mutation: false,
-    current_dashboard_digest: dashboardDigest,
-    handoff: agentHandoff(taskRoot),
-    tasks: loadActionTasks(taskRoot).filter((task) => task.run_id === runId),
-  };
-}
-
-function validateActionRequest({ payload, data }) {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    throw new DashboardServerError("dashboard action request must be a JSON object");
-  }
-  const expectedFields = [
-    "contract", "run_id", "action_id", "expected_next_action", "evidence_ids", "idempotency_key",
-  ].sort();
-  if (!sameFields(payload, expectedFields)) {
-    throw new DashboardServerError("dashboard action request fields are invalid");
-  }
-  if (payload.contract !== "skill-reviewer.dashboard-action-request") {
-    throw new DashboardServerError("dashboard action request contract is invalid");
-  }
-  const runId = data.run && typeof data.run === "object" && !Array.isArray(data.run) ? data.run.id : null;
-  if (typeof runId !== "string" || payload.run_id !== runId) {
-    throw new DashboardServerError("dashboard action request run is stale");
-  }
-  const actionCenter = data.action_center;
-  if (!actionCenter || typeof actionCenter !== "object" || Array.isArray(actionCenter)) {
-    throw new DashboardServerError("dashboard action center is unavailable");
-  }
-  const gateway = actionCenter.task_gateway;
-  if (
-    !gateway || typeof gateway !== "object" || Array.isArray(gateway) ||
-    gateway.handoff_mode !== "durable_local_ledger" ||
-    gateway.can_wake_agent_session !== false || gateway.persists_after_agent_session_end !== true ||
-    gateway.evidence_mutation !== false || gateway.eval_mutation !== false
-  ) {
-    throw new DashboardServerError(
-      "dashboard action gateway does not declare the durable handoff boundary",
-    );
-  }
-  if (typeof actionCenter.next_action !== "string" || payload.expected_next_action !== actionCenter.next_action) {
-    throw new DashboardServerError("dashboard action request state is stale");
-  }
-  if (typeof payload.action_id !== "string" || !ACTION_ID_PATTERN.test(payload.action_id)) {
-    throw new DashboardServerError("dashboard action id is invalid");
-  }
-  const action = Array.isArray(actionCenter.actions)
-    ? actionCenter.actions.find((item) => item && typeof item === "object" && !Array.isArray(item) && item.id === payload.action_id)
-    : null;
-  if (!action || action.available !== true) {
-    throw new DashboardServerError("dashboard action is not available in this state");
-  }
-  if (action.requestable !== true) {
-    throw new DashboardServerError("dashboard action is automatic and cannot be requested by the browser");
-  }
-  if (action.owner !== "lead_agent") {
-    throw new DashboardServerError("dashboard action does not belong to the lead agent");
-  }
-  if (typeof payload.idempotency_key !== "string" || !IDEMPOTENCY_KEY_PATTERN.test(payload.idempotency_key)) {
-    throw new DashboardServerError("dashboard action idempotency key is invalid");
-  }
-  const evidenceIds = payload.evidence_ids;
-  if (
-    !Array.isArray(evidenceIds) || evidenceIds.length > 32 ||
-    evidenceIds.some((value) => typeof value !== "string" || !value) ||
-    new Set(evidenceIds).size !== evidenceIds.length
-  ) {
-    throw new DashboardServerError("dashboard action evidence references are invalid");
-  }
-  const knownEvidenceIds = new Set(
-    Array.isArray(data.spine)
-      ? data.spine.filter((item) => item && typeof item === "object" && typeof item.id === "string").map((item) => item.id)
-      : [],
-  );
-  if (evidenceIds.some((value) => !knownEvidenceIds.has(value))) {
-    throw new DashboardServerError("dashboard action cites unknown evidence");
-  }
-  if (
-    !Array.isArray(action.evidence_ids) ||
-    action.evidence_ids.some((value) => typeof value !== "string" || !value) ||
-    JSON.stringify(evidenceIds) !== JSON.stringify(action.evidence_ids)
-  ) {
-    throw new DashboardServerError("dashboard action evidence does not match the state projection");
-  }
-  return { request: payload, action };
-}
-
-function appendActionTask({ taskRoot, request, action, dashboardDigest }) {
-  mkdirSync(taskRoot, { recursive: true, mode: 0o700 });
-  const rootMetadata = lstatSync(taskRoot);
-  if (rootMetadata.isSymbolicLink() || !rootMetadata.isDirectory()) {
-    throw new DashboardServerError("dashboard action task root changed identity");
-  }
-  chmodSync(taskRoot, 0o700);
-  const tasks = loadActionTasks(taskRoot);
-  for (const task of tasks) {
-    if (task.run_id === request.run_id && task.idempotency_key === request.idempotency_key) {
-      if (task.action_id !== request.action_id) {
-        throw new DashboardServerError("dashboard action idempotency key was reused for another action");
-      }
-      return { task, created: false };
-    }
-  }
-  for (const task of tasks) {
-    if (
-      task.run_id === request.run_id && task.dashboard_digest === dashboardDigest &&
-      task.expected_next_action === request.expected_next_action && task.action_id === request.action_id &&
-      JSON.stringify(task.evidence_ids) === JSON.stringify(request.evidence_ids) && task.status === "awaiting_agent"
-    ) return { task, created: false };
-  }
-  const sequence = tasks.length + 1;
-  const record = {
-    contract: "skill-reviewer.dashboard-action-task",
-    sequence,
-    created_at: new Date().toISOString().replace("Z", "+00:00"),
-    previous_digest: tasks.length ? tasks.at(-1).digest : null,
-    run_id: request.run_id,
-    dashboard_digest: dashboardDigest,
-    expected_next_action: request.expected_next_action,
-    action_id: request.action_id,
-    owner: "lead_agent",
-    requested_by: "human_reviewer",
-    status: "awaiting_agent",
-    delivery_mode: "durable_local_ledger",
-    agent_session_id: null,
-    human_confirmation_required: action.human_confirmation_required ?? false,
-    evidence_ids: request.evidence_ids,
-    idempotency_key: request.idempotency_key,
-  };
-  const identityDigest = sha256Bytes(canonicalJson({
-    run_id: request.run_id,
-    action_id: request.action_id,
-    idempotency_key: request.idempotency_key,
-    dashboard_digest: dashboardDigest,
-  }));
-  record.id = `task-${identityDigest.slice(0, 16)}`;
-  record.digest = taskDigest(record);
-  const path = join(taskRoot, `${String(sequence).padStart(6, "0")}-${record.id}.json`);
-  const temporary = join(taskRoot, `.${basename(path)}.${process.pid}.tmp`);
-  let handle;
-  try {
-    handle = openSync(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
-    writeSync(handle, `${JSON.stringify(record, null, 2)}\n`, null, "utf8");
-    fsyncSync(handle);
-    closeSync(handle);
-    handle = undefined;
-    chmodSync(temporary, 0o400);
-    linkSync(temporary, path);
-    unlinkSync(temporary);
-  } catch (error) {
-    if (handle !== undefined) {
-      try { closeSync(handle); } catch {}
-    }
-    try { unlinkSync(temporary); } catch {}
-    throw new DashboardServerError("dashboard action task could not be retained", { cause: error });
-  }
-  return { task: record, created: true };
 }
 
 function loadDashboardSnapshot(dataPath) {
@@ -700,12 +390,8 @@ function renderEvidencePayload(binding) {
   }), "utf8");
 }
 
-export function validateSources(workspacePath, taskRootPath = null) {
+export function validateSources(workspacePath) {
   const workspace = realpathLoose(workspacePath);
-  const taskRoot = validatedTaskRoot(
-    workspace,
-    taskRootPath ?? join(dirname(workspace), `${basename(workspace)}.dashboard-actions`),
-  );
   const dataPath = join(workspace, "dashboard-data.json");
   const metadata = lstatMaybe(dataPath);
   if (!metadata || !metadata.isFile()) {
@@ -714,20 +400,15 @@ export function validateSources(workspacePath, taskRootPath = null) {
   const { data } = loadDashboardSnapshot(dataPath);
   const diffRoutes = validatedDiffRoutes(workspace, data);
   const evidenceRoutes = validatedEvidenceRoutes(workspace, data);
-  const tasks = loadActionTasks(taskRoot);
   return {
     ok: true,
     dashboard_hosted: false,
     evidence_uploaded: false,
     evidence_read_only: true,
-    action_requests_enabled: true,
-    agent_handoff: agentHandoff(taskRoot),
     workspace,
-    task_root: taskRoot,
     run_id: data.run && typeof data.run === "object" && !Array.isArray(data.run) ? data.run.id ?? null : null,
     lazy_diff_count: diffRoutes.size,
     evidence_preview_count: evidenceRoutes.size,
-    action_task_count: tasks.length,
   };
 }
 
@@ -781,18 +462,13 @@ function staticContentType(path) {
   })[extension] ?? "application/octet-stream";
 }
 
-/** Create a reusable Node request handler for the Dashboard control plane. */
+/** Create a reusable Node request handler for the local Dashboard session. */
 export function createDashboardRequestHandler({
   workspace: workspacePath,
-  taskRoot: taskRootPath = null,
   sessionToken,
   staticUiRoot = null,
 }) {
   const workspace = realpathLoose(workspacePath);
-  const taskRoot = validatedTaskRoot(
-    workspace,
-    taskRootPath ?? join(dirname(workspace), `${basename(workspace)}.dashboard-actions`),
-  );
   const token = validatedSessionToken(sessionToken);
   const uiRoot = validatedStaticUiRoot(staticUiRoot);
   const dataPath = join(workspace, "dashboard-data.json");
@@ -867,11 +543,7 @@ export function createDashboardRequestHandler({
       session_header: SESSION_TOKEN_HEADER,
       evidence_read_only: true,
       eval_mutation: false,
-      action_requests_enabled: true,
       data_endpoint: "/dashboard-data.json",
-      action_request_endpoint: "/dashboard-action-requests",
-      action_audit_endpoint: "/dashboard-action-requests.json",
-      agent_handoff: agentHandoff(taskRoot),
     });
   }
 
@@ -915,7 +587,7 @@ export function createDashboardRequestHandler({
 
   function serveStaticUi(req, res, includeBody, path) {
     if (requestLoopbackOrigin(req.headers.host) == null) {
-      sendJsonError(res, 403, "dashboard control plane Host is not loopback", includeBody);
+      sendJsonError(res, 403, "dashboard server Host is not loopback", includeBody);
       return true;
     }
     let asset;
@@ -941,15 +613,6 @@ export function createDashboardRequestHandler({
     if (path === "/dashboard-data.json") {
       return { body: refreshSnapshot(), contentType: "application/json; charset=utf-8" };
     }
-    if (path === "/dashboard-action-requests.json") {
-      const { data, digest } = currentSnapshot();
-      const runId = data.run && typeof data.run === "object" && !Array.isArray(data.run) ? data.run.id : null;
-      if (typeof runId !== "string") throw new DashboardServerError("dashboard run id is unavailable");
-      return {
-        body: canonicalJson(actionTaskLog({ taskRoot, runId, dashboardDigest: digest })),
-        contentType: "application/json; charset=utf-8",
-      };
-    }
     const diff = knownDiffRoutes.get(path);
     if (diff) return { path: diff.path, expectedDigest: diff.digest, contentType: "application/json; charset=utf-8" };
     if (path.startsWith("/dashboard-diffs/")) {
@@ -973,7 +636,7 @@ export function createDashboardRequestHandler({
     }
     if (serveStaticUi(req, res, includeBody, path)) return;
     if (!requestContext(req).trusted) {
-      sendJsonError(res, 403, "dashboard control-plane session is not authorized", includeBody);
+      sendJsonError(res, 403, "dashboard session is not authorized", includeBody);
       return;
     }
     let response;
@@ -1009,7 +672,7 @@ export function createDashboardRequestHandler({
   function handleOptions(req, res) {
     const context = originContext(req);
     if (!context.trusted || context.origin == null) {
-      sendJsonError(res, 403, "dashboard control-plane preflight is not same-origin");
+      sendJsonError(res, 403, "dashboard preflight is not same-origin");
       return;
     }
     let path;
@@ -1017,95 +680,29 @@ export function createDashboardRequestHandler({
       sendJsonError(res, 400, error.message);
       return;
     }
-    const isAction = path === "/dashboard-action-requests";
-    const isRead = ["/", "/dashboard-session.json", "/dashboard-data.json", "/dashboard-action-requests.json"].includes(path)
+    const isRead = ["/", "/dashboard-session.json", "/dashboard-data.json"].includes(path)
       || path.startsWith("/dashboard-diffs/") || path.startsWith("/dashboard-evidence/");
-    if (!isAction && !isRead) {
+    if (!isRead) {
       sendJsonError(res, 404, "route not found");
       return;
     }
-    const allowedMethods = isAction ? "POST, OPTIONS" : "GET, HEAD, OPTIONS";
+    const allowedMethods = "GET, HEAD, OPTIONS";
     const requestedMethod = req.headers["access-control-request-method"];
     if (requestedMethod && !allowedMethods.split(", ").includes(String(requestedMethod))) {
-      sendJsonError(res, 405, "requested control-plane method is not allowed");
+      sendJsonError(res, 405, "dashboard is read-only; requested method is not allowed");
       return;
     }
     const requestedHeaders = new Set(
       String(req.headers["access-control-request-headers"] ?? "")
         .split(",").map((value) => value.trim().toLowerCase()).filter(Boolean),
     );
-    const allowedHeaders = new Set([SESSION_TOKEN_HEADER.toLowerCase(), ...(isAction ? ["content-type"] : [])]);
+    const allowedHeaders = new Set([SESSION_TOKEN_HEADER.toLowerCase()]);
     if (!requestedHeaders.has(SESSION_TOKEN_HEADER.toLowerCase()) || [...requestedHeaders].some((value) => !allowedHeaders.has(value))) {
-      sendJsonError(res, 403, "dashboard control-plane preflight headers are not trusted");
+      sendJsonError(res, 403, "dashboard preflight headers are not trusted");
       return;
     }
     res.writeHead(204, { "Content-Length": "0", Allow: allowedMethods, ...securityHeaders() });
     res.end();
-  }
-
-  async function readActionBody(req, length) {
-    const chunks = [];
-    let received = 0;
-    for await (const chunk of req) {
-      received += chunk.length;
-      if (received > length) throw new DashboardServerError("dashboard action request body is incomplete");
-      chunks.push(chunk);
-    }
-    const raw = Buffer.concat(chunks);
-    if (raw.length !== length) throw new DashboardServerError("dashboard action request body is incomplete");
-    return raw;
-  }
-
-  async function handlePost(req, res) {
-    if (!requestContext(req).trusted) {
-      sendJsonError(res, 403, "dashboard action request session is not authorized");
-      return;
-    }
-    let path;
-    try { path = requestPath(req); } catch (error) {
-      sendJsonError(res, 400, error.message);
-      return;
-    }
-    if (path !== "/dashboard-action-requests") {
-      sendJsonError(res, 405, "evidence routes are read-only");
-      return;
-    }
-    const contentType = String(req.headers["content-type"] ?? "").split(";", 1)[0].trim().toLowerCase();
-    if (contentType !== "application/json") {
-      sendJsonError(res, 415, "dashboard action requests require application/json");
-      return;
-    }
-    const rawLength = String(req.headers["content-length"] ?? "");
-    const contentLength = /^\d+$/.test(rawLength) ? Number(rawLength) : -1;
-    if (!Number.isSafeInteger(contentLength) || contentLength < 0 || contentLength > ACTION_REQUEST_LIMIT_BYTES) {
-      sendJsonError(res, 413, "dashboard action request exceeds the bounded size");
-      return;
-    }
-    try {
-      const raw = await readActionBody(req, contentLength);
-      const payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw));
-      const { data, digest } = currentSnapshot();
-      const { request, action } = validateActionRequest({ payload, data });
-      const { task, created } = appendActionTask({ taskRoot, request, action, dashboardDigest: digest });
-      if (created) {
-        process.stderr.write(`${displayJson({
-          event: "dashboard_agent_handoff_saved",
-          task_id: task.id,
-          run_id: task.run_id,
-          action_id: task.action_id,
-          expected_next_action: task.expected_next_action,
-          task_root: taskRoot,
-        }, null, 2)}\n`);
-      }
-      send(res, created ? 201 : 200, canonicalJson({
-        contract: "skill-reviewer.dashboard-action-task-response",
-        created,
-        task,
-        handoff: agentHandoff(taskRoot),
-      }));
-    } catch (error) {
-      sendJsonError(res, 400, error instanceof Error ? error.message : String(error));
-    }
   }
 
   return async function dashboardRequestHandler(req, res) {
@@ -1113,7 +710,6 @@ export function createDashboardRequestHandler({
       if (req.method === "GET") serveRead(req, res, true);
       else if (req.method === "HEAD") serveRead(req, res, false);
       else if (req.method === "OPTIONS") handleOptions(req, res);
-      else if (req.method === "POST") await handlePost(req, res);
       else sendJsonError(res, 405, "evidence routes are read-only");
     } catch (error) {
       if (!res.headersSent) sendJsonError(res, 400, error instanceof Error ? error.message : String(error));
@@ -1131,18 +727,17 @@ export function createDashboardServer(options) {
 export const createHandler = createDashboardRequestHandler;
 
 function parseArgs(argv) {
-  const values = { host: "127.0.0.1", port: 4174, check: false, taskRoot: null, uiDir: null };
+  const values = { host: "127.0.0.1", port: 4174, check: false, uiDir: null };
   if (argv.includes("--help") || argv.includes("-h")) return { help: true };
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
     if (token === "--check") { values.check = true; continue; }
-    if (!["--workspace", "--task-root", "--ui-dir", "--host", "--port"].includes(token)) {
+    if (!["--workspace", "--ui-dir", "--host", "--port"].includes(token)) {
       throw new DashboardServerError(`unknown option: ${token}`);
     }
     const value = argv[++index];
     if (value === undefined) throw new DashboardServerError(`${token} requires a value`);
     if (token === "--workspace") values.workspace = resolve(value);
-    else if (token === "--task-root") values.taskRoot = resolve(value);
     else if (token === "--ui-dir") values.uiDir = resolve(value);
     else if (token === "--host") values.host = value;
     else values.port = Number(value);
@@ -1155,7 +750,7 @@ function parseArgs(argv) {
 }
 
 function usage() {
-  return "Usage: serve_skill_dashboard.mjs --workspace PATH [--task-root PATH] [--ui-dir PATH] [--host HOST] [--port PORT] [--check]";
+  return "Usage: serve_skill_dashboard.mjs --workspace PATH [--ui-dir PATH] [--host HOST] [--port PORT] [--check]";
 }
 
 export function randomSessionToken() {
@@ -1190,7 +785,7 @@ export async function main(argv = process.argv.slice(2)) {
   let server;
   try {
     validateLoopbackBindHost(args.host);
-    const report = validateSources(args.workspace, args.taskRoot);
+    const report = validateSources(args.workspace);
     if (args.check) {
       process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
       return 0;
@@ -1198,7 +793,6 @@ export async function main(argv = process.argv.slice(2)) {
     const sessionToken = randomSessionToken();
     server = createDashboardServer({
       workspace: args.workspace,
-      taskRoot: args.taskRoot,
       sessionToken,
       staticUiRoot: args.uiDir,
     });
@@ -1214,7 +808,7 @@ export async function main(argv = process.argv.slice(2)) {
       data_url: `${origin}/dashboard-data.json`,
       session_url: `${origin}/dashboard-session.json`,
       session_token: sessionToken,
-        })}\n`);
+    })}\n`);
     await new Promise((resolveStop) => {
       const stop = () => resolveStop();
       process.once("SIGINT", stop);

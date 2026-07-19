@@ -655,7 +655,7 @@ describe("skill_eval_runtime compile", () => {
           workspace,
           "--ui-dir",
           ui,
-          "--user-approved-control-plane",
+          "--user-approved-dashboard",
           "--port",
           "0",
           "--refresh-seconds",
@@ -3012,7 +3012,7 @@ describe("skill_eval_runtime grade", () => {
 
       expect(result.status, result.stderr).toBe(0);
       const evidence = JSON.parse(result.stdout);
-      expect(evidence.level).toBe("inconclusive");
+      expect(evidence.level).toBe("regression-verified");
       expect(evidence.cases[0].with_skill.passed).toBe(true);
       expect(evidence.cases[0].semantic_assertions).toEqual([
         expect.objectContaining({
@@ -3076,7 +3076,7 @@ describe("skill_eval_runtime grade", () => {
 
       expect(result.status, result.stderr).toBe(0);
       const evidence = JSON.parse(result.stdout);
-      expect(evidence.level).toBe("inconclusive");
+      expect(evidence.level).toBe("regression-verified");
       expect(evidence.cases[0].semantic_assertions[0]).toEqual(
         expect.objectContaining({ status: "stale", passed: false }),
       );
@@ -3129,7 +3129,7 @@ describe("skill_eval_runtime grade", () => {
 
       expect(result.status, result.stderr).toBe(0);
       const evidence = JSON.parse(result.stdout);
-      expect(evidence.level).toBe("inconclusive");
+      expect(evidence.level).toBe("regression-verified");
       expect(evidence.cases[0].semantic_assertions[0]).toEqual(
         expect.objectContaining({ status: "missing", passed: false }),
       );
@@ -3180,14 +3180,14 @@ describe("skill_eval_runtime grade", () => {
 
       expect(result.status, result.stderr).toBe(0);
       const evidence = JSON.parse(result.stdout);
-      expect(evidence.level).toBe("inconclusive");
+      expect(evidence.level).toBe("regression-verified");
       expect(evidence.cases[0].semantic_assertions[0]).toEqual(
         expect.objectContaining({ status: "invalid", passed: false }),
       );
     });
   });
 
-  it("marks stochastic paired direction disagreement as inconclusive", () => {
+  it("keeps mixed paired directions as candidate variability, not invalid measurement", () => {
     fixture((root) => {
       const { plan, planPath, workspace } = compiledPlanFixture(root, [
         {
@@ -3243,13 +3243,46 @@ describe("skill_eval_runtime grade", () => {
 
       expect(result.status, result.stderr).toBe(0);
       const evidence = JSON.parse(result.stdout);
-      expect(evidence.level).toBe("inconclusive");
+      expect(evidence.level).toBe("regression-verified");
       expect(evidence.cases[0].direction_disagreement).toBe(true);
+      expect(evidence.cases[0].regressed).toBe(true);
+      expect(evidence.cases[0].measurement).toEqual(
+        expect.objectContaining({
+          status: "valid",
+          sampling: expect.objectContaining({
+            status: "valid",
+            direction_disagreement: true,
+          }),
+        }),
+      );
       expect(evidence.cases[0].with_skill.quality_score).toBeCloseTo(0.633333);
       expect(evidence.cases[0].old_skill.quality_score).toBeCloseTo(0.466667);
       expect(evidence.limitations).toContain(
-        "paired stochastic directions disagree in case variable-quality",
+        "paired repeat effects vary in direction for case variable-quality",
       );
+      const decision = decide({
+        plan: planPath,
+        evidence: join(workspace, "verification-evidence.json"),
+        workspace,
+      });
+      expect(decision.status, decision.stderr).toBe(0);
+      const parsedDecision = JSON.parse(decision.stdout);
+      expect(parsedDecision).toEqual(
+        expect.objectContaining({
+          status: "rejected",
+          measurement_validity: "valid",
+          objectives: [
+            expect.objectContaining({
+              regression_repeats: [2],
+              non_regressed: false,
+            }),
+          ],
+        }),
+      );
+      expect(parsedDecision.objectives[0].paired_deltas).toHaveLength(3);
+      expect(parsedDecision.objectives[0].paired_deltas[0]).toBeCloseTo(0.5);
+      expect(parsedDecision.objectives[0].paired_deltas[1]).toBeCloseTo(-0.5);
+      expect(parsedDecision.objectives[0].paired_deltas[2]).toBeCloseTo(0.5);
     });
   });
 
@@ -3355,7 +3388,7 @@ describe("skill_eval_runtime grade", () => {
 });
 
 describe("skill_eval_runtime decide", () => {
-  it("accepts only a hard-gate-clean Pareto improvement", () => {
+  it("accepts only a hard-gate-clean, repeat-consistent objective improvement", () => {
     fixture((root) => {
       const { plan, planPath, workspace } = compiledPlanFixture(root, [
         minimalCase({ id: "review-quality", split: "selection" }),
@@ -3384,6 +3417,7 @@ describe("skill_eval_runtime decide", () => {
           status: "accepted",
           accepted: true,
           hard_gates_passed: true,
+          objective_non_regression: true,
           pareto_admissible: true,
           material_improvement: true,
         }),
@@ -3401,6 +3435,183 @@ describe("skill_eval_runtime decide", () => {
       expect(
         existsSync(join(workspace, "iteration-1", "acceptance-decision.json")),
       ).toBe(true);
+    });
+  });
+
+  it("does not let an averaged outlier masquerade as repeat-consistent improvement", () => {
+    fixture((root) => {
+      const testCase = minimalCase({
+        id: "outlier-improvement",
+        split: "selection",
+        sampling: { repeats: 3, pairing: "paired" },
+        objectives: [
+          {
+            id: "quality",
+            metric: "quality_score",
+            direction: "maximize",
+            primary: true,
+            min_material_delta: 0.2,
+            non_regression_tolerance: 0,
+          },
+        ],
+      });
+      const { plan, planPath, workspace } = compiledPlanFixture(root, [testCase]);
+      const values = { with_skill: [1, 0, 0], old_skill: [0, 0, 0] };
+      for (const arm of ["with_skill", "old_skill"]) {
+        values[arm].forEach((qualityScore, index) => {
+          const repeat = index + 1;
+          write(
+            workspace,
+            `cases/outlier-improvement/${arm}/repeat-${repeat}/outputs/response.md`,
+            "done\n",
+          );
+          writeExecution({
+            workspace,
+            plan,
+            caseId: "outlier-improvement",
+            arm,
+            repeat,
+            metrics: { quality_score: qualityScore },
+          });
+        });
+      }
+
+      const result = decide({
+        plan: planPath,
+        evidence: join(workspace, "verification-evidence.json"),
+        workspace,
+      });
+
+      expect(result.status, result.stderr).toBe(0);
+      const decision = JSON.parse(result.stdout);
+      expect(decision).toEqual(
+        expect.objectContaining({
+          status: "no-change",
+          accepted: false,
+          material_improvement: false,
+        }),
+      );
+      expect(decision.objectives[0]).toEqual(
+        expect.objectContaining({
+          delta: 1 / 3,
+          paired_deltas: [1, 0, 0],
+          materially_improved: false,
+          material_improvement_repeats: [1],
+          repeat_count: 3,
+          aggregation_policy: "all_paired_repeats",
+        }),
+      );
+    });
+  });
+
+  it("does not let an average hide a repeat-level objective regression", () => {
+    fixture((root) => {
+      const testCase = minimalCase({
+        id: "masked-regression",
+        split: "selection",
+        sampling: { repeats: 3, pairing: "paired" },
+        objectives: [
+          {
+            id: "stability",
+            metric: "stability_score",
+            direction: "maximize",
+            primary: false,
+            min_material_delta: 0,
+            non_regression_tolerance: 0.05,
+          },
+          {
+            id: "quality",
+            metric: "quality_score",
+            direction: "maximize",
+            primary: true,
+            min_material_delta: 0.1,
+            non_regression_tolerance: 0,
+          },
+        ],
+      });
+      const { plan, planPath, workspace } = compiledPlanFixture(root, [testCase]);
+      const values = {
+        with_skill: {
+          stability_score: [-0.1, 0, 0],
+          quality_score: [0.2, 0.2, 0.2],
+        },
+        old_skill: {
+          stability_score: [0, 0, 0],
+          quality_score: [0, 0, 0],
+        },
+      };
+      for (const arm of ["with_skill", "old_skill"]) {
+        for (let index = 0; index < 3; index += 1) {
+          const repeat = index + 1;
+          write(
+            workspace,
+            `cases/masked-regression/${arm}/repeat-${repeat}/outputs/response.md`,
+            "done\n",
+          );
+          writeExecution({
+            workspace,
+            plan,
+            caseId: "masked-regression",
+            arm,
+            repeat,
+            metrics: {
+              stability_score: values[arm].stability_score[index],
+              quality_score: values[arm].quality_score[index],
+            },
+          });
+        }
+      }
+
+      const result = decide({
+        plan: planPath,
+        evidence: join(workspace, "verification-evidence.json"),
+        workspace,
+      });
+
+      expect(result.status, result.stderr).toBe(0);
+      const decision = JSON.parse(result.stdout);
+      expect(decision).toEqual(
+        expect.objectContaining({
+          status: "rejected",
+          accepted: false,
+          objective_non_regression: false,
+          pareto_admissible: false,
+          material_improvement: true,
+        }),
+      );
+      expect(decision.objectives[0]).toEqual(
+        expect.objectContaining({
+          paired_deltas: [-0.1, 0, 0],
+          non_regressed: false,
+          regression_repeats: [1],
+          aggregation_policy: "all_paired_repeats",
+        }),
+      );
+      const output = join(workspace, "dashboard-data.json");
+      const projected = runtimeCommand([
+        "project-dashboard",
+        "--workspace",
+        workspace,
+        "--output",
+        output,
+      ]);
+      expect(projected.status, projected.stderr).toBe(0);
+      const dashboard = JSON.parse(readFileSync(output, "utf8"));
+      expect(dashboard.cases[0]).toEqual(
+        expect.objectContaining({
+          id: "masked-regression",
+          status: "failed",
+          regressed: true,
+        }),
+      );
+      expect(dashboard.action_center.attribution.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "skill",
+            signals: expect.arrayContaining(["objective_regressed"]),
+          }),
+        ]),
+      );
     });
   });
 
@@ -3780,7 +3991,7 @@ describe("skill_eval_runtime decide", () => {
 });
 
 describe("skill_eval_runtime evolution", () => {
-  it("quarantines an invalid paired experiment without rejecting the candidate round", () => {
+  it("rejects a variable candidate without misclassifying the measurement", () => {
     fixture((root) => {
       const testCase = minimalCase({
         id: "unstable-pairing",
@@ -3821,9 +4032,9 @@ describe("skill_eval_runtime evolution", () => {
       const decision = JSON.parse(decisionResult.stdout);
       expect(decision).toEqual(
         expect.objectContaining({
-          status: "invalid",
+          status: "rejected",
           accepted: false,
-          measurement_validity: "invalid",
+          measurement_validity: "valid",
         }),
       );
 
@@ -3848,14 +4059,14 @@ describe("skill_eval_runtime evolution", () => {
       const state = JSON.parse(advanced.stdout);
       expect(state).toEqual(
         expect.objectContaining({
-          current_round: 1,
-          status: "measurement-invalid",
-          next_action: "propose_eval_change",
-          terminal: true,
-          rejected_candidates: [],
+          current_round: 2,
+          status: "optimizing",
+          next_action: "propose_candidate",
+          terminal: false,
         }),
       );
-      expect(state.invalid_experiments).toHaveLength(1);
+      expect(state.rejected_candidates).toHaveLength(1);
+      expect(state.invalid_experiments).toEqual([]);
       const dashboardPath = join(workspace, "dashboard-data.json");
       const projected = runtimeCommand([
         "project-dashboard",
@@ -3868,15 +4079,18 @@ describe("skill_eval_runtime evolution", () => {
       ]);
       expect(projected.status, projected.stderr).toBe(0);
       const dashboard = JSON.parse(projected.stdout);
-      expect(dashboard.run.measurement.status).toBe("invalid");
-      expect(dashboard.summary.invalid_experiments).toBe(1);
-      expect(dashboard.review.decision.reason).toBe("measurement_invalid");
-      expect(dashboard.action_center.attribution.primary).toBe("eval");
+      expect(dashboard.run.measurement.status).toBe("valid");
+      expect(dashboard.summary.invalid_experiments).toBe(0);
+      expect(dashboard.review.decision.reason).toBe("release_gate_failed");
+      expect(dashboard.action_center.attribution.primary).toBe("skill");
       expect(
         dashboard.action_center.attribution.items.find(
           (item) => item.id === "skill",
         ).signals,
-      ).toEqual([]);
+      ).toEqual(expect.arrayContaining([
+        "objective_regressed",
+        "paired_repeat_variability",
+      ]));
     });
   });
 
@@ -3957,8 +4171,6 @@ describe("skill_eval_runtime evolution", () => {
         runs[1].planPath,
         "--parent-digest",
         runs[1].plan.baseline.digest,
-        "--training-trace",
-        "development-trace-round-2",
       ]);
       expect(authorized.status, authorized.stderr).toBe(0);
       expect(
@@ -3974,6 +4186,8 @@ describe("skill_eval_runtime evolution", () => {
       const state = JSON.parse(readFileSync(statePath, "utf8"));
       expect(state.selection_query_count).toBe(2);
       expect(state.candidate_lineage).toHaveLength(2);
+      expect(state.candidate_lineage[1]).not.toHaveProperty("training_trace_ids");
+      expect(state).not.toHaveProperty("optimizer_rejected_buffer");
       expect(state.candidate_lineage[1]).toEqual(
         expect.objectContaining({
           round: 2,
@@ -3981,14 +4195,13 @@ describe("skill_eval_runtime evolution", () => {
           parent_digest: runs[1].plan.baseline.digest,
           candidate_digest: runs[1].plan.subject.digest,
           change_digest: expect.stringMatching(/^[a-f0-9]{64}$/),
-          training_trace_ids: ["development-trace-round-2"],
         }),
       );
       expect(state.rejected_candidates).toHaveLength(2);
     });
   });
 
-  it("resets optimizer continuity after an architecture-scale rewrite without limiting diff size", () => {
+  it("resets structural continuity after an architecture-scale rewrite without limiting diff size", () => {
     fixture((root) => {
       const baselinePath = join(root, "accepted-baseline");
       write(
@@ -4064,8 +4277,6 @@ describe("skill_eval_runtime evolution", () => {
         second.plan.baseline.digest,
         "--continuity",
         "reset",
-        "--training-trace",
-        "architecture-hypothesis-2",
       ]);
       expect(reset.status, reset.stderr).toBe(0);
       expect(
@@ -4081,7 +4292,6 @@ describe("skill_eval_runtime evolution", () => {
       const state = JSON.parse(readFileSync(statePath, "utf8"));
       expect(state.continuity_epoch).toBe(2);
       expect(state.rejected_candidates).toHaveLength(2);
-      expect(state.optimizer_rejected_buffer).toHaveLength(1);
       expect(state.candidate_lineage[1]).toEqual(
         expect.objectContaining({
           continuity: "reset",
@@ -4159,8 +4369,6 @@ describe("skill_eval_runtime evolution", () => {
         runs[1].planPath,
         "--parent-digest",
         runs[1].plan.baseline.digest,
-        "--training-trace",
-        "surrogate-revision-2",
       ]);
 
       expect(authorized.status, authorized.stderr).toBe(0);
@@ -4429,8 +4637,6 @@ describe("skill_eval_runtime evolution", () => {
             run.planPath,
             "--parent-digest",
             run.plan.baseline.digest,
-            "--training-trace",
-            `development-trace-${index + 1}`,
           ]);
           expect(authorized.status, authorized.stderr).toBe(0);
         }
@@ -5144,18 +5350,6 @@ describe("skill_eval_runtime dashboard projection", () => {
             owner: "lead_agent",
             reason: "within_locked_authority",
           },
-          actions: expect.arrayContaining([
-            expect.objectContaining({
-              id: "generate_candidate",
-              available: true,
-              recommended: true,
-            }),
-            expect.objectContaining({
-              id: "propose_eval_change",
-              available: false,
-              recommended: false,
-            }),
-          ]),
           attribution: expect.objectContaining({
             primary: "skill",
             items: expect.arrayContaining([
@@ -5380,7 +5574,7 @@ describe("skill_eval_runtime dashboard projection", () => {
     });
   });
 
-  it("surfaces stale semantic evidence as a failed case and retained node", () => {
+  it("surfaces stale supplemental semantic evidence without blocking the case", () => {
     fixture((root) => {
       const testCase = minimalCase({ id: "semantic-dashboard", split: "selection" });
       testCase.assertions.push({
@@ -5433,28 +5627,16 @@ describe("skill_eval_runtime dashboard projection", () => {
       const data = JSON.parse(
         readFileSync(join(workspace, "dashboard-data.json"), "utf8"),
       );
-      expect(data.cases[0].status).toBe("failed");
+      expect(data.cases[0].status).toBe("passed");
       expect(data.review).toEqual(
         expect.objectContaining({
           contract: "skill-reviewer.dashboard-review",
           decision: expect.objectContaining({
-            status: "blocked",
-            reason: "scenario_failed",
-            blocking_scenario_count: 1,
+            status: "inconclusive",
+            reason: "evidence_incomplete",
+            blocking_scenario_count: 0,
           }),
-          blockers: [
-            expect.objectContaining({
-              id: "blocker:semantic-dashboard",
-              case_id: "semantic-dashboard",
-              status: "failed",
-              failed_check_ids: [
-                "assertion:semantic-dashboard:semantic:blind-quality",
-              ],
-              source_evidence_ids: [
-                "artifact:semantic-dashboard:semantic:blind-quality",
-              ],
-            }),
-          ],
+          blockers: [],
         }),
       );
       expect(data.spine).toEqual(
@@ -5682,6 +5864,16 @@ describe("skill_eval_runtime dashboard projection", () => {
             acceptance: expect.objectContaining({
               status: "accepted",
               accepted: true,
+              objectives: [
+                expect.objectContaining({
+                  case_id: "dashboard-case",
+                  metric: "required_pass_rate",
+                  paired_deltas: [1],
+                  repeat_count: 1,
+                  non_regressed: true,
+                  materially_improved: true,
+                }),
+              ],
               criteria: [
                 expect.objectContaining({
                   id: "hard_gates",
@@ -5707,30 +5899,6 @@ describe("skill_eval_runtime dashboard projection", () => {
                 }),
               ]),
             }),
-            actions: expect.arrayContaining([
-              expect.objectContaining({
-                id: "prepare_audit",
-                available: true,
-                recommended: true,
-                owner: "lead_agent",
-                execution_mode: "automatic",
-                requestable: false,
-                human_confirmation_required: false,
-              }),
-              expect.objectContaining({
-                id: "generate_candidate",
-                available: false,
-              }),
-            ]),
-            task_gateway: {
-              request_endpoint: "/dashboard-action-requests",
-              audit_endpoint: "/dashboard-action-requests.json",
-              evidence_mutation: false,
-              eval_mutation: false,
-              handoff_mode: "durable_local_ledger",
-              can_wake_agent_session: false,
-              persists_after_agent_session_end: true,
-            },
           },
           review: expect.objectContaining({
             contract: "skill-reviewer.dashboard-review",

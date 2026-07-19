@@ -5,19 +5,17 @@ and text inside backticks.
 
 ## Full review
 
-Use this order:
+Use the smallest structure that preserves the decision:
 
-1. Executive Summary / 总体结论
-2. Verdict / 判定
-3. Scorecard / 评分卡
-4. Critical Issues / 关键问题
-5. Recommended Improvements / 推荐改进
-6. Trigger Analysis / 触发分析
-7. Resource Review / 资源审查
-8. Verification Evidence / 验证证据
-9. Suggested Rewrites / 改写建议
-10. Suggested Evals / 建议评测
-11. Final Recommendation / 最终建议
+1. Decision / 判定 — verdict plus two to four evidence-backed reasons.
+2. Scorecard / 评分卡.
+3. Critical Issues / 关键问题.
+4. Verification Evidence / 验证证据.
+5. Proposed Changes / 修改建议 — paste-ready when possible.
+6. Next Actions / 下一步 — one ordered list.
+
+Add Trigger Analysis / 触发分析 or Resource Review / 资源审查 only when
+that area has a material finding. Do not emit empty template sections.
 
 The Scorecard contains exactly the rubric's eight dimensions and one evidence
 sentence per score.
@@ -41,9 +39,9 @@ Verification Evidence contains:
 - Evidence / 证据 — retained artifacts and assertion summary.
 - Limitations / 局限 — what remains unknown.
 
-Suggested Rewrites are directly pasteable. Suggested Evals contain executable
-case objects only when evaluation is worth the maintenance cost; otherwise give
-one reason to defer. Final Recommendation is an ordered action list.
+Proposed Changes are directly pasteable. Include executable Eval cases under
+Next Actions only when their regression value justifies maintenance cost;
+otherwise give one reason to defer.
 
 ## Focused review
 

@@ -38,6 +38,7 @@ import {
   VERIFICATION_CONTRACT,
 } from "./skill-eval-contracts.mjs";
 import { gradeRun, objectiveDelta } from "./skill-eval-grading.mjs";
+import { pairedRepeatMetrics } from "./skill-eval-measurement.mjs";
 
 const CANDIDATE_AUTHORIZATION_FIELDS = new Set([
   "phase",
@@ -52,7 +53,6 @@ const CANDIDATE_AUTHORIZATION_FIELDS = new Set([
   "change_digest",
   "continuity",
   "continuity_epoch",
-  "training_trace_ids",
 ]);
 const AUDIT_AUTHORIZATION_FIELDS = new Set([
   "phase",
@@ -123,6 +123,18 @@ function baselineResult(caseResult, preferred = null) {
     }
   }
   return [null, null];
+}
+
+function pairedObjectiveDeltas({ objective, candidate, baseline }) {
+  const pairs = pairedRepeatMetrics({
+    candidate,
+    baseline,
+    metric: objective.metric,
+  });
+  return pairs?.map((pair) => ({
+    repeat: pair.repeat,
+    delta: objectiveDelta(objective, pair.candidate, pair.baseline),
+  })) ?? null;
 }
 
 function computeDecisionCore({ plan, evidence, iteration, phase }) {
@@ -232,6 +244,21 @@ function computeDecisionCore({ plan, evidence, iteration, phase }) {
       const delta = objectiveDelta(objective, candidateValue, baselineValue);
       const tolerance = Number(objective.non_regression_tolerance ?? 0);
       const materialDelta = Number(objective.min_material_delta ?? 0);
+      const repeatPairs = pairedObjectiveDeltas({ objective, candidate, baseline });
+      if (repeatPairs === null) {
+        hardGates.push({
+          id: `${caseId}:${none(objective.id)}:paired-metrics-present`,
+          passed: false,
+          reason: `metric ${metric} is missing from one or more paired repeats`,
+        });
+        continue;
+      }
+      const regressionRepeats = repeatPairs
+        .filter((pair) => pair.delta < -tolerance)
+        .map((pair) => pair.repeat);
+      const materialImprovementRepeats = repeatPairs
+        .filter((pair) => pair.delta >= materialDelta)
+        .map((pair) => pair.repeat);
       objectiveResults.push({
         case_id: caseId,
         id: none(objective.id),
@@ -241,8 +268,13 @@ function computeDecisionCore({ plan, evidence, iteration, phase }) {
         candidate: candidateValue,
         baseline: baselineValue,
         delta,
-        non_regressed: delta >= -tolerance,
-        materially_improved: delta >= materialDelta,
+        paired_deltas: repeatPairs.map((pair) => pair.delta),
+        repeat_count: repeatPairs.length,
+        aggregation_policy: "all_paired_repeats",
+        regression_repeats: regressionRepeats,
+        material_improvement_repeats: materialImprovementRepeats,
+        non_regressed: regressionRepeats.length === 0,
+        materially_improved: materialImprovementRepeats.length === repeatPairs.length,
         non_regression_tolerance: tolerance,
         min_material_delta: materialDelta,
       });
@@ -250,15 +282,19 @@ function computeDecisionCore({ plan, evidence, iteration, phase }) {
   }
 
   const hardGatesPassed = hardGates.every((item) => item.passed);
-  const paretoAdmissible = objectiveResults.length > 0 && objectiveResults.every((item) => item.non_regressed);
+  const objectiveNonRegression = objectiveResults.length > 0
+    && objectiveResults.every((item) => item.non_regressed);
   const materialImprovement = objectiveResults.some((item) => item.primary && item.materially_improved);
   const evidenceInconclusive = evidence.level === "inconclusive";
-  let accepted = measurementValid && !evidenceInconclusive && hardGatesPassed && paretoAdmissible;
+  let accepted = measurementValid
+    && !evidenceInconclusive
+    && hardGatesPassed
+    && objectiveNonRegression;
   if (phase === "selection") accepted = accepted && materialImprovement;
   let status;
   if (!measurementValid) status = "invalid";
   else if (evidenceInconclusive) status = "inconclusive";
-  else if (!hardGatesPassed || !paretoAdmissible) status = "rejected";
+  else if (!hardGatesPassed || !objectiveNonRegression) status = "rejected";
   else if (phase === "selection" && !materialImprovement) status = "no-change";
   else status = "accepted";
   const reasons = {
@@ -276,7 +312,10 @@ function computeDecisionCore({ plan, evidence, iteration, phase }) {
     status,
     accepted,
     hard_gates_passed: hardGatesPassed,
-    pareto_admissible: paretoAdmissible,
+    objective_non_regression: objectiveNonRegression,
+    // Compatibility alias for v1/v2 consumers. This is a single-baseline
+    // non-regression gate, not a Pareto-frontier search result.
+    pareto_admissible: objectiveNonRegression,
     material_improvement: materialImprovement,
     release_eligible: phase === "audit" && accepted && opaqueHoldout,
     measurement_validity: measurementStatus,
@@ -413,7 +452,6 @@ function candidateAuthorization({
   parentSnapshot,
   continuity,
   continuityEpoch,
-  trainingTraceIds,
 }) {
   if (!plainObject(plan.subject)) throw new ManifestError("candidate plan subject is missing");
   const candidateDigest = requireString(plan.subject.digest, "plan.subject.digest");
@@ -435,19 +473,7 @@ function candidateAuthorization({
     change_digest: change.digest,
     continuity,
     continuity_epoch: continuityEpoch,
-    training_trace_ids: trainingTraceIds,
   };
-}
-
-function normalizeTrainingTraceIds(values) {
-  const traceIds = [...(values ?? [])];
-  if (
-    !traceIds.every((value) => typeof value === "string" && value.trim())
-    || new Set(traceIds).size !== traceIds.length
-  ) {
-    throw new ManifestError("training trace ids must be unique non-empty strings");
-  }
-  return traceIds;
 }
 
 function auditAuthorization({ plan, planPath, roundNumber }) {
@@ -498,7 +524,6 @@ export function initializeEvolution({ planPath, workspace }) {
     parentSnapshot: lockedSkillSnapshotPath(plan, "old_skill"),
     continuity: "continue",
     continuityEpoch: 1,
-    trainingTraceIds: [],
   });
   const state = {
     contract: EVOLUTION_STATE_CONTRACT,
@@ -521,7 +546,6 @@ export function initializeEvolution({ planPath, workspace }) {
     continuity_epoch: 1,
     candidate_lineage: [initialAuthorization],
     rejected_candidates: [],
-    optimizer_rejected_buffer: [],
     invalid_experiments: [],
     seen_run_ids: [],
     history: [],
@@ -535,7 +559,6 @@ export function authorizeEvolution({
   statePath,
   planPath,
   parentDigest = null,
-  trainingTraceIds = null,
   continuity,
 }) {
   statePath = resolve(statePath);
@@ -555,7 +578,6 @@ export function authorizeEvolution({
   if (state.execution_profile_digest !== plan.execution_profile?.digest) throw new ManifestError("execution profile changed during evolution");
   const roundNumber = Number(state.current_round ?? 0);
   const splits = plan.splits;
-  const traceIds = normalizeTrainingTraceIds(trainingTraceIds);
   if (state.status === "optimizing") {
     if (!same(splits, ["selection"])) throw new ManifestError("optimizing evolution can authorize only selection");
     if (parentDigest == null) throw new ManifestError("selection authorization requires --parent-digest");
@@ -581,7 +603,6 @@ export function authorizeEvolution({
       parentSnapshot: lockedSkillSnapshotPath(plan, "old_skill"),
       continuity,
       continuityEpoch: epoch,
-      trainingTraceIds: traceIds,
     });
     const topologyChanged = authorization.change.added.length > 0 || authorization.change.removed.length > 0;
     if (topologyChanged && continuity !== "reset") {
@@ -590,7 +611,6 @@ export function authorizeEvolution({
     if (continuity === "reset") {
       epoch += 1;
       state.continuity_epoch = epoch;
-      state.optimizer_rejected_buffer = [];
       authorization.continuity_epoch = epoch;
     }
     lineage.push(authorization);
@@ -600,7 +620,7 @@ export function authorizeEvolution({
     state.next_action = "run_authorized_selection";
   } else if (state.status === "awaiting-audit") {
     if (!same(splits, ["audit"])) throw new ManifestError("awaiting-audit evolution can authorize only audit");
-    if (parentDigest != null || traceIds.length > 0) throw new ManifestError("audit query binding cannot carry optimizer lineage");
+    if (parentDigest != null) throw new ManifestError("audit query binding cannot carry candidate lineage");
     if (continuity !== "continue") throw new ManifestError("audit query binding cannot reset continuity");
     if (Number(state.audit_query_count ?? 0) !== 0) throw new ManifestError("audit query may be bound only once");
     if (plan.subject?.digest !== state.selected_subject_digest) {
@@ -731,11 +751,8 @@ export function advanceEvolution({ statePath, decisionPath }) {
           })),
         continuity_epoch: none(authorizedQuery.continuity_epoch),
       };
-      if (!Array.isArray(state.rejected_candidates) || !Array.isArray(state.optimizer_rejected_buffer)) {
-        throw new ManifestError("rejected candidate buffers must be arrays");
-      }
+      if (!Array.isArray(state.rejected_candidates)) throw new ManifestError("rejected candidate history must be an array");
       state.rejected_candidates = [...state.rejected_candidates, rejectedRecord];
-      state.optimizer_rejected_buffer = [...state.optimizer_rejected_buffer, rejectedRecord];
     }
   } else {
     if (state.status !== "awaiting-audit") throw new ManifestError("audit is allowed only after a selection candidate is accepted");
@@ -929,9 +946,6 @@ function validateCandidateLineage({
     if (!same(record.change, expectedChange) || record.change_digest !== change.digest) {
       throw new ManifestError(`${label} change evidence is invalid`);
     }
-    if (!Array.isArray(record.training_trace_ids) || !same(normalizeTrainingTraceIds(record.training_trace_ids), record.training_trace_ids)) {
-      throw new ManifestError(`${label} training trace ids are invalid`);
-    }
     const continuity = record.continuity;
     const epoch = record.continuity_epoch;
     if (!["continue", "reset"].includes(continuity) || !Number.isInteger(epoch)) {
@@ -1064,10 +1078,9 @@ function validateEvolutionState(state, plan, statePath, planPath) {
   }
   const candidateLineage = state.candidate_lineage;
   const rejectedCandidates = state.rejected_candidates;
-  const optimizerRejectedBuffer = state.optimizer_rejected_buffer;
   const invalidExperiments = state.invalid_experiments;
-  if (![candidateLineage, rejectedCandidates, optimizerRejectedBuffer, invalidExperiments].every(Array.isArray)) {
-    throw new ManifestError("evolution lineage, rejected buffers, and invalid experiments must be arrays");
+  if (![candidateLineage, rejectedCandidates, invalidExperiments].every(Array.isArray)) {
+    throw new ManifestError("evolution lineage, rejected history, and invalid experiments must be arrays");
   }
   if (
     state.selection_query_count !== candidateLineage.length
@@ -1350,12 +1363,6 @@ function validateEvolutionState(state, plan, statePath, planPath) {
   if (invalidProjection === null || !same(invalidExperiments, invalidProjection)) {
     throw new ManifestError("invalid experiment history does not match decisions");
   }
-  const expectedOptimizerBuffer = rejectedProjection.filter(
-    (item) => item.continuity_epoch === state.continuity_epoch,
-  );
-  if (!same(optimizerRejectedBuffer, expectedOptimizerBuffer)) {
-    throw new ManifestError("optimizer rejected buffer does not match its continuity epoch");
-  }
   for (const [key, expected] of Object.entries(stateProjection)) {
     if (!same(state[key], expected)) throw new ManifestError(`dashboard state field is inconsistent: ${key}`);
   }
@@ -1368,8 +1375,6 @@ function validateEvolutionState(state, plan, statePath, planPath) {
   state.journal_head_digest = journalDigests.length > 0 ? journalDigests.at(-1) : null;
   state.rejected_candidates = reconstructedRejected;
   state.invalid_experiments = reconstructedInvalid;
-  const currentEpoch = Number(state.continuity_epoch ?? 1);
-  state.optimizer_rejected_buffer = reconstructedRejected.filter((item) => item.continuity_epoch === currentEpoch);
   if (plainObject(state.authorized_query) && historyRunIds.includes(state.authorized_query.run_id)) {
     state.authorized_query = null;
   }

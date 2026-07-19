@@ -7,7 +7,8 @@ explicitly asks to improve an existing Skill.
 
 Find a candidate that passes every hard gate, does not regress any declared
 objective, materially improves at least one primary objective during selection,
-and generalizes in one audit. Stop after three candidate rounds.
+and generalizes in one audit. Treat three candidate rounds as a cost/safety cap,
+not evidence of convergence.
 
 ## Authority
 
@@ -18,8 +19,10 @@ Freeze for the full run:
 - execution-profile digest and permissions;
 - earlier plans, evidence, decisions, and candidate lineage.
 
-The optimizer may edit the candidate package but cannot edit those authorities
-or grade itself. Development cases may improve diagnosis under a separate
+The external proposal mechanism may edit the candidate package but cannot edit
+those authorities or grade itself. The Runtime does not claim to implement an
+optimizer: it authorizes queries, verifies retained decisions, and journals
+state transitions. Development cases may improve diagnosis under a separate
 digest; they never redefine acceptance.
 
 Continue automatically while authority, permissions, dependencies, cost, and
@@ -49,7 +52,6 @@ node scripts/skill_eval_runtime.mjs evolution-authorize \
   --state <control-workspace>/evolution-state.json \
   --plan <round-workspace>/execution-plan.json \
   --parent-digest <accepted-baseline-digest> \
-  --training-trace <development-trace-id> \
   --continuity continue
 ```
 
@@ -67,20 +69,22 @@ node scripts/skill_eval_runtime.mjs evolution-advance \
 
 Selection accepts only when evidence is complete, measurement is valid, every
 hard gate passes, all objectives remain within tolerance, and a primary
-objective reaches its declared material delta. An average cannot mask a failed
-conjunct.
+objective reaches its declared material delta in every paired repeat. The mean
+delta is display evidence only: one regressing repeat blocks non-regression,
+and one sub-threshold repeat blocks material improvement. This is a conservative
+governance rule, not a confidence interval or significance test.
 
 Invalid measurement is recorded separately from candidate rejection. Preserve
 the physical query, consume its authorization, propose an Eval change, and stop
-the current cycle. Do not advance the round or add the result to the optimizer's
-rejection buffer.
+the current cycle. Do not advance the round or classify the invalid experiment
+as a rejected candidate.
 
 ## One audit
 
 After selection accepts, compile the complete audit split with an opaque trusted
 holdout outside candidate, baseline, and run roots. Bind its exact plan with
 `evolution-authorize`, run it once, and never return its cases or failures to the
-optimizer.
+candidate proposal loop.
 
 - Audit acceptance ends behavioral evolution and asks the user for the final
   release decision.
@@ -98,6 +102,7 @@ Stop when one of these becomes true:
 - authority, permission, dependency, cost, or scope must expand;
 - the user cancels or changes the task.
 
-Retain every candidate digest, authorization, plan, evidence chain, decision,
-and transition. Project the current run for Dashboard inspection, but keep the
-state journal and retained artifacts as authority.
+Retain every candidate digest, authorization, plan, evidence chain, rejected
+decision record, and transition. Rejected history is a governance journal, not
+optimizer memory. Project the current run for Dashboard inspection, but keep
+the state journal and retained artifacts as authority.

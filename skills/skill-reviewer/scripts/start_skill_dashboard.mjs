@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-/** Project one Skill Reviewer run and start its temporary local control plane. */
+/** Project one Skill Reviewer run and start its temporary local Dashboard session. */
 
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -55,9 +55,8 @@ export function parseArgs(argv) {
     open: false,
     serveExisting: false,
     prepareOnly: false,
-    userApprovedControlPlane: false,
+    userApprovedDashboard: false,
     state: null,
-    taskRoot: null,
     uiDir: null,
   };
   if (argv.includes("--help") || argv.includes("-h")) return { help: true };
@@ -65,10 +64,10 @@ export function parseArgs(argv) {
     ["--open", "open"],
     ["--serve-existing", "serveExisting"],
     ["--prepare-only", "prepareOnly"],
-    ["--user-approved-control-plane", "userApprovedControlPlane"],
+    ["--user-approved-dashboard", "userApprovedDashboard"],
   ]);
   const options = new Set([
-    "--workspace", "--state", "--task-root", "--ui-dir", "--host", "--port",
+    "--workspace", "--state", "--ui-dir", "--host", "--port",
     "--port-attempts", "--refresh-seconds",
   ]);
   const seen = new Set();
@@ -87,7 +86,6 @@ export function parseArgs(argv) {
     if (value === undefined) throw new DashboardLauncherUsageError(`${token} requires a value`);
     if (token === "--workspace") values.workspace = resolve(value);
     else if (token === "--state") values.state = resolve(value);
-    else if (token === "--task-root") values.taskRoot = resolve(value);
     else if (token === "--ui-dir") values.uiDir = resolve(value);
     else if (token === "--host") values.host = value;
     else if (token === "--port") values.port = numberOption(value, token);
@@ -107,9 +105,9 @@ export function parseArgs(argv) {
   if (values.port > 0 && values.port + values.portAttempts - 1 > 65535) {
     throw new DashboardLauncherUsageError("the requested port range exceeds 65535");
   }
-  if (!values.prepareOnly && !values.userApprovedControlPlane) {
+  if (!values.prepareOnly && !values.userApprovedDashboard) {
     throw new DashboardLauncherUsageError(
-      "starting the optional Dashboard requires explicit user approval; use an existing explicit Dashboard request, then pass --user-approved-control-plane only after an affirmative answer",
+      "starting the optional Dashboard requires an explicit user request; pass --user-approved-dashboard only after that request",
     );
   }
   return values;
@@ -119,9 +117,9 @@ function usage() {
   return [
     "Usage: start_skill_dashboard.mjs --workspace PATH [options]",
     "Options:",
-    "  --state PATH --task-root PATH --ui-dir PATH --host HOST --port PORT",
+    "  --state PATH --ui-dir PATH --host HOST --port PORT",
     "  --port-attempts N --refresh-seconds N --open --serve-existing",
-    "  --prepare-only --user-approved-control-plane",
+    "  --prepare-only --user-approved-dashboard",
   ].join("\n");
 }
 
@@ -146,13 +144,12 @@ export async function bindDashboardServer({
   preferredPort,
   attempts,
   workspace,
-  taskRoot,
   sessionToken,
   staticUiRoot,
 }) {
   let lastError = null;
   for (const port of portCandidates(preferredPort, attempts)) {
-    const server = createDashboardServer({ workspace, taskRoot, sessionToken, staticUiRoot });
+    const server = createDashboardServer({ workspace, sessionToken, staticUiRoot });
     try {
       await listen(server, host, port);
       return server;
@@ -167,12 +164,12 @@ export async function bindDashboardServer({
   );
 }
 
-export function controlPlaneOrigin(host, port) {
+export function dashboardOrigin(host, port) {
   const authority = host.includes(":") ? `[${host}]` : host;
   return `http://${authority}:${port}`;
 }
 
-export function controlPlaneUrl(origin, sessionToken) {
+export function dashboardUrl(origin, sessionToken) {
   return `${origin}/skill-reviewer/#${new URLSearchParams({ session: sessionToken })}`;
 }
 
@@ -185,11 +182,11 @@ export async function prepareDashboard(args) {
       statePath: args.state ?? undefined,
     });
   }
-  const report = validateSources(workspace, args.taskRoot);
+  const report = validateSources(workspace);
   return {
     ...report,
     dashboard_hosted: false,
-    control_plane_started: false,
+    dashboard_session_started: false,
     projected: !args.serveExisting,
     projection_source: args.serveExisting ? "existing_projection" : "fresh_run_projection",
     evidence_uploaded: false,
@@ -350,19 +347,18 @@ export async function main(argv = process.argv.slice(2)) {
       preferredPort: args.port,
       attempts: args.portAttempts,
       workspace: args.workspace,
-      taskRoot: args.taskRoot,
       sessionToken,
       staticUiRoot: ui.root,
     });
     const address = server.address();
-    const origin = controlPlaneOrigin(String(address.address), Number(address.port));
-    const url = controlPlaneUrl(origin, sessionToken);
+    const origin = dashboardOrigin(String(address.address), Number(address.port));
+    const url = dashboardUrl(origin, sessionToken);
     const watching = !args.serveExisting && args.refreshSeconds > 0;
     const launchReport = {
       ...report,
       ...uiReport(ui),
-      user_approved_control_plane: true,
-      control_plane_started: true,
+      user_approved_dashboard: true,
+      dashboard_session_started: true,
       base_url: origin,
       data_url: `${origin}/dashboard-data.json`,
       session_url: `${origin}/dashboard-session.json`,
@@ -376,15 +372,13 @@ export async function main(argv = process.argv.slice(2)) {
         page_url: url,
         local_origin: origin,
         owner: "lead_agent",
-        lifecycle: "temporary-local-control-plane",
+        lifecycle: "temporary-local-dashboard",
         evidence_transport: "same-origin-loopback-only",
         evidence_uploaded: false,
         capability_transport: "url-fragment-to-request-header",
         ui_integrity_verified: ui.integrity_verified,
         ui_downloaded: ui.temporary,
         ui_removed_on_exit: ui.temporary,
-        browser_executes_actions: false,
-        agent_handoff: report.agent_handoff,
       },
     };
     process.stdout.write(`${JSON.stringify(launchReport)}\n`);

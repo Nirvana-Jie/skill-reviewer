@@ -7,6 +7,51 @@ export const TEXT_ASSERTION_TYPES = new Set([
 export const CALIBRATION_FIELDS = new Set(["pass_examples", "fail_examples"]);
 export const PORTABLE_REGEX_CONTRACT = "skill-reviewer.ecmascript-regexp-subset.v1";
 
+export function repeatMetricValue(record, metric) {
+  if (record === null || typeof record !== "object" || Array.isArray(record)) {
+    return null;
+  }
+  const metrics = record.metrics;
+  const value = metric === "required_pass_rate"
+    ? record.required_pass_rate
+    : metrics !== null && typeof metrics === "object" && !Array.isArray(metrics)
+      ? metrics[metric]
+      : null;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+export function pairedRepeatMetrics({ candidate, baseline, metric }) {
+  const candidateRepeats = Array.isArray(candidate?.repeats) ? candidate.repeats : [];
+  const baselineRepeats = Array.isArray(baseline?.repeats) ? baseline.repeats : [];
+  if (candidateRepeats.length === 0 || candidateRepeats.length !== baselineRepeats.length) {
+    return null;
+  }
+  const baselineByRepeat = new Map();
+  for (const record of baselineRepeats) {
+    if (
+      record === null || typeof record !== "object" || Array.isArray(record)
+      || !Number.isInteger(record.repeat) || baselineByRepeat.has(record.repeat)
+    ) return null;
+    baselineByRepeat.set(record.repeat, record);
+  }
+  const seenCandidateRepeats = new Set();
+  const pairs = [];
+  for (const record of candidateRepeats) {
+    if (
+      record === null || typeof record !== "object" || Array.isArray(record)
+      || !Number.isInteger(record.repeat) || seenCandidateRepeats.has(record.repeat)
+    ) return null;
+    seenCandidateRepeats.add(record.repeat);
+    const baselineRecord = baselineByRepeat.get(record.repeat);
+    const candidateValue = repeatMetricValue(record, metric);
+    const baselineValue = repeatMetricValue(baselineRecord, metric);
+    if (candidateValue === null || baselineValue === null) return null;
+    pairs.push({ repeat: record.repeat, candidate: candidateValue, baseline: baselineValue });
+  }
+  if (seenCandidateRepeats.size !== baselineByRepeat.size) return null;
+  return pairs.sort((left, right) => left.repeat - right.repeat);
+}
+
 function rejectNonPortableEscapes(source) {
   const unsupported = new Set(["A", "Z", "w", "W", "d", "D", "b", "B", "U", "N", "p", "P", "c", "k"]);
   for (let index = 0; index < source.length; index += 1) {
@@ -137,19 +182,17 @@ export function normalizeSampling(raw, { legacyRepeats, determinism }) {
 
 export function assessRuntimeMeasurement({ oracle, sampling, directionDisagreement }) {
   const oracleStatus = String(oracle.status ?? "unverified");
-  const samplingStatus = directionDisagreement ? "invalid" : "valid";
   const reasons = [...(oracle.reasons ?? [])];
-  if (directionDisagreement) reasons.push("paired_sampling_direction_disagreement");
-  const status = [oracleStatus, samplingStatus].includes("invalid")
+  const status = oracleStatus === "invalid"
     ? "invalid"
-    : oracleStatus !== "valid"
-      ? "unverified"
-      : "valid";
+    : oracleStatus === "valid"
+      ? "valid"
+      : "unverified";
   return {
     status,
     oracle,
     sampling: {
-      status: samplingStatus,
+      status: "valid",
       repeats: sampling.repeats,
       pairing: sampling.pairing,
       source: sampling.source,

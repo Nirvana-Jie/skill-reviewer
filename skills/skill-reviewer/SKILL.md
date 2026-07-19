@@ -133,7 +133,9 @@ passes.
 
 Continue automatically inside the locked authority. Ask the user only to change
 Eval meaning, baseline, permissions, dependencies, scope, cost, or an external
-release effect. Stop after three candidate rounds and one audit.
+release effect. Use three candidate rounds as a predeclared cost/safety cap, not
+as evidence of convergence or statistical confidence, then run at most one
+authorized audit.
 
 **Completion criterion:** the bounded state is terminal or the user receives one
 specific authority decision to make, with the retained artifact that caused it.
@@ -150,13 +152,14 @@ Use the verified launcher; do not invent another server or upload run data:
 ```bash
 node scripts/start_skill_dashboard.mjs \
   --workspace <locked-workspace> \
-  --user-approved-control-plane --open
+  --user-approved-dashboard --open
 ```
 
-The Runtime remains the source of decision truth. The UI may save a local
-handoff request, but that record grants no authority and is never completion
-evidence. Transport, schema, migration, and supply-chain rules are enforced by
-code and tests rather than repeated in model-facing prose.
+The Runtime remains the source of decision truth. The UI is strictly read-only:
+it explains the verdict, paired objective deltas, evidence, and recommended
+next state, but it does not create Agent tasks or mutate run state. Transport,
+schema, migration, and supply-chain rules are enforced by code and tests rather
+than repeated in model-facing prose.
 
 ### 6. Emit the review
 

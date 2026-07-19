@@ -12,7 +12,6 @@ export const DASHBOARD_CONTRACT = "skill-reviewer.dashboard-data";
 export const DASHBOARD_DIFF_CONTRACT = "skill-reviewer.dashboard-diff";
 export const DASHBOARD_SESSION_CONTRACT = "skill-reviewer.dashboard-session";
 export const DASHBOARD_LAUNCH_SESSION_CONTRACT = "skill-reviewer.dashboard-launch-session";
-export const DASHBOARD_AGENT_HANDOFF_CONTRACT = "skill-reviewer.dashboard-agent-handoff";
 export const EVOLUTION_STATE_CONTRACT = "skill-reviewer.evolution-state";
 export const EVOLUTION_TRANSITION_CONTRACT = "skill-reviewer.evolution-transition";
 

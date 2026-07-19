@@ -18,7 +18,7 @@ import {
 import DiffWorker from "@pierre/diffs/worker/worker.js?worker";
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
-import { copyText } from "./dashboard-actions";
+import { copyText } from "./dashboard-export";
 import { fetchDashboardResource } from "./dashboard-source";
 import type { DashboardDiffLayout } from "./dashboard-view-state";
 import {

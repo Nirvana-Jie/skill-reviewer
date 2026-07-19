@@ -24,7 +24,7 @@ describe("local Dashboard data source", () => {
 
     expect(source.mode).toBe("invalid");
     expect(source.dataUrl).toBeNull();
-    expect(source.error).toMatch(/本机控制面/);
+    expect(source.error).toMatch(/本机 Dashboard/);
   });
 
   it("rejects a configured data source that is not same-origin loopback", () => {
@@ -39,7 +39,7 @@ describe("local Dashboard data source", () => {
   });
 
   it.each(["127.0.0.1", "127.18.9.4", "localhost", "[::1]"])(
-    "accepts only a same-origin loopback control plane: %s",
+    "accepts only a same-origin loopback Dashboard session: %s",
     (host) => {
     const page = new URL(`http://${host}:8765/skill-reviewer/`);
     page.hash = new URLSearchParams({
@@ -47,7 +47,7 @@ describe("local Dashboard data source", () => {
     }).toString();
     const source = resolveDashboardSource(page.href, "/skill-reviewer/");
 
-    expect(source.mode).toBe("local_control_plane");
+    expect(source.mode).toBe("local_dashboard");
     expect(source.dataUrl).toBe(`${page.origin}/dashboard-data.json`);
     expect(source.sessionUrl).toBe(
       `${page.origin}/dashboard-session.json`,
@@ -67,7 +67,7 @@ describe("local Dashboard data source", () => {
     "http://192.168.1.10:8765/skill-reviewer/",
     "http://example.com:8765/skill-reviewer/",
     "http://user:secret@127.0.0.1:8765/skill-reviewer/",
-  ])("rejects an unsafe control-plane origin: %s", (pageHref) => {
+  ])("rejects an unsafe Dashboard origin: %s", (pageHref) => {
     const page = new URL(pageHref);
     page.hash = new URLSearchParams({
       session: "session_token_abcdefghijklmnopqrstuvwxyz123456",
@@ -77,10 +77,10 @@ describe("local Dashboard data source", () => {
     expect(source.mode).toBe("invalid");
     expect(source.dataUrl).toBeNull();
     expect(source.localNetwork).toBe(false);
-    expect(source.error).toMatch(/本机|控制面/i);
+    expect(source.error).toMatch(/本机|Dashboard/i);
   });
 
-  it("marks control-plane requests as local-network fetches and omits credentials", async () => {
+  it("marks local Dashboard requests as local-network fetches and omits credentials", async () => {
     const mockFetch = vi.fn().mockResolvedValue(new Response("{}"));
     vi.stubGlobal("fetch", mockFetch);
     const page = new URL("http://127.0.0.1:8765/skill-reviewer/");
@@ -114,7 +114,7 @@ describe("local Dashboard data source", () => {
     );
 
     const first = currentDashboardSource();
-    expect(first.mode).toBe("local_control_plane");
+    expect(first.mode).toBe("local_dashboard");
     expect(first.sessionToken).toBe(
       "session_token_abcdefghijklmnopqrstuvwxyz123456",
     );
@@ -122,7 +122,7 @@ describe("local Dashboard data source", () => {
     expect(window.location.hash).toContain("view=diff");
 
     const restored = currentDashboardSource();
-    expect(restored.mode).toBe("local_control_plane");
+    expect(restored.mode).toBe("local_dashboard");
     expect(restored.sessionToken).toBe(first.sessionToken);
     expect(window.location.hash).not.toContain("session=");
   });
@@ -151,18 +151,7 @@ describe("local Dashboard data source", () => {
           session_header: "X-Skill-Reviewer-Session",
           evidence_read_only: true,
           eval_mutation: false,
-          action_requests_enabled: true,
           data_endpoint: "/dashboard-data.json",
-          action_request_endpoint: "/dashboard-action-requests",
-          action_audit_endpoint: "/dashboard-action-requests.json",
-          agent_handoff: {
-            contract: "skill-reviewer.dashboard-agent-handoff",
-            mode: "durable_local_ledger",
-            agent_session_state: "unbound",
-            can_wake_agent_session: false,
-            persists_after_agent_session_end: true,
-            task_root: "/tmp/skill-reviewer-actions",
-          },
         }),
       ),
     );

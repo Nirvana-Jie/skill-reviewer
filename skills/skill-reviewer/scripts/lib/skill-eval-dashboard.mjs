@@ -62,6 +62,10 @@ function compatibilityScalarString(value) {
   return String(value);
 }
 
+function finiteNumberOrNull(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 function hasRuntimeValue(value) {
   if (value === null || value === undefined || value === false) return false;
   if (typeof value === "number") return value !== 0;
@@ -262,7 +266,7 @@ function dashboardEvidenceFields({ workspace, nodeId, relativePath, visible }) {
   };
 }
 
-function dashboardActionCenter({ state, decisions, caseRows }) {
+function dashboardDecisionSupport({ state, decisions, caseRows }) {
   const selectionDecision = [...decisions]
     .reverse()
     .find((decision) => valueAt(decision, "phase") === "selection") ?? null;
@@ -276,6 +280,13 @@ function dashboardActionCenter({ state, decisions, caseRows }) {
     ? (valueAt(selectionDecision, "objectives", []) ?? []).filter(plainObject)
     : [];
   const primaryObjectives = objectives.filter((objective) => valueAt(objective, "primary") !== false);
+  const objectiveNonRegression = plainObject(selectionDecision)
+    ? valueAt(
+        selectionDecision,
+        "objective_non_regression",
+        valueAt(selectionDecision, "pareto_admissible"),
+      )
+    : null;
   const hardGatesPassed = hardGates.filter((gate) => valueAt(gate, "passed") === true).length;
   const nonRegressed = objectives.filter((objective) => valueAt(objective, "non_regressed") === true).length;
   const materiallyImproved = primaryObjectives.filter(
@@ -291,6 +302,26 @@ function dashboardActionCenter({ state, decisions, caseRows }) {
     status: decisionStatus,
     accepted: plainObject(selectionDecision) ? valueAt(selectionDecision, "accepted") : null,
     decision_run_id: plainObject(selectionDecision) ? valueAt(selectionDecision, "run_id") : null,
+    objectives: objectives.map((objective) => ({
+      case_id: compatibilityScalarString(valueAt(objective, "case_id")),
+      id: compatibilityScalarString(valueAt(objective, "id")),
+      metric: compatibilityScalarString(valueAt(objective, "metric")),
+      direction: valueAt(objective, "direction") === "minimize" ? "minimize" : "maximize",
+      primary: valueAt(objective, "primary") !== false,
+      delta: finiteNumberOrNull(valueAt(objective, "delta")),
+      paired_deltas: (valueAt(objective, "paired_deltas", []) ?? [])
+        .map(finiteNumberOrNull)
+        .filter((value) => value !== null),
+      repeat_count: Number.isInteger(valueAt(objective, "repeat_count"))
+        ? valueAt(objective, "repeat_count")
+        : 0,
+      non_regression_tolerance: finiteNumberOrNull(
+        valueAt(objective, "non_regression_tolerance"),
+      ) ?? 0,
+      min_material_delta: finiteNumberOrNull(valueAt(objective, "min_material_delta")) ?? 0,
+      non_regressed: valueAt(objective, "non_regressed") === true,
+      materially_improved: valueAt(objective, "materially_improved") === true,
+    })),
     criteria: [
       {
         id: "hard_gates",
@@ -303,9 +334,10 @@ function dashboardActionCenter({ state, decisions, caseRows }) {
         evidence_ids: hardGates.map((gate) => `gate:${compatibilityScalarString(valueAt(gate, "id"))}`),
       },
       {
+        // v3 wire compatibility: the UI labels this objective non-regression.
         id: "pareto",
         status: criterionStatus({
-          passed: plainObject(selectionDecision) ? valueAt(selectionDecision, "pareto_admissible") : null,
+          passed: objectiveNonRegression,
           total: objectives.length,
         }),
         passed: nonRegressed,
@@ -374,8 +406,8 @@ function dashboardActionCenter({ state, decisions, caseRows }) {
       evidenceIds.skill.add(`case:${caseId}`);
     }
     if (valueAt(caseRow, "direction_disagreement") === true) {
-      signals.eval.push("paired_sampling_direction_disagreement");
-      evidenceIds.eval.add(`case:${caseId}`);
+      signals.skill.push("paired_repeat_variability");
+      evidenceIds.skill.add(`case:${caseId}`);
     }
     if (hasRuntimeValue(valueAt(caseRow, "missing_objective_metrics"))) {
       signals.eval.push("objective_metric_unavailable");
@@ -393,10 +425,10 @@ function dashboardActionCenter({ state, decisions, caseRows }) {
     const decisionMeasurementValid = valueAt(selectionDecision, "measurement_validity") === "valid";
     if (
       decisionMeasurementValid
-      && valueAt(selectionDecision, "pareto_admissible") === false
+      && objectiveNonRegression === false
       && objectives.length > 0
     ) {
-      signals.skill.push("pareto_regression");
+      signals.skill.push("objective_regression");
       for (const objective of objectives) {
         evidenceIds.skill.add(`case:${compatibilityScalarString(valueAt(objective, "case_id"))}`);
       }
@@ -456,62 +488,7 @@ function dashboardActionCenter({ state, decisions, caseRows }) {
     });
   }
 
-  const failedEvidenceIds = [...new Set(
-    Object.values(evidenceIds).flatMap((ids) => [...ids]),
-  )].sort();
-  const acceptanceEvidenceIds = [...new Set(
-    acceptance.criteria.flatMap((criterion) => criterion.evidence_ids),
-  )].sort();
-  const actionRequirements = {
-    generate_candidate: nextAction === "propose_candidate",
-    prepare_audit: nextAction === "prepare_audit",
-    rerun_execution: new Set(["run_authorized_selection", "run_authorized_audit"]).has(nextAction),
-    propose_eval_change: signals.eval.length > 0
-      && (new Set(["rejected", "inconclusive", "no-change", "invalid"]).has(decisionStatus)
-        || nextAction === "propose_eval_change"),
-    request_release_confirmation: nextAction === "request_user_release",
-  };
-  const recommendedByNextAction = {
-    propose_candidate: "generate_candidate",
-    prepare_audit: "prepare_audit",
-    run_authorized_selection: "rerun_execution",
-    run_authorized_audit: "rerun_execution",
-    request_user_release: "request_release_confirmation",
-    propose_eval_change: "propose_eval_change",
-  };
-  let recommendedAction = valueAt(recommendedByNextAction, nextAction);
-  if (primaryAttribution === "eval" && actionRequirements.propose_eval_change) {
-    recommendedAction = "propose_eval_change";
-  }
-
-  const automaticActionIds = new Set(["generate_candidate", "prepare_audit", "rerun_execution"]);
-  const requestableActionIds = new Set(["propose_eval_change", "request_release_confirmation"]);
-  const actions = [];
-  for (const actionId of [
-    "generate_candidate",
-    "prepare_audit",
-    "rerun_execution",
-    "propose_eval_change",
-    "request_release_confirmation",
-  ]) {
-    actions.push({
-      id: actionId,
-      available: actionRequirements[actionId],
-      recommended: actionId === recommendedAction,
-      owner: "lead_agent",
-      execution_mode: automaticActionIds.has(actionId) ? "automatic" : "request",
-      requestable: requestableActionIds.has(actionId),
-      human_confirmation_required: new Set([
-        "propose_eval_change",
-        "request_release_confirmation",
-      ]).has(actionId),
-      evidence_ids: new Set(["prepare_audit", "request_release_confirmation"]).has(actionId)
-        ? acceptanceEvidenceIds
-        : failedEvidenceIds,
-    });
-  }
-
-  const continuation = recommendedAction === "propose_eval_change"
+  const continuation = nextAction === "propose_eval_change"
     ? { mode: "human_required", owner: "human", reason: "eval_change_confirmation" }
     : nextAction === "request_user_release"
       ? { mode: "human_required", owner: "human", reason: "release_confirmation" }
@@ -527,16 +504,6 @@ function dashboardActionCenter({ state, decisions, caseRows }) {
     continuation,
     acceptance,
     attribution: { primary: primaryAttribution, items: attributionItems },
-    actions,
-    task_gateway: {
-      request_endpoint: "/dashboard-action-requests",
-      audit_endpoint: "/dashboard-action-requests.json",
-      evidence_mutation: false,
-      eval_mutation: false,
-      handoff_mode: "durable_local_ledger",
-      can_wake_agent_session: false,
-      persists_after_agent_session_end: true,
-    },
   };
 }
 
@@ -613,7 +580,7 @@ function dashboardOrderSpine(spine, caseRows) {
   return ordered;
 }
 
-function dashboardReviewOutline({ spine, caseRows, releaseEligible, actionCenter }) {
+function dashboardReviewOutline({ spine, caseRows, releaseEligible, decisionSupport }) {
   const nodesById = new Map(spine.map((node) => [compatibilityScalarString(valueAt(node, "id")), node]));
   const nodesByParent = new Map();
   for (const node of spine) {
@@ -628,10 +595,10 @@ function dashboardReviewOutline({ spine, caseRows, releaseEligible, actionCenter
   const passedGateIds = [];
   const passedCaseIds = [];
   const scopedGateIds = new Set();
-  const attribution = valueAt(actionCenter, "attribution", {});
+  const attribution = valueAt(decisionSupport, "attribution", {});
   const primaryAttribution = plainObject(attribution) ? valueAt(attribution, "primary") : null;
-  const nextAction = valueAt(actionCenter, "next_action");
-  const acceptance = valueAt(actionCenter, "acceptance", {});
+  const nextAction = valueAt(decisionSupport, "next_action");
+  const acceptance = valueAt(decisionSupport, "acceptance", {});
   const acceptanceCriteria = plainObject(acceptance) ? valueAt(acceptance, "criteria", []) : [];
   const failedAcceptanceCriteria = acceptanceCriteria.filter(
     (criterion) => plainObject(criterion) && valueAt(criterion, "status") === "failed",
@@ -651,17 +618,29 @@ function dashboardReviewOutline({ spine, caseRows, releaseEligible, actionCenter
     const artifactIds = children
       .filter((node) => valueAt(node, "kind") === "artifact")
       .map((node) => compatibilityScalarString(valueAt(node, "id")));
+    const supplementalPaths = new Set(
+      children
+        .filter((node) => (
+          valueAt(node, "kind") === "assertion"
+          && valueAt(valueAt(node, "assertion_rule", {}), "severity") === "supplemental"
+        ))
+        .map((node) => valueAt(node, "path"))
+        .filter(hasRuntimeValue)
+        .map(compatibilityScalarString),
+    );
     const failedGateIds = gateIds.filter(
       (nodeId) => !dashboardStatusPassed(valueAt(nodesById.get(nodeId), "status")),
     );
     const failedCheckIds = checkIds.filter((nodeId) => {
       const node = nodesById.get(nodeId);
       return !dashboardStatusPassed(valueAt(node, "status"))
+        && valueAt(valueAt(node, "assertion_rule", {}), "severity") !== "supplemental"
         && new Set([null, "with_skill"]).has(valueAt(node, "arm"));
     });
     const missingArtifactIds = artifactIds.filter((nodeId) => {
       const node = nodesById.get(nodeId);
       return compatibilityScalarString(valueAt(node, "status")).toLowerCase() === "missing"
+        && !supplementalPaths.has(compatibilityScalarString(valueAt(node, "path")))
         && new Set([null, "with_skill"]).has(valueAt(node, "arm"));
     });
     const failedPaths = new Set(
@@ -960,11 +939,6 @@ export function projectDashboard({ workspace, output, statePath = null }) {
           reasons: [],
         };
     const semanticAssertions = valueAt(result, "semantic_assertions", []);
-    const semanticBlocked = Array.isArray(semanticAssertions)
-      ? semanticAssertions.some(
-          (assertion) => plainObject(assertion) && valueAt(assertion, "passed") !== true,
-        )
-      : true;
     const pairedBlocked = valueAt(plannedCase, "arms", [])
       .filter((armId) => armId !== "with_skill")
       .some((armId) => {
@@ -984,7 +958,6 @@ export function projectDashboard({ workspace, output, statePath = null }) {
       || valueAt(result, "regressed") === true
       || valueAt(result, "direction_disagreement") === true
       || hasRuntimeValue(valueAt(result, "missing_objective_metrics"))
-      || semanticBlocked
       || pairedBlocked
     ) caseStatus = "failed";
     else caseStatus = "passed";
@@ -1349,7 +1322,6 @@ export function projectDashboard({ workspace, output, statePath = null }) {
       "change_digest",
       "continuity",
       "continuity_epoch",
-      "training_trace_ids",
     ].map((key) => [key, valueAt(record, key)])));
   const rawActiveQuery = valueAt(state, "authorized_query");
   const activeQuery = plainObject(rawActiveQuery)
@@ -1381,12 +1353,12 @@ export function projectDashboard({ workspace, output, statePath = null }) {
     invalid_experiments: state ? valueAt(state, "invalid_experiments", []).length : 0,
     continuity_epoch: state ? valueAt(state, "continuity_epoch") : null,
   };
-  const actionCenter = dashboardActionCenter({ state, decisions, caseRows });
+  const decisionSupport = dashboardDecisionSupport({ state, decisions, caseRows });
   const review = dashboardReviewOutline({
     spine: orderedSpine,
     caseRows,
     releaseEligible,
-    actionCenter,
+    decisionSupport,
   });
   const measurement = valueAt(evidence, "measurement", null) ?? {
     status: "pending",
@@ -1439,7 +1411,9 @@ export function projectDashboard({ workspace, output, statePath = null }) {
       rejected_candidates: state ? valueAt(state, "rejected_candidates", []) : [],
       invalid_experiments: state ? valueAt(state, "invalid_experiments", []) : [],
     },
-    action_center: actionCenter,
+    // Wire name retained for schema-v2 snapshot compatibility. The payload is
+    // read-only decision support; the Dashboard exposes no action gateway.
+    action_center: decisionSupport,
     review,
     cases: caseRows,
     diffs: skillDiffs,

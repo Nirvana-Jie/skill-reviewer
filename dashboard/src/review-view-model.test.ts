@@ -147,16 +147,6 @@ function dashboardFixture(): DashboardData {
         criteria: [],
       },
       attribution: { primary: null, items: [] },
-      actions: [],
-      task_gateway: {
-        request_endpoint: "/dashboard-action-requests",
-        audit_endpoint: "/dashboard-action-requests.json",
-        evidence_mutation: false,
-        eval_mutation: false,
-        handoff_mode: "durable_local_ledger",
-        can_wake_agent_session: false,
-        persists_after_agent_session_end: true,
-      },
     },
     review: {
       contract: "skill-reviewer.dashboard-review",

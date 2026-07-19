@@ -1,7 +1,7 @@
 export type DashboardSplit = "all" | "development" | "selection" | "audit";
 export type CaseStatusFilter = "all" | "passed" | "attention";
 export type DashboardCanvasView = "review" | "changes" | "runs" | "audit";
-export type DashboardPanel = "none" | "evidence" | "action";
+export type DashboardPanel = "none" | "evidence";
 export type DashboardDiffLayout = "split" | "unified";
 
 export interface DashboardViewState {
@@ -43,7 +43,7 @@ const canvasValues: DashboardCanvasView[] = [
   "runs",
   "audit",
 ];
-const panelValues: DashboardPanel[] = ["none", "evidence", "action"];
+const panelValues: DashboardPanel[] = ["none", "evidence"];
 const diffLayoutValues: DashboardDiffLayout[] = ["split", "unified"];
 
 function enumValue<T extends string>(
@@ -87,7 +87,6 @@ function panelValue(
   if (value && panelValues.includes(value as DashboardPanel)) {
     return value as DashboardPanel;
   }
-  if (legacyView === "action") return "action";
   if (legacyView === "evidence" && evidenceId) return "evidence";
   return "none";
 }

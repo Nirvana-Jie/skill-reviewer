@@ -61,7 +61,7 @@ flowchart LR
     E -- "Yes" --> F["Real paired Agent runs"]
     F --> G["Deterministic assertions"]
     G --> M["Supplemental semantic judgment"]
-    M --> I{"Hard gates + Pareto + material gain"}
+    M --> I{"Hard gates + repeat-level non-regression + material gain"}
     I -- "Not met" --> J["Fix or propose next candidate"]
     J --> F
     I -- "Met" --> K["One-shot release audit"]
@@ -74,8 +74,8 @@ Core rules:
 1. **Deterministic assertions first** — files, JSON, and command exit codes are graded before any semantic Judge.
 2. **Candidate and baseline stay separate** — same Case, isolated workspaces, independent Trace; no self-evaluation loop.
 3. **Validate the instrument before the candidate** — required text oracles
-   pass positive/negative calibration, and contradictory paired directions
-   invalidate the experiment instead of blaming the Skill.
+   pass positive/negative calibration and paired executions must remain bound;
+   mixed candidate effects are variability, not a broken measuring instrument.
 4. **An invalid Manifest blocks release** — it is never silently skipped.
 5. **A Manifest is not a worker receipt** — `evals.json` declares cells; only a
    retained Agent/harness dispatch receipt proves the selected cell was
@@ -90,8 +90,14 @@ Core rules:
 | **Audit** | Check release risk with one-shot evidence hidden from the optimizer | Still requires human confirmation |
 
 Sampling is explicit and independent from determinism. Legacy defaults remain
-one deterministic or three stochastic paired repeats; contradictory paired
-directions make measurement invalid rather than producing a majority winner.
+one deterministic or three stochastic paired repeats. Three is a bounded
+governance default, not a statistical-confidence claim. Every paired repeat is
+retained; a repeat-level regression blocks acceptance, and a stochastic primary
+objective must reach its material threshold in every paired repeat.
+Mixed paired directions are retained as candidate variability. They do not
+invalidate an otherwise sound measurement or produce a majority winner; the
+all-repeat gate rejects the candidate when any repeat regresses or misses the
+declared primary threshold.
 
 ## What you receive
 
@@ -104,7 +110,12 @@ A full review always includes:
 - explicit verification evidence, level, and limitations;
 - executable Eval cases only when their maintenance cost is justified by a real regression risk.
 
-The verdict is not a simple average. Safety and trigger red lines can block immediately. A release candidate must also satisfy every hard gate, avoid Pareto regression, and materially improve at least one primary objective.
+The verdict is not a simple average. Safety and trigger red lines can block
+immediately. A release candidate must satisfy every hard gate, avoid a
+repeat-level regression on every declared objective, and reach the predeclared
+material delta on at least one primary objective in every paired repeat. The
+Dashboard shows both the direction-normalized mean delta and the individual
+paired deltas; neither is presented as a confidence interval.
 
 ## Real Evals and bounded evolution
 
@@ -124,7 +135,7 @@ flowchart TB
     T1 --> G["Assertions and Judge"]
     T2 --> G
     G --> P{"Accept candidate?"}
-    P -- "No" --> N["Next candidate, max three rounds"]
+    P -- "No" --> N["Next candidate, safety cap: three rounds"]
     N --> C
     P -- "Yes" --> A["One-shot Audit"]
 ```
@@ -185,13 +196,13 @@ easy to inspect. It answers four questions in order:
 
 1. **Is the evidence trustworthy?** Verify dispatch, Trace, artifacts, and bindings.
 2. **Is the measurement trustworthy?** Inspect oracle calibration and paired sampling before judging the Skill.
-3. **Is the candidate actually better?** Compare candidate and baseline runs, scores, file diffs, and repeats side by side.
-4. **What happens next?** Project the state machine’s `next_action`, responsibility, and human boundary.
+3. **Is the candidate actually better?** Compare direction-normalized objective deltas, every paired repeat, thresholds, runs, and file changes.
+4. **What happens next?** Read the state machine’s `next_action`, responsibility, and human boundary without turning the browser into a second workflow engine.
 
 Review Overview is the only primary verdict surface. Diff, Agent Trace, and the
-audit archive explain it; a local handoff can record a proposed next step but
-cannot wake an Agent or grant authority. The Runtime remains the source of
-grading and release truth.
+Evidence archive explain it. The Dashboard is strictly read-only and exposes no
+Agent-task ledger or write route. The Runtime remains the source of grading and
+release truth.
 
 Start the Dashboard only when the user explicitly requests it:
 
@@ -199,7 +210,7 @@ Start the Dashboard only when the user explicitly requests it:
 node skills/skill-reviewer/scripts/start_skill_dashboard.mjs \
   --workspace /tmp/skill-reviewer-run \
   --state /tmp/skill-reviewer-control/evolution-state.json \
-  --user-approved-control-plane \
+  --user-approved-dashboard \
   --open
 ```
 
@@ -219,7 +230,9 @@ A person is required only to:
 - resolve ambiguity the retained evidence cannot settle;
 - confirm final release, deployment, or another external side effect.
 
-Dashboard actions append audited local handoff tasks; they do not wake a terminated Agent session. Their recovery prompt can be given to the current or a new lead Agent.
+The Dashboard only explains the next state. It does not schedule, wake, or
+deliver work to an Agent session; continue the workflow in the active Agent
+task or a new task that has the retained run context.
 
 ## Safety boundaries
 

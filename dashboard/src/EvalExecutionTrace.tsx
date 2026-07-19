@@ -682,6 +682,95 @@ export function EvalExecutionTraceView({
           <code>{trace.case.id}</code>
         </header>
 
+        <div className="arm-comparison-heading">
+          <span>
+            <GitCompareArrows size={15} aria-hidden="true" />
+            <h3>{t("executionMatrixTitle")}</h3>
+          </span>
+          <small>{t("executionMatrixDescription")}</small>
+        </div>
+        <div className="trace-execution-matrix-scroll">
+          <table className="trace-execution-matrix">
+            <thead>
+              <tr>
+                <th scope="col">{t("repeatColumn")}</th>
+                {trace.arms.map((arm) => {
+                  const candidate = arm.id === "with_skill";
+                  return (
+                    <th scope="col" key={arm.id}>
+                      <small>{t(candidate ? "candidateLane" : "baselineLane")}</small>
+                      <strong>{localizeValue(locale, arm.id)}</strong>
+                    </th>
+                  );
+                })}
+              </tr>
+            </thead>
+            <tbody>
+              {executionMatrix.map((row) => (
+                <tr key={row.repeat}>
+                  <th scope="row" title={t("repeatNotEvolutionRound", { repeat: row.repeat })}>
+                    <strong>R{row.repeat}</strong>
+                    <small>{t("selectRepeat")}</small>
+                  </th>
+                  {row.cells.map(({ arm, execution }) => {
+                    const candidate = arm.id === "with_skill";
+                    const armLabel = t(candidate ? "candidateLane" : "baselineLane");
+                    const active =
+                      arm.id === selectedArm?.id &&
+                      execution?.repeat === selectedExecution?.repeat;
+                    return (
+                      <td key={arm.id}>
+                        {execution ? (
+                          <button
+                            type="button"
+                            className={`trace-execution-cell ${candidate ? "is-candidate" : "is-baseline"} ${active ? "is-active" : ""}`}
+                            aria-label={t("executionCellLabel", {
+                              arm: armLabel,
+                              repeat: execution.repeat,
+                              status: localizeStatus(locale, execution.status),
+                            })}
+                            aria-pressed={active}
+                            onClick={() => {
+                              setSelectedArmId(arm.id);
+                              setSelectedRepeat(execution.repeat);
+                            }}
+                          >
+                            <TraceStateIcon tone={executionTone(execution)} size={14} />
+                            <span>
+                              <strong>{localizeStatus(locale, execution.status)}</strong>
+                              <small>
+                                {hasInspectableTraceExecution(execution)
+                                  ? t("traceCaptured")
+                                  : t("traceNotCaptured")}
+                                {" · "}
+                                {formatDuration(
+                                  hasInspectableTraceExecution(execution)
+                                    ? execution.trace?.duration_ms
+                                    : null,
+                                )}
+                              </small>
+                              <em>{t("assertionScore", execution.assertions)}</em>
+                            </span>
+                            <ChevronRight size={13} aria-hidden="true" />
+                          </button>
+                        ) : (
+                          <div className="trace-execution-cell is-missing" role="status">
+                            <CircleX size={14} aria-hidden="true" />
+                            <span>
+                              <strong>{t("executionMissing")}</strong>
+                              <small>{t("traceNotCaptured")}</small>
+                            </span>
+                          </div>
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
         <details className="trace-technical-context">
           <summary>
             <Fingerprint size={14} aria-hidden="true" />
@@ -779,94 +868,6 @@ export function EvalExecutionTraceView({
           onSelectEvent={setSelectedTraceEventId}
         />
 
-        <div className="arm-comparison-heading">
-          <span>
-            <GitCompareArrows size={15} aria-hidden="true" />
-            <h3>{t("executionMatrixTitle")}</h3>
-          </span>
-          <small>{t("executionMatrixDescription")}</small>
-        </div>
-        <div className="trace-execution-matrix-scroll">
-          <table className="trace-execution-matrix">
-            <thead>
-              <tr>
-                <th scope="col">{t("repeatColumn")}</th>
-                {trace.arms.map((arm) => {
-                  const candidate = arm.id === "with_skill";
-                  return (
-                    <th scope="col" key={arm.id}>
-                      <small>{t(candidate ? "candidateLane" : "baselineLane")}</small>
-                      <strong>{localizeValue(locale, arm.id)}</strong>
-                    </th>
-                  );
-                })}
-              </tr>
-            </thead>
-            <tbody>
-              {executionMatrix.map((row) => (
-                <tr key={row.repeat}>
-                  <th scope="row" title={t("repeatNotEvolutionRound", { repeat: row.repeat })}>
-                    <strong>R{row.repeat}</strong>
-                    <small>{t("selectRepeat")}</small>
-                  </th>
-                  {row.cells.map(({ arm, execution }) => {
-                    const candidate = arm.id === "with_skill";
-                    const armLabel = t(candidate ? "candidateLane" : "baselineLane");
-                    const active =
-                      arm.id === selectedArm?.id &&
-                      execution?.repeat === selectedExecution?.repeat;
-                    return (
-                      <td key={arm.id}>
-                        {execution ? (
-                          <button
-                            type="button"
-                            className={`trace-execution-cell ${candidate ? "is-candidate" : "is-baseline"} ${active ? "is-active" : ""}`}
-                            aria-label={t("executionCellLabel", {
-                              arm: armLabel,
-                              repeat: execution.repeat,
-                              status: localizeStatus(locale, execution.status),
-                            })}
-                            aria-pressed={active}
-                            onClick={() => {
-                              setSelectedArmId(arm.id);
-                              setSelectedRepeat(execution.repeat);
-                            }}
-                          >
-                            <TraceStateIcon tone={executionTone(execution)} size={14} />
-                            <span>
-                              <strong>{localizeStatus(locale, execution.status)}</strong>
-                              <small>
-                                {hasInspectableTraceExecution(execution)
-                                  ? t("traceCaptured")
-                                  : t("traceNotCaptured")}
-                                {" · "}
-                                {formatDuration(
-                                  hasInspectableTraceExecution(execution)
-                                    ? execution.trace?.duration_ms
-                                    : null,
-                                )}
-                              </small>
-                              <em>{t("assertionScore", execution.assertions)}</em>
-                            </span>
-                            <ChevronRight size={13} aria-hidden="true" />
-                          </button>
-                        ) : (
-                          <div className="trace-execution-cell is-missing" role="status">
-                            <CircleX size={14} aria-hidden="true" />
-                            <span>
-                              <strong>{t("executionMissing")}</strong>
-                              <small>{t("traceNotCaptured")}</small>
-                            </span>
-                          </div>
-                        )}
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
 
       </section>
 
