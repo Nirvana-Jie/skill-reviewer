@@ -2,9 +2,11 @@
 """Execute one locked skill eval assignment with the local Codex CLI.
 
 The adapter keeps the eval runtime agent-agnostic while turning Codex's
-observable JSONL stream into the append-only Agent Trace contract. It never
-records hidden reasoning. ``--full-access`` is explicit and is retained as
-``local-unattested`` provenance rather than being presented as sandbox proof.
+observable JSONL stream into the append-only Agent Trace contract. It records
+the spawned process in a dispatch receipt and digest-binds the redacted source
+stream. It never records hidden reasoning. ``--full-access`` is explicit and
+is retained as ``local-unattested`` provenance rather than being presented as
+sandbox proof.
 """
 
 from __future__ import annotations
@@ -28,15 +30,17 @@ from skill_eval_runtime import (
     _trace_assignment_context,
     finalize_execution,
     load_json,
+    record_dispatch_receipt,
     record_trace_event,
     sha256_file,
 )
 
 
-CAPTURE_SOURCE = "codex_cli_jsonl"
+CAPTURE_SOURCE = "provider_stream"
 CODEX_TARGET = "codex-cli"
 CODEX_HARNESS = "codex-exec-jsonl"
-RAW_EVENT_ARTIFACT = "codex-events.jsonl"
+RAW_EVENT_ARTIFACT = "agent-source-events.jsonl"
+SOURCE_FORMAT = "codex-exec-jsonl-v1"
 STDERR_ARTIFACT = "codex-stderr.log"
 LAST_MESSAGE_FALLBACK = "codex-last-message.md"
 MAX_TRACE_STRING = 24_000
@@ -48,6 +52,7 @@ FORBIDDEN_DETAIL_KEYS = {
     "chain_of_thought",
     "private_reasoning",
     "reasoning",
+    "thinking",
     "thought",
     "thoughts",
 }
@@ -82,11 +87,18 @@ def _sanitize_observable(value: Any, *, depth: int = 0) -> Any:
     if depth > 8:
         return "<nested payload omitted>"
     if isinstance(value, dict):
+        if value.get("type") in {"thinking", "reasoning"}:
+            return {
+                "id": value.get("id"),
+                "type": value.get("type"),
+                "redacted": True,
+            }
         return {
             str(key): _sanitize_observable(item, depth=depth + 1)
             for key, item in value.items()
             if _normalized_key(key) not in FORBIDDEN_DETAIL_KEYS
-            and _normalized_key(key) not in {"encrypted_content", "encrypted_reasoning"}
+            and _normalized_key(key)
+            not in {"encrypted_content", "encrypted_reasoning", "signature"}
         }
     if isinstance(value, list):
         result = [
@@ -274,6 +286,20 @@ def _require_locked_assignment(
     capabilities = profile.get("capabilities")
     if not isinstance(capabilities, list) or "jsonl-agent-events" not in capabilities:
         raise ManifestError("Codex execution profile must declare jsonl-agent-events")
+    if profile.get("dispatch_observation") != "process_spawn":
+        raise ManifestError(
+            "Codex execution profile must declare dispatch_observation=process_spawn"
+        )
+    trace_profile = profile.get("trace")
+    if (
+        not isinstance(trace_profile, dict)
+        or trace_profile.get("capture_source") != CAPTURE_SOURCE
+        or trace_profile.get("source")
+        != {"artifact": RAW_EVENT_ARTIFACT, "format": SOURCE_FORMAT}
+    ):
+        raise ManifestError(
+            "Codex execution profile must bind the provider-stream source adapter"
+        )
     if full_access and "danger-full-access" not in capabilities:
         raise ManifestError(
             "--full-access requires danger-full-access in the locked execution profile"
@@ -282,7 +308,17 @@ def _require_locked_assignment(
     if not isinstance(execution_artifact, str):
         raise ManifestError("assignment.execution_artifact is invalid")
     execution_path = _safe_artifact(repeat_root, execution_artifact)
-    for generated in [trace_path, execution_path, repeat_root / RAW_EVENT_ARTIFACT, repeat_root / STDERR_ARTIFACT]:
+    dispatch_artifact = assignment.get("dispatch_artifact")
+    if not isinstance(dispatch_artifact, str):
+        raise ManifestError("assignment.dispatch_artifact is invalid")
+    dispatch_path = _safe_artifact(repeat_root, dispatch_artifact)
+    for generated in [
+        trace_path,
+        execution_path,
+        dispatch_path,
+        repeat_root / RAW_EVENT_ARTIFACT,
+        repeat_root / STDERR_ARTIFACT,
+    ]:
         if generated.exists() or generated.is_symlink():
             raise ManifestError(f"executor output already exists: {generated.name}")
     expected = assignment.get("expected_artifacts")
@@ -659,6 +695,7 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
     raw_count = 0
     normalized_count = 0
     parse_errors = 0
+    provider_failure_events = 0
     commands: list[tuple[str, int | None]] = []
     usage: dict[str, Any] = {}
     stderr_lines: list[str] = []
@@ -699,6 +736,31 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
             side_effects=[],
             capture_source=CAPTURE_SOURCE,
         )
+
+    try:
+        record_dispatch_receipt(
+            assignment_path=assignment_path,
+            workspace=workspace,
+            dispatch_id="dispatch-"
+            + _sha256_text(
+                "|".join(
+                    [
+                        str(assignment.get("run_id")),
+                        str(assignment.get("case_id")),
+                        str(assignment.get("arm")),
+                        str(assignment.get("repeat")),
+                        str(process.pid),
+                        str(time.time_ns()),
+                    ]
+                )
+            )[:20],
+            worker_id=f"pid:{process.pid}",
+            batch_id=args.batch_id,
+        )
+    except ManifestError:
+        _terminate_process_group(process)
+        process.wait()
+        raise
 
     def read_stderr() -> None:
         assert process.stderr is not None
@@ -770,6 +832,8 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
                 )
                 raw_handle.flush()
                 continue
+            if event.get("type") in {"turn.failed", "error"}:
+                provider_failure_events += 1
             raw_handle.write(_compact_json(_redact_source_event(event)) + "\n")
             raw_handle.flush()
             if event.get("type") == "item.started" and isinstance(event.get("item"), dict):
@@ -827,6 +891,9 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
     if stderr_text:
         stderr_path.write_text(stderr_text, encoding="utf-8")
     raw_digest = sha256_file(raw_path)
+    retained_event_count = sum(
+        1 for line in raw_path.read_text(encoding="utf-8").splitlines() if line.strip()
+    )
     _record(
         assignment_path=assignment_path,
         workspace=workspace,
@@ -839,8 +906,11 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
                 "digest": raw_digest,
                 "size": raw_path.stat().st_size,
                 "source_event_count": raw_count,
+                "retained_event_count": retained_event_count,
                 "source_stream_digest": source_stream_hasher.hexdigest(),
                 "redaction": "private-reasoning-fields-removed",
+                "adapter": CODEX_TARGET,
+                "format": SOURCE_FORMAT,
             },
             "artifact_refs": [RAW_EVENT_ARTIFACT],
         },
@@ -889,7 +959,7 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
     )
     if timed_out.is_set():
         final_status = "timed_out"
-    elif return_code != 0 or parse_errors or missing_artifacts:
+    elif return_code != 0 or provider_failure_events or parse_errors or missing_artifacts:
         final_status = "failed"
     else:
         final_status = "completed"
@@ -899,6 +969,7 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
         "source_event_count": raw_count,
         "normalized_event_count": normalized_count,
         "jsonl_parse_error_count": parse_errors,
+        "provider_failure_event_count": provider_failure_events,
         "ambient_skills_disabled": skill_isolation["disabled_count"],
         "full_access_enabled": 1 if args.full_access else 0,
     }
@@ -913,6 +984,16 @@ def run_executor(args: argparse.Namespace) -> dict[str, Any]:
         forbidden_actions=forbidden_actions,
         side_effects=side_effects,
         capture_source=CAPTURE_SOURCE,
+        source_trace={
+            "artifact": RAW_EVENT_ARTIFACT,
+            "digest": raw_digest,
+            "source_stream_digest": source_stream_hasher.hexdigest(),
+            "source_event_count": raw_count,
+            "retained_event_count": retained_event_count,
+            "redaction": "private-reasoning-fields-removed",
+            "adapter": CODEX_TARGET,
+            "format": SOURCE_FORMAT,
+        },
     )
 
 
@@ -924,6 +1005,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--assignment", type=Path, required=True)
     parser.add_argument("--codex-bin", default="codex")
     parser.add_argument("--model")
+    parser.add_argument(
+        "--batch-id",
+        help="Optional paired-dispatch batch identifier shared across arms for one repeat.",
+    )
     parser.add_argument(
         "--full-access",
         action="store_true",

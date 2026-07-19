@@ -21,6 +21,8 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import { validateAndMigrateDashboardData } from "../dashboard/src/dashboard-schema";
+
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const runtime = join(
   repoRoot,
@@ -97,6 +99,27 @@ function writeExecution({
     if (existsSync(artifactPath)) artifactDigests[artifact] = sha256(artifactPath);
   }
   const startedAt = "2026-07-16T00:00:00.000Z";
+  const dispatchReceipt = {
+    contract: "skill-reviewer.dispatch-receipt",
+    run_id: plan.run_id,
+    case_id: caseId,
+    arm,
+    repeat,
+    assignment_digest: sha256(assignmentPath),
+    execution_profile_digest: plan.execution_profile.digest,
+    provider: plan.execution_profile.target,
+    harness: plan.execution_profile.harness,
+    observation: plan.execution_profile.dispatch_observation,
+    dispatch_id: `dispatch-${caseId}-${arm}-${repeat}`,
+    worker_id: `worker-${caseId}-${arm}-${repeat}`,
+    batch_id: `batch-${plan.run_id}-${caseId}-${repeat}`,
+    dispatched_at: startedAt,
+  };
+  const dispatchPath = write(
+    repeatRoot,
+    "dispatch-receipt.json",
+    JSON.stringify(dispatchReceipt),
+  );
   const traceEvents = [
     {
       contract: "skill-reviewer.agent-trace-event",
@@ -190,10 +213,23 @@ function writeExecution({
       side_effects: sideEffects,
       metrics,
       artifact_digests: artifactDigests,
+      dispatch: {
+        artifact: "dispatch-receipt.json",
+        digest: sha256(dispatchPath),
+        provider: dispatchReceipt.provider,
+        harness: dispatchReceipt.harness,
+        observation: dispatchReceipt.observation,
+        dispatch_id: dispatchReceipt.dispatch_id,
+        worker_id: dispatchReceipt.worker_id,
+        batch_id: dispatchReceipt.batch_id,
+        dispatched_at: dispatchReceipt.dispatched_at,
+      },
+      source_trace: null,
       trace: {
         artifact: "agent-trace.jsonl",
         digest: sha256(tracePath),
         capture_source: "harness_native",
+        source_trace_required: false,
         complete: true,
         event_count: traceEvents.length,
         started_at: startedAt,
@@ -291,6 +327,8 @@ function compile({
       JSON.stringify({
         target: "native-agent",
         harness: "lead-agent-dispatch",
+        dispatch_observation: "host_dispatch",
+        trace: { capture_source: "harness_native", source: null },
         capabilities: ["filesystem", "shell"],
         isolation: "trusted-orchestrator",
         sampling: { policy: "orchestrator-default" },
@@ -703,6 +741,66 @@ describe("skill_eval_runtime compile", () => {
     });
   });
 
+  it("locks provider-neutral dispatch and trace adapter metadata", () => {
+    fixture((root) => {
+      const { manifest, subject } = writeMinimalPackage(root);
+      const workspace = join(root, "run");
+      const executionProfile = write(
+        root,
+        "profiles/claude.json",
+        JSON.stringify({
+          target: "claude-code",
+          harness: "claude-stream-json",
+          dispatch_observation: "process_spawn",
+          trace: {
+            capture_source: "provider_stream",
+            source: {
+              artifact: "agent-source-events.jsonl",
+              format: "claude-stream-json-v1",
+            },
+          },
+          capabilities: ["filesystem-read", "source-event-stream"],
+          isolation: "local-unattested",
+          sampling: { mode: "claude-default", paired: true },
+        }),
+      );
+
+      const result = compile({
+        manifest,
+        subject,
+        workspace,
+        splits: ["development"],
+        executionProfile,
+      });
+
+      expect(result.status, result.stderr).toBe(0);
+      const plan = JSON.parse(result.stdout);
+      expect(plan.execution_profile).toEqual(
+        expect.objectContaining({
+          target: "claude-code",
+          harness: "claude-stream-json",
+          dispatch_observation: "process_spawn",
+          trace: {
+            capture_source: "provider_stream",
+            source: {
+              artifact: "agent-source-events.jsonl",
+              format: "claude-stream-json-v1",
+            },
+          },
+        }),
+      );
+      const assignment = JSON.parse(
+        readFileSync(
+          join(workspace, "assignments/safe-case/with_skill/repeat-1.json"),
+          "utf8",
+        ),
+      );
+      expect(assignment.source_trace_artifact).toBe(
+        "agent-source-events.jsonl",
+      );
+    });
+  });
+
   it("derives a distinct run id when the execution cell changes", () => {
     fixture((root) => {
       const { manifest, subject } = writeMinimalPackage(root);
@@ -712,6 +810,8 @@ describe("skill_eval_runtime compile", () => {
         JSON.stringify({
           target: "native-agent",
           harness: "lead-agent-dispatch",
+          dispatch_observation: "host_dispatch",
+          trace: { capture_source: "harness_native", source: null },
           capabilities: ["filesystem"],
           isolation: "trusted-orchestrator",
           sampling: { policy: "deterministic" },
@@ -723,6 +823,8 @@ describe("skill_eval_runtime compile", () => {
         JSON.stringify({
           target: "native-agent",
           harness: "lead-agent-dispatch",
+          dispatch_observation: "host_dispatch",
+          trace: { capture_source: "harness_native", source: null },
           capabilities: ["filesystem", "shell"],
           isolation: "trusted-orchestrator",
           sampling: { policy: "orchestrator-default" },
@@ -1561,6 +1663,18 @@ describe("skill_eval_runtime grade", () => {
           arm,
           "repeat-1.json",
         );
+        const dispatched = runtimeCommand([
+          "record-dispatch",
+          "--workspace",
+          workspace,
+          "--assignment",
+          assignment,
+          "--dispatch-id",
+          `dispatch-safe-case-${arm}-1`,
+          "--worker-id",
+          `worker-safe-case-${arm}-1`,
+        ]);
+        expect(dispatched.status, dispatched.stderr).toBe(0);
         const observed = runtimeCommand([
           "trace-event",
           "--workspace",
@@ -1573,8 +1687,6 @@ describe("skill_eval_runtime grade", () => {
           "Read the bound Skill instructions",
           "--details-json",
           JSON.stringify({ path: "SKILL.md", digest: "a".repeat(64) }),
-          "--capture-source",
-          "harness_native",
         ]);
         expect(observed.status, observed.stderr).toBe(0);
         const command = runtimeCommand([
@@ -1589,8 +1701,6 @@ describe("skill_eval_runtime grade", () => {
           "Validated the generated response",
           "--details-json",
           JSON.stringify({ argv: ["test", "-s", "outputs/response.md"], exit_code: 0 }),
-          "--capture-source",
-          "harness_native",
         ]);
         expect(command.status, command.stderr).toBe(0);
         const finalized = runtimeCommand([
@@ -1601,8 +1711,6 @@ describe("skill_eval_runtime grade", () => {
           assignment,
           "--status",
           "completed",
-          "--capture-source",
-          "harness_native",
         ]);
         expect(finalized.status, finalized.stderr).toBe(0);
       }
@@ -1698,6 +1806,93 @@ describe("skill_eval_runtime grade", () => {
       expect(
         evidence.cases[0].with_skill.binding_errors.join("\n"),
       ).toContain("execution_profile_digest");
+    });
+  });
+
+  it("fails closed when a retained dispatch receipt is edited after execution", () => {
+    fixture((root) => {
+      const { plan, planPath, workspace } = compiledPlanFixture(root, [
+        minimalCase({ id: "dispatch-bound" }),
+      ]);
+      for (const arm of plan.cases[0].arms) {
+        write(
+          workspace,
+          `cases/dispatch-bound/${arm}/repeat-1/outputs/response.md`,
+          `done by ${arm}\n`,
+        );
+        writeExecution({ workspace, plan, caseId: "dispatch-bound", arm });
+      }
+      const receiptPath = join(
+        workspace,
+        "cases/dispatch-bound/with_skill/repeat-1/dispatch-receipt.json",
+      );
+      const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+      receipt.worker_id = "forged-worker";
+      writeFileSync(receiptPath, JSON.stringify(receipt), "utf8");
+
+      const result = grade({ plan: planPath, workspace });
+
+      expect(result.status, result.stderr).toBe(0);
+      const evidence = JSON.parse(result.stdout);
+      expect(evidence.cases[0].with_skill.complete).toBe(false);
+      expect(evidence.cases[0].with_skill.binding_errors.join("\n")).toContain(
+        "dispatch receipt digest",
+      );
+      expect(
+        evidence.cases[0].with_skill.repeats[0].dispatch.valid,
+      ).toBe(false);
+    });
+  });
+
+  it("rejects individually valid arms that were not retained in one paired dispatch batch", () => {
+    fixture((root) => {
+      const { plan, planPath, workspace } = compiledPlanFixture(root, [
+        minimalCase({ id: "paired-dispatch" }),
+      ]);
+      const executionPaths = {};
+      for (const arm of plan.cases[0].arms) {
+        write(
+          workspace,
+          `cases/paired-dispatch/${arm}/repeat-1/outputs/response.md`,
+          `done by ${arm}\n`,
+        );
+        executionPaths[arm] = writeExecution({
+          workspace,
+          plan,
+          caseId: "paired-dispatch",
+          arm,
+        });
+      }
+      const baselineArm = plan.cases[0].arms.find((arm) => arm !== "with_skill");
+      const receiptPath = join(
+        workspace,
+        `cases/paired-dispatch/${baselineArm}/repeat-1/dispatch-receipt.json`,
+      );
+      const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+      receipt.batch_id = "batch-unpaired-baseline";
+      writeFileSync(receiptPath, JSON.stringify(receipt), "utf8");
+      const execution = JSON.parse(readFileSync(executionPaths[baselineArm], "utf8"));
+      execution.dispatch.batch_id = receipt.batch_id;
+      execution.dispatch.digest = sha256(receiptPath);
+      writeFileSync(executionPaths[baselineArm], JSON.stringify(execution), "utf8");
+
+      const result = grade({ plan: planPath, workspace });
+
+      expect(result.status, result.stderr).toBe(0);
+      const evidence = JSON.parse(result.stdout);
+      expect(evidence.cases[0].with_skill.complete).toBe(false);
+      expect(evidence.cases[0].with_skill.binding_errors.join("\n")).toContain(
+        "paired dispatch batch_id mismatch",
+      );
+      expect(evidence.cases[0].with_skill.repeats[0]).toEqual(
+        expect.objectContaining({
+          status: "completed",
+          binding_errors: expect.arrayContaining([
+            "paired dispatch batch_id mismatch",
+          ]),
+        }),
+      );
+      expect(evidence.cases[0][baselineArm].complete).toBe(false);
     });
   });
 
@@ -2925,6 +3120,9 @@ describe("skill_eval_runtime decide", () => {
           release_eligible: false,
         }),
       );
+      expect(() =>
+        validateAndMigrateDashboardData(preDecisionDashboard),
+      ).not.toThrow();
 
       const result = decide({
         plan: planPath,
@@ -3007,6 +3205,21 @@ describe("skill_eval_runtime decide", () => {
           release_eligible: true,
         }),
       );
+      expect(() => validateAndMigrateDashboardData(dashboard)).not.toThrow();
+      const projectedTraces = dashboard.cases.flatMap((testCase) =>
+        testCase.arms.flatMap((arm) =>
+          arm.executions.map((execution) => execution.trace),
+        ),
+      );
+      expect(projectedTraces).toHaveLength(3);
+      for (const trace of projectedTraces) {
+        expect(trace.events[0].details).toEqual({
+          capture_source: trace.capture_source,
+        });
+        for (const event of trace.events.slice(1)) {
+          expect(event.details).toEqual({});
+        }
+      }
       expect(dashboard.spine).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -4818,6 +5031,7 @@ describe("skill_eval_runtime dashboard projection", () => {
       expect(data).toEqual(
         expect.objectContaining({
           contract: "skill-reviewer.dashboard-data",
+          schema_version: 2,
           run: expect.objectContaining({
             id: plan.run_id,
             status: "awaiting-audit",

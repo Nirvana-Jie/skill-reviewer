@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import App from "./App";
+import { DashboardErrorBoundary } from "./DashboardErrorBoundary";
 import "./styles.css";
 import { UiPreferencesProvider } from "./ui-preferences";
 
@@ -14,7 +15,9 @@ if (!root) {
 createRoot(root).render(
   <StrictMode>
     <UiPreferencesProvider>
-      <App />
+      <DashboardErrorBoundary>
+        <App />
+      </DashboardErrorBoundary>
     </UiPreferencesProvider>
   </StrictMode>,
 );

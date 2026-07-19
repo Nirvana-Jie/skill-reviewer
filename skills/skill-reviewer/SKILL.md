@@ -139,19 +139,32 @@ from the rubric.
   artifact snapshots; do not freeze full prose by default.
 - **Executable behavior verification:** read
   `references/executable-evals.md`, then read and follow
-  `references/subagent-eval-workflow.md` completely. For `semantic_pair`, also
+  `references/subagent-eval-workflow.md` and
+  `references/agent-trace-contract.md` completely. For `semantic_pair`, also
   read `references/semantic-grader-contract.md`. Compile the requested split
   into a fresh workspace, plan, run lock, answer-key-free case/arm/repeat skill
   snapshots, and arm/repeat-specific input copies. The lead agent launches
   native paired workers in the same turn; the runtime itself stays
   agent-agnostic. Compilation requires a canonical execution profile outside
-  the subject/baseline/workspace; bind its target, harness, capability,
-  isolation, and sampling digest to every assignment and executor response.
+  the subject/baseline/workspace; bind its target, harness, dispatch
+  observation, Trace adapter/source, capability, isolation, and sampling digest
+  to every assignment and executor response.
   Executor identity comes from that lead-supplied profile and the bound
-  artifacts; do not accept worker self-reported build fields.
+  artifacts; do not accept worker self-reported build fields. The profile also
+  locks `dispatch_observation` plus the provider-neutral Trace adapter and its
+  optional source stream; Dashboard code must never parse a provider format.
+- **Provider adapters:** any native Agent, local CLI, SDK, or external harness
+  may execute a locked assignment when it emits the contract in
+  `references/agent-trace-contract.md`. The Dashboard classifies the validated
+  dispatch observation and canonical events rather than target names. Bundled
+  Codex and Claude adapters are reference implementations, not a provider
+  whitelist.
 - **Local Codex executor:** when the local `codex` CLI is available, the lead
-  may dispatch each locked assignment through
-  `scripts/run_codex_eval_executor.py`. Use an execution profile whose target
+  should dispatch a complete locked plan through
+  `scripts/run_codex_eval_plan.py`; it starts every arm for one case/repeat
+  batch before waiting for any arm, then grades the complete run. Use
+  `scripts/run_codex_eval_executor.py` only for one explicitly selected locked
+  assignment. Use an execution profile whose target
   is `codex-cli`, harness is `codex-exec-jsonl`, capability includes
   `jsonl-agent-events`, and isolation is `local-unattested`. Pass
   `--full-access` only when the user explicitly authorizes local
@@ -164,6 +177,13 @@ from the rubric.
   assignments together when worker capacity allows. Full access produces real
   behavioral provenance, not proof that network or OS permissions were
   enforced; never relabel it as `trusted-orchestrator` evidence.
+- **Local Claude executor:** `scripts/run_claude_eval_executor.py` executes one
+  locked `claude-code` / `claude-stream-json` assignment, retains a redacted
+  `agent-source-events.jsonl`, and maps the observable stream into the same
+  canonical Trace. It records a process receipt only after a real spawn and
+  keeps provider errors as failed evidence. Authentication and model spend
+  remain environment-owned; do not initiate login or widen permissions merely
+  to make a canary pass.
 - **Trace ownership:** treat one execution cell as
   `Eval case × arm × repeat × actual Eval worker`. The lead Agent locks and
   dispatches the cell but is not the evaluated actor, so its planning and
@@ -173,6 +193,14 @@ from the rubric.
   snapshot. If that Skill starts another Agent, retain child events only when
   the harness can bind them to the parent cell and declares
   `nested-agent-events`; never infer unobserved child behavior.
+- **Dispatch provenance:** `evals/evals.json` and `compile` declare execution
+  cells but do not prove a worker started. Before recording native worker
+  behavior, the lead/harness must call `skill_eval_runtime.py record-dispatch`
+  with the real host dispatch ID and worker/thread ID. The local Codex adapters
+  record the spawned PID automatically. Every completed execution binds
+  `dispatch-receipt.json`; a profile without that receipt remains declared
+  configuration, not executor identity evidence. This is trusted harness
+  provenance, not a cryptographic host attestation.
 
 For a full/readiness branch, auto-discover and execute a valid manifest. For a
 focused branch, execute only when evals or effect claims are in scope. An
@@ -268,16 +296,25 @@ only after an affirmative answer in the current request or structured question;
 without it the launcher exits before any UI download or server startup.
 
 Every configured `case × arm × repeat` still needs an independent, contiguous,
-digest-bound `agent-trace.jsonl` and `execution.json`. Follow
+digest-bound `dispatch-receipt.json`, `agent-trace.jsonl`, and `execution.json`.
+Any profile that declares a source stream additionally binds the
+reasoning-redacted `agent-source-events.jsonl` artifact, its adapter, format,
+counts, and digests. Follow
 `references/executable-evals.md` and `references/subagent-eval-workflow.md` for
 Trace capture and artifact provenance. The Dashboard must show a missing Trace
 as missing; never reconstruct events, mix lead orchestration into a worker
 Trace, expose private reasoning, or use presentation data as grading evidence.
+Treat Review Overview as the only primary verdict surface. Diff, Agent Trace,
+and the collapsed audit archive provide evidence; next actions open from the
+overview as a drawer, and the Inspector describes only selected evidence.
+Require the current projection schema and show incompatibility as an explicit
+recovery state rather than attempting to render partial nested data.
 
 **Completion criterion:** a `not-run` branch creates no Eval workspace or worker
 and binds the static sources used for its review. An attempted Eval binds its
-plan, eval/grader authority, assignments, snapshots, inputs, Traces, executions,
-and artifacts, and derives the verification level from graded evidence. Missing,
+plan, eval/grader authority, assignments, snapshots, inputs, dispatch receipts,
+source streams when declared, Traces, executions, and artifacts, and derives
+the verification level from graded evidence. Missing,
 stale, unsafe, conflicting, or unbound evidence in an attempted run is
 `inconclusive`, never silently passing.
 
@@ -380,6 +417,9 @@ consistent, and no claim exceeds the retained evidence.
   eval/snapshot questions.
 - `references/executable-evals.md` — normative manifest, plan, assertion,
   executor-artifact, and grader contract; read before behavior execution.
+- `references/agent-trace-contract.md` — provider-neutral dispatch, source
+  adapter, canonical Trace, Dashboard, and real-execution test contract; read
+  before changing an executor or Trace UI.
 - `references/subagent-eval-workflow.md` — runtime effect verification; read
   for full/readiness auto-verification and explicit effect verification.
 - `references/semantic-grader-contract.md` — normative blind comparison,
@@ -404,7 +444,13 @@ consistent, and no claim exceeds the retained evidence.
   that snapshot verification is in scope.
 - `scripts/run_codex_eval_executor.py` — execute one locked runtime assignment
   with the local Codex CLI and retain a real, reasoning-redacted JSONL Agent
-  Trace. The lead Agent owns candidate/baseline fan-out and later grading.
+  Trace plus process-dispatch and source-stream provenance.
+- `scripts/run_claude_eval_executor.py` — execute one locked runtime assignment
+  with Claude Code and normalize its reasoning-redacted stream into the same
+  provider-neutral Trace contract.
+- `scripts/run_codex_eval_plan.py` — validate and execute one complete local
+  Codex plan in paired case/repeat batches, retain per-cell provenance, and
+  grade after all cells finish.
 - `scripts/skill_eval_runtime.py` — compile, lock, grade, decide, evolve-state,
   and Dashboard projection adapter; it never spawns an agent or edits a skill.
 - `scripts/start_skill_dashboard.py` — normal one-command projection, safe port

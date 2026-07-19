@@ -1,4 +1,7 @@
 import type {
+  AgentDispatchReceipt,
+  AgentExecutionTrace,
+  AgentTraceEvent,
   DashboardArm,
   DashboardCase,
   DashboardData,
@@ -6,12 +9,106 @@ import type {
   SpineNode,
 } from "./types";
 
+export type TraceLifecycleState =
+  | "running"
+  | "completed"
+  | "interrupted"
+  | "unknown";
+export type TraceBusinessResult = "passed" | "failed" | "unknown";
+export type TraceEvidenceQuality = "complete" | "partial" | "missing";
+export type TraceSemanticTone = "good" | "bad" | "warn" | "neutral";
+
+export interface TraceEventSemantics {
+  lifecycle: TraceLifecycleState;
+  result: TraceBusinessResult;
+  evidence: TraceEvidenceQuality;
+  tone: TraceSemanticTone;
+}
+
+function detailsContainFailedCheck(details: Record<string, unknown>): boolean {
+  return Object.entries(details).some(([key, value]) => {
+    const normalized = key.toLowerCase();
+    if (
+      value === false &&
+      /(?:^|_)(?:passed|success|successful|ok|valid)$/.test(normalized)
+    ) {
+      return true;
+    }
+    if (
+      typeof value === "number" &&
+      value > 0 &&
+      /(?:^|_)(?:error|errors|failure|failures)_?count$/.test(normalized)
+    ) {
+      return true;
+    }
+    if (
+      normalized === "exit_code" &&
+      typeof value === "number" &&
+      value !== 0
+    ) {
+      return true;
+    }
+    return false;
+  });
+}
+
+export function resolveTraceEventSemantics(
+  event: Pick<AgentTraceEvent, "kind" | "status" | "details">,
+): TraceEventSemantics {
+  const status = event.status.trim().toLowerCase();
+  const lifecycle: TraceLifecycleState = ["running", "started"].includes(status)
+    ? "running"
+    : ["timed_out", "interrupted", "cancelled", "canceled"].includes(status)
+      ? "interrupted"
+      : [
+            "completed",
+            "passed",
+            "failed",
+            "rejected",
+            "invalid",
+            "retained",
+            "agreement",
+          ].includes(status) || event.kind === "execution_finished"
+        ? "completed"
+        : "unknown";
+  const evidence: TraceEvidenceQuality =
+    event.details.evidence_missing === true
+      ? "missing"
+      : event.details.evidence_complete === false
+        ? "partial"
+        : "complete";
+  const failed =
+    event.kind === "error" ||
+    ["failed", "rejected", "regressed", "invalid", "timed_out", "interrupted"].includes(
+      status,
+    ) ||
+    detailsContainFailedCheck(event.details);
+  const passed =
+    !failed && ["passed", "retained", "agreement"].includes(status);
+  const result: TraceBusinessResult = failed
+    ? "failed"
+    : passed
+      ? "passed"
+      : "unknown";
+  const tone: TraceSemanticTone =
+    result === "failed"
+      ? "bad"
+      : evidence !== "complete"
+        ? "warn"
+        : result === "passed"
+          ? "good"
+          : "neutral";
+  return { lifecycle, result, evidence, tone };
+}
+
 export type ExecutionTraceGap =
   | "manifest"
   | "plan_lock"
   | "execution_profile"
   | "execution_count"
+  | "dispatch_receipt"
   | "execution_integrity"
+  | "source_trace"
   | "trace_capture"
   | "trace_integrity";
 
@@ -62,6 +159,83 @@ export interface EvalExecutionTrace {
   gaps: ExecutionTraceGap[];
 }
 
+export interface SlowTraceExecution {
+  arm: string;
+  repeat: number;
+  durationMs: number;
+}
+
+export interface TraceAttentionSummary {
+  failedChecks: number;
+  failedEvents: number;
+  evidenceGaps: number;
+  comparisonDifferences: number;
+  slowThresholdMs: number;
+  slowExecutions: SlowTraceExecution[];
+}
+
+function median(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[middle - 1]! + sorted[middle]!) / 2
+    : sorted[middle]!;
+}
+
+export function buildTraceAttentionSummary(
+  trace: EvalExecutionTrace,
+): TraceAttentionSummary {
+  const executions = trace.arms.flatMap((arm) =>
+    (arm.executions ?? []).map((execution) => ({ arm, execution })),
+  );
+  const capturedExecutions = executions.filter(
+    (
+      item,
+    ): item is { arm: DashboardArm; execution: InspectableTraceExecution } =>
+      hasInspectableTraceExecution(item.execution),
+  );
+  const durations = capturedExecutions.map(
+    ({ execution }) => execution.trace.duration_ms,
+  );
+  // Use a robust relative threshold, capped by an absolute 5 s usability bound.
+  // The 1 s floor prevents tiny fixture variance from being labeled slow.
+  const slowThresholdMs = Math.max(
+    1000,
+    Math.min(5000, median(durations) * 2),
+  );
+  const slowExecutions = capturedExecutions
+    .flatMap(({ arm, execution }) => {
+      const durationMs = execution.trace.duration_ms;
+      return durationMs >= slowThresholdMs
+        ? [{ arm: arm.id, repeat: execution.repeat, durationMs }]
+        : [];
+    });
+  const failedEvents = capturedExecutions.reduce(
+    (count, { execution }) =>
+      count +
+      execution.trace.events.filter(
+        (event) => resolveTraceEventSemantics(event).result === "failed",
+      ).length,
+    0,
+  );
+  const comparisonDifferences = trace.assertionGroups.filter((group) => {
+    const laneStates = new Set(group.lanes.map((lane) => lane.state));
+    return group.lanes.length > 1 && laneStates.size > 1;
+  }).length;
+
+  return {
+    failedChecks:
+      trace.attentionAssertionGroups.length +
+      trace.case.semantic_assertions.filter((assertion) => !assertion.passed).length,
+    failedEvents,
+    evidenceGaps: trace.gaps.length,
+    comparisonDifferences,
+    slowThresholdMs,
+    slowExecutions,
+  };
+}
+
 export interface TraceCaseIndexEntry {
   id: string;
   case: DashboardCase;
@@ -85,14 +259,15 @@ export interface TraceExecutionMatrixRow {
 export type TraceExecutorKind =
   | "native_subagent"
   | "local_agent_process"
+  | "declared_agent_profile"
   | "external_agent_harness"
-  | "unrecognized_profile"
   | "unrecorded";
 
 export interface TraceExecutorContext {
   kind: TraceExecutorKind;
   role: "eval_executor";
   dispatchedBy: "lead_agent";
+  dispatchBound: boolean;
   nestedAgentEvents: boolean;
   target: string | null;
   harness: string | null;
@@ -106,15 +281,15 @@ export function buildTraceCaseIndex(
   return cases.map((item) => {
     const executions = item.arms.flatMap((arm) => arm.executions ?? []);
     const expectedExecutions = item.repeats * item.arms.length;
-    const verifiedExecutions = executions.filter(isVerifiedTraceExecution);
-    const capturedTraces = verifiedExecutions.length;
+    const capturedExecutions = executions.filter(hasInspectableTraceExecution);
+    const capturedTraces = capturedExecutions.length;
     return {
       id: item.id,
       case: item,
       expectedExecutions,
       observedExecutions: executions.length,
       capturedTraces,
-      durationMs: verifiedExecutions.reduce(
+      durationMs: capturedExecutions.reduce(
         (total, execution) => total + (execution.trace?.duration_ms ?? 0),
         0,
       ),
@@ -147,27 +322,31 @@ export function buildTraceExecutionMatrix(
 
 export function classifyTraceExecutor(
   profile: Pick<ExecutionProfile, "target" | "harness" | "capabilities"> | null | undefined,
+  execution?: Pick<DashboardExecution, "dispatch"> | null,
 ): TraceExecutorContext {
   const target = profile?.target ?? null;
   const harness = profile?.harness ?? null;
+  const dispatch = execution?.dispatch;
+  const dispatchBound = Boolean(
+    dispatch?.valid === true &&
+      dispatch.provider === target &&
+      dispatch.harness === harness,
+  );
   let kind: TraceExecutorKind =
-    target || harness ? "external_agent_harness" : "unrecorded";
-  if (target === "codex-cli" && harness === "codex-exec-jsonl") {
-    kind = "local_agent_process";
-  } else if (target === "native-agent" && harness === "lead-agent-dispatch") {
-    kind = "native_subagent";
-  } else if (
-    target === "codex-cli" ||
-    target === "native-agent" ||
-    harness === "codex-exec-jsonl" ||
-    harness === "lead-agent-dispatch"
-  ) {
-    kind = "unrecognized_profile";
+    target || harness ? "declared_agent_profile" : "unrecorded";
+  if (dispatchBound) {
+    kind =
+      dispatch?.observation === "process_spawn"
+        ? "local_agent_process"
+        : dispatch?.observation === "host_dispatch"
+          ? "native_subagent"
+          : "external_agent_harness";
   }
   return {
     kind,
     role: "eval_executor",
     dispatchedBy: "lead_agent",
+    dispatchBound,
     nestedAgentEvents: profile?.capabilities?.includes("nested-agent-events") ?? false,
     target,
     harness,
@@ -273,15 +452,43 @@ function belongsToCase(
   return false;
 }
 
+type ValidAgentExecutionTrace = Extract<AgentExecutionTrace, { valid: true }>;
+type ValidAgentDispatchReceipt = Extract<AgentDispatchReceipt, { valid: true }>;
+
+export type VerifiedTraceExecution = DashboardExecution & {
+  dispatch: ValidAgentDispatchReceipt;
+  trace: ValidAgentExecutionTrace;
+};
+
+export type InspectableTraceExecution = DashboardExecution & {
+  trace: ValidAgentExecutionTrace;
+};
+
+export function hasInspectableTraceExecution(
+  execution: NonNullable<DashboardArm["executions"]>[number],
+): execution is InspectableTraceExecution {
+  return (
+    execution.trace?.complete === true &&
+    execution.trace.valid === true &&
+    execution.trace.events.length > 0 &&
+    /^[a-f0-9]{64}$/i.test(execution.trace.digest ?? "")
+  );
+}
+
 export function isVerifiedTraceExecution(
   execution: NonNullable<DashboardArm["executions"]>[number],
-): boolean {
+): execution is VerifiedTraceExecution {
   return (
     execution.status === "completed" &&
     execution.binding_error_count === 0 &&
     /^[a-f0-9]{64}$/i.test(execution.execution_digest ?? "") &&
+    execution.dispatch?.valid === true &&
+    /^[a-f0-9]{64}$/i.test(execution.dispatch.digest ?? "") &&
     execution.trace?.complete === true &&
     execution.trace.valid === true &&
+    (execution.trace.source_trace_required !== true ||
+      (execution.source_trace?.valid === true &&
+        /^[a-f0-9]{64}$/i.test(execution.source_trace.digest ?? ""))) &&
     /^[a-f0-9]{64}$/i.test(execution.trace.digest ?? "")
   );
 }
@@ -349,6 +556,18 @@ export function buildEvalExecutionTrace(
   if (executions.some((execution) => !isVerifiedTraceExecution(execution))) {
     gaps.push("execution_integrity");
   }
+  if (executions.some((execution) => execution.dispatch?.valid !== true)) {
+    gaps.push("dispatch_receipt");
+  }
+  if (
+    executions.some(
+      (execution) =>
+        execution.trace?.source_trace_required === true &&
+        execution.source_trace?.valid !== true,
+    )
+  ) {
+    gaps.push("source_trace");
+  }
   if (executions.some((execution) => !execution.trace)) {
     gaps.push("trace_capture");
   }
@@ -387,7 +606,7 @@ export function buildEvalExecutionTrace(
     arms: selectedCase.arms,
     expectedExecutions,
     observedExecutions: executions.length,
-    capturedTraces: executions.filter(isVerifiedTraceExecution).length,
+    capturedTraces: executions.filter(hasInspectableTraceExecution).length,
     deterministicAssertions: selectedCase.arms.reduce(
       (summary, arm) => ({
         passed: summary.passed + arm.assertions.passed,

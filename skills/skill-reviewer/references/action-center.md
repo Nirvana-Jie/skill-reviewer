@@ -160,11 +160,56 @@ immutable `spine`:
 - The complete `spine` is a secondary audit archive for reproduction. Reviewers
   should not need to expand it to understand the release conclusion.
 
-The Action Center explains conclusions; it is not a second grader.
-Review Overview, Evidence Trace, Diff, and Action Center may materialize
-different read views of the same bound artifacts because they answer different
-questions: decision posture, execution/provenance, immutable change, and next
-authorized owner/action. They must not become independent acceptance engines.
+The Agent Trace view also keeps declared configuration separate from observed
+execution provenance. `run.execution_profile` says which provider/harness was
+intended. A native-subagent, local-process, or external-harness label requires
+the selected execution's validated, profile-matching `dispatch` descriptor;
+otherwise the UI says only that the profile was declared. Every profile that
+declares a source stream additionally exposes whether the digest-bound,
+adapter-and-format-matching `source_trace` descriptor validated. The client
+does not parse provider formats or keep a provider allowlist. Neither field
+creates a new grade or upgrades missing evidence. The normative adapter
+boundary is `agent-trace-contract.md`.
+
+Review Overview is the single primary verdict surface. Its decision-evidence
+spine routes a reviewer to immutable change evidence, observed execution
+coverage, and the primary risk in at most two interactions. Diff, Agent Trace,
+and the audit archive remain separate evidence views. The Action Center opens
+as a side drawer from Review Overview rather than as a competing verdict page;
+the Inspector renders only the currently selected evidence. None of these
+views is an independent acceptance engine.
+
+`project-dashboard` emits `schema_version: 2`. The client validates every item
+in current decision-bearing nested collections before rendering, migrates only
+structurally complete unversioned projections, and never fabricates evidence
+to make legacy data pass. Fractional versions and versions without a registered
+migration are rejected. Unsupported or incomplete projections produce a
+regeneration page; an Error Boundary covers unexpected render failures.
+Execution evidence uses a discriminated diagnostic shape: `valid: true`
+requires the complete receipt/source/Trace contract, while `valid: false`
+allows bounded null diagnostic fields so the UI can show the evidence gap
+instead of rejecting the entire projection. Counts are non-negative integers,
+repeat numbers are positive integers, and pass rates stay in `[0, 1]`.
+Projection validation also enforces decision-bearing relationships: summary
+counts match their source collections, query and round counters stay within
+their locked limits, stateful query accounting matches candidate lineage,
+lineage parents stay anchored to the accepted baseline rather than a rejected
+candidate, execution repeats are unique and within the case plan,
+and every `valid: true` Trace event remains bound to the run/case/arm/repeat
+identity with contiguous sequence, monotonic time, and matching lifecycle
+boundaries. A `valid: true` dispatch must match the declared execution profile
+and its expected observation mode. Trace details are recursively checked for
+private-reasoning keys before any verified event can be rendered.
+
+Trace presentation is anomaly-first. Failed checks, failed events, evidence
+gaps, and candidate/baseline differences are aggregated in one pass. The robust
+slow-execution threshold sorts retained durations to compute their median, so
+the complete summary is `O(E log E + A)` time: `E` executions and `A` observed
+events plus assertion groups. Business failures outrank evidence gaps, which
+outrank candidate/baseline differences and slow executions. Slow execution uses
+twice the median retained duration, with a 1-second floor and 5-second cap.
+Lifecycle completion, business result, and evidence quality remain orthogonal;
+completion alone is neutral, never green.
 
 ## Failure attribution
 

@@ -2,11 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildEvalExecutionTrace,
+  buildTraceAttentionSummary,
   buildTraceCaseIndex,
   buildTraceExecutionMatrix,
   classifyTraceExecutor,
   groupAssertionComparisons,
+  hasInspectableTraceExecution,
+  resolveTraceEventSemantics,
 } from "./eval-execution-trace";
+import { agentDispatchReceiptFixture } from "./test-fixtures";
 import type { DashboardData, SpineNode } from "./types";
 
 function agentTrace() {
@@ -14,6 +18,7 @@ function agentTrace() {
     artifact: "agent-trace.jsonl",
     digest: "e".repeat(64),
     capture_source: "harness_native" as const,
+    source_trace_required: false,
     complete: true,
     valid: true,
     event_count: 3,
@@ -71,6 +76,10 @@ function agentTrace() {
       },
     ],
   };
+}
+
+function dispatchReceipt() {
+  return agentDispatchReceiptFixture();
 }
 
 function traceData(): DashboardData {
@@ -214,6 +223,7 @@ function traceData(): DashboardData {
                 assertions: { passed: 0, total: 1 },
                 required_pass_rate: 0,
                 metrics: {},
+                dispatch: dispatchReceipt(),
                 trace: agentTrace(),
               },
             ],
@@ -259,6 +269,33 @@ function traceData(): DashboardData {
     limitations: [],
   };
 }
+
+describe("trace event semantics", () => {
+  it("keeps lifecycle completion separate from a failed observed check", () => {
+    const completedEvent = agentTrace().events[1];
+    const failedCheckEvent = {
+      ...completedEvent,
+      summary: "Static analysis completed with findings",
+      details: {
+        static_analysis_passed: false,
+        error_count: 4,
+      },
+    };
+
+    expect(resolveTraceEventSemantics(completedEvent)).toEqual({
+      lifecycle: "completed",
+      result: "unknown",
+      evidence: "complete",
+      tone: "neutral",
+    });
+    expect(resolveTraceEventSemantics(failedCheckEvent)).toEqual({
+      lifecycle: "completed",
+      result: "failed",
+      evidence: "complete",
+      tone: "bad",
+    });
+  });
+});
 
 describe("buildEvalExecutionTrace", () => {
   it("projects a failed but fully verifiable eval execution", () => {
@@ -326,6 +363,23 @@ describe("buildEvalExecutionTrace", () => {
     expect(index[0]).toMatchObject({ capturedTraces: 0, needsAttention: true });
   });
 
+  it("keeps a failed Agent event stream inspectable without calling it verified", () => {
+    const data = traceData();
+    const execution = data.cases[0]!.arms[0]!.executions![0]!;
+    execution.status = "failed";
+    execution.trace!.events[1]!.kind = "error";
+    execution.trace!.events[1]!.status = "failed";
+    execution.trace!.events[1]!.summary = "Provider authentication failed";
+    execution.trace!.events.at(-1)!.status = "failed";
+
+    const trace = buildEvalExecutionTrace(data, "quality");
+
+    expect(hasInspectableTraceExecution(execution)).toBe(true);
+    expect(trace).toMatchObject({ capturedTraces: 1, confidence: "partial" });
+    expect(trace?.gaps).toContain("execution_integrity");
+    expect(buildTraceAttentionSummary(trace!)).toMatchObject({ failedEvents: 2 });
+  });
+
   it("never upgrades an execution summary into a real Agent trace", () => {
     const data = traceData();
     data.cases[0]!.arms[0]!.executions![0]!.trace = null;
@@ -339,6 +393,49 @@ describe("buildEvalExecutionTrace", () => {
 });
 
 describe("execution trace navigation", () => {
+  it("ranks failed checks, evidence gaps, comparison differences, and slow executions", () => {
+    const data = traceData();
+    const execution = data.cases[0]!.arms[0]!.executions![0]!;
+    execution.trace!.duration_ms = 6000;
+    execution.trace!.events[1]!.details = {
+      static_analysis_passed: false,
+      error_count: 4,
+    };
+    const trace = buildEvalExecutionTrace(data, "quality");
+    if (!trace) throw new Error("trace fixture did not build");
+
+    expect(buildTraceAttentionSummary(trace)).toEqual(
+      expect.objectContaining({
+        failedChecks: 1,
+        failedEvents: 1,
+        evidenceGaps: 0,
+        slowThresholdMs: 5000,
+        slowExecutions: [
+          expect.objectContaining({ arm: "with_skill", repeat: 1, durationMs: 6000 }),
+        ],
+      }),
+    );
+  });
+
+  it("keeps malformed invalid Trace events out of trusted attention statistics", () => {
+    const data = traceData();
+    const execution = data.cases[0]!.arms[0]!.executions![0]!;
+    execution.trace = {
+      valid: false,
+      artifact: "agent-trace.jsonl",
+      events: [{ status: null, details: "untrusted diagnostic payload" }],
+    };
+    const trace = buildEvalExecutionTrace(data, "quality");
+    if (!trace) throw new Error("trace fixture did not build");
+
+    expect(buildTraceAttentionSummary(trace)).toEqual(
+      expect.objectContaining({
+        failedEvents: 0,
+        slowExecutions: [],
+      }),
+    );
+  });
+
   it("summarizes every case by planned cells, retained traces, and total duration", () => {
     const data = traceData();
     const selectedCase = data.cases[0]!;
@@ -425,6 +522,7 @@ describe("execution trace navigation", () => {
       kind: "unrecorded",
       role: "eval_executor",
       dispatchedBy: "lead_agent",
+      dispatchBound: false,
       nestedAgentEvents: false,
       target: null,
       harness: null,
@@ -439,9 +537,35 @@ describe("execution trace navigation", () => {
         capabilities: ["jsonl-agent-events"],
       }),
     ).toEqual({
+      kind: "declared_agent_profile",
+      role: "eval_executor",
+      dispatchedBy: "lead_agent",
+      dispatchBound: false,
+      nestedAgentEvents: false,
+      target: "native-agent",
+      harness: "lead-agent-dispatch",
+    });
+    expect(
+      classifyTraceExecutor(
+        {
+          target: "native-agent",
+          harness: "lead-agent-dispatch",
+          capabilities: ["jsonl-agent-events"],
+        },
+        {
+          dispatch: agentDispatchReceiptFixture({
+            digest: "d".repeat(64),
+            dispatch_id: "dispatch-native-1",
+            worker_id: "worker-native-1",
+            batch_id: "batch-quality-1",
+          }),
+        },
+      ),
+    ).toEqual({
       kind: "native_subagent",
       role: "eval_executor",
       dispatchedBy: "lead_agent",
+      dispatchBound: true,
       nestedAgentEvents: false,
       target: "native-agent",
       harness: "lead-agent-dispatch",
@@ -454,18 +578,70 @@ describe("execution trace navigation", () => {
       }),
     ).toEqual(
       expect.objectContaining({
-        kind: "local_agent_process",
+        kind: "declared_agent_profile",
+        dispatchBound: false,
         nestedAgentEvents: true,
       }),
     );
     expect(
       classifyTraceExecutor({
-        target: "native-agent",
-        harness: "codex-exec-jsonl",
+        target: "third-party-agent",
+        harness: "remote-eval-harness",
         capabilities: ["jsonl-agent-events"],
       }),
+    ).toEqual({
+      kind: "declared_agent_profile",
+      role: "eval_executor",
+      dispatchedBy: "lead_agent",
+      dispatchBound: false,
+      nestedAgentEvents: false,
+      target: "third-party-agent",
+      harness: "remote-eval-harness",
+    });
+    expect(
+      classifyTraceExecutor(
+        {
+          target: "claude-code",
+          harness: "claude-stream-json",
+          capabilities: ["jsonl-agent-events"],
+        },
+        {
+          dispatch: agentDispatchReceiptFixture({
+            provider: "claude-code",
+            harness: "claude-stream-json",
+            observation: "process_spawn",
+          }),
+        },
+      ),
+    ).toEqual({
+      kind: "local_agent_process",
+      role: "eval_executor",
+      dispatchedBy: "lead_agent",
+      dispatchBound: true,
+      nestedAgentEvents: false,
+      target: "claude-code",
+      harness: "claude-stream-json",
+    });
+    expect(
+      classifyTraceExecutor(
+        {
+          target: "third-party-agent",
+          harness: "remote-eval-harness",
+          capabilities: ["jsonl-agent-events"],
+        },
+        {
+          dispatch: agentDispatchReceiptFixture({
+            provider: "unexpected-agent",
+            harness: "remote-eval-harness",
+            observation: "external_harness",
+          }),
+        },
+      ),
     ).toEqual(
-      expect.objectContaining({ kind: "unrecognized_profile" }),
+      expect.objectContaining({
+        kind: "declared_agent_profile",
+        dispatchBound: false,
+      }),
     );
   });
 });

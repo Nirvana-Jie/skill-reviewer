@@ -232,14 +232,6 @@ export function ActionCenter({
 
   return (
     <div className="action-center" aria-label={t("actionCenter")}>
-      <header className="action-hero">
-        <div className="action-hero-copy">
-          <span className="pane-kicker">{t("humanDecisionHandoff")}</span>
-          <h2>{t("actionCenter")}</h2>
-          <p>{t("actionCenterDescription")}</p>
-        </div>
-      </header>
-
       {!interactive && !sessionEnded && (
         <div className="action-demo-notice" role="note">
           <LockKeyhole size={15} />
@@ -249,31 +241,6 @@ export function ActionCenter({
           </div>
         </div>
       )}
-
-      <section className="agent-handoff-banner" aria-labelledby="agent-handoff-heading">
-        <WifiOff size={18} aria-hidden="true" />
-        <div>
-          <span className="pane-kicker">{t("agentHandoffStatus")}</span>
-          <strong id="agent-handoff-heading">
-            {t(
-              sessionEnded
-                ? "dashboardSessionEndedTitle"
-                : "agentSessionUnboundTitle",
-            )}
-          </strong>
-          <p>
-            {t(
-              sessionEnded
-                ? "dashboardSessionEndedDescription"
-                : "agentSessionUnboundDescription",
-            )}
-          </p>
-        </div>
-        <div className="agent-handoff-facts" aria-label={t("agentHandoffFacts")}>
-          <span><HardDrive size={13} /> {t("handoffStoredLocally")}</span>
-          <span><Clock3 size={13} /> {t("handoffSurvivesSessionEnd")}</span>
-        </div>
-      </section>
 
       <section className="recommended-actions action-primary-section" aria-labelledby="recommended-heading">
         <div className="action-section-heading">
@@ -526,28 +493,59 @@ export function ActionCenter({
         </section>
       )}
 
-      <section className="intervention-policy" aria-labelledby="intervention-policy-heading">
-        <div className="action-section-heading">
-          <div><h3 id="intervention-policy-heading">{t("interventionPolicy")}</h3></div>
-          <p>{t("interventionPolicyDescription")}</p>
-        </div>
-        <div className="intervention-policy-grid">
-          <article>
-            <Bot size={16} />
+      <details className="action-supporting-details">
+        <summary>
+          {t("agentHandoffStatus")} · {t("interventionPolicy")}
+        </summary>
+        <section className="agent-handoff-banner" aria-labelledby="agent-handoff-heading">
+          <WifiOff size={18} aria-hidden="true" />
+          <div>
+            <span className="pane-kicker">{t("agentHandoffStatus")}</span>
+            <strong id="agent-handoff-heading">
+              {t(
+                sessionEnded
+                  ? "dashboardSessionEndedTitle"
+                  : "agentSessionUnboundTitle",
+              )}
+            </strong>
+            <p>
+              {t(
+                sessionEnded
+                  ? "dashboardSessionEndedDescription"
+                  : "agentSessionUnboundDescription",
+              )}
+            </p>
+          </div>
+          <div className="agent-handoff-facts" aria-label={t("agentHandoffFacts")}>
+            <span><HardDrive size={13} /> {t("handoffStoredLocally")}</span>
+            <span><Clock3 size={13} /> {t("handoffSurvivesSessionEnd")}</span>
+          </div>
+        </section>
+        <section className="intervention-policy" aria-labelledby="intervention-policy-heading">
+          <div className="action-section-heading">
             <div>
-              <strong>{t("agentAutomaticBoundary")}</strong>
-              <p>{t("agentAutomaticBoundaryDescription")}</p>
+              <h3 id="intervention-policy-heading">{t("interventionPolicy")}</h3>
             </div>
-          </article>
-          <article>
-            <UserRoundCheck size={16} />
-            <div>
-              <strong>{t("humanInterventionBoundary")}</strong>
-              <p>{t("humanInterventionBoundaryDescription")}</p>
-            </div>
-          </article>
-        </div>
-      </section>
+            <p>{t("interventionPolicyDescription")}</p>
+          </div>
+          <div className="intervention-policy-grid">
+            <article>
+              <Bot size={16} />
+              <div>
+                <strong>{t("agentAutomaticBoundary")}</strong>
+                <p>{t("agentAutomaticBoundaryDescription")}</p>
+              </div>
+            </article>
+            <article>
+              <UserRoundCheck size={16} />
+              <div>
+                <strong>{t("humanInterventionBoundary")}</strong>
+                <p>{t("humanInterventionBoundaryDescription")}</p>
+              </div>
+            </article>
+          </div>
+        </section>
+      </details>
 
       <details className="task-audit">
         <summary id="task-audit-heading">{t("taskAuditTrail")}</summary>
@@ -607,81 +605,6 @@ export function ActionCenter({
             ))}
           </ol>
         )}
-      </details>
-    </div>
-  );
-}
-
-export function ActionAuditGuide({
-  data,
-  connectionState = "live",
-}: {
-  data: DashboardData;
-  connectionState?: "connecting" | "live" | "stale";
-}) {
-  const { t } = useUiPreferences();
-  const automaticContinuation =
-    data.action_center.continuation.mode === "automatic";
-  const sessionEnded = connectionState === "stale";
-  const nextActionLabel = t(
-    nextActionMessageKey(data.action_center.next_action) ??
-      "nextActionReviewEvidence",
-  );
-  return (
-    <div className="action-inspector-body">
-      <div className="action-inspector-state">
-        <span>{t("stateMachineNextAction")}</span>
-        <strong>{nextActionLabel}</strong>
-        <p>{t("nextActionComesFromStateMachine")}</p>
-      </div>
-      <section>
-        <span className="section-label"><Bot size={13} /> {t("executionOwner")}</span>
-        <h3>{t("leadAgentOwner")}</h3>
-        <p>
-          {t(
-            automaticContinuation
-              ? "automaticLeadAgentOwnerDescription"
-              : "leadAgentOwnerDescription",
-          )}
-        </p>
-      </section>
-      <section>
-        <span className="section-label"><WifiOff size={13} /> {t("agentHandoffStatus")}</span>
-        <h3>{t(sessionEnded ? "dashboardSessionEndedTitle" : "agentSessionUnboundTitle")}</h3>
-        <p>{t(sessionEnded ? "dashboardSessionEndedDescription" : "agentSessionUnboundDescription")}</p>
-      </section>
-      <section>
-        <span className="section-label">
-          <ShieldCheck size={13} />{" "}
-          {t(automaticContinuation ? "automaticExecutionSteps" : "whenCreatingTask")}
-        </span>
-        <ol className="action-inspector-steps">
-          {automaticContinuation ? (
-            <>
-              <li>{t("automaticStepPrecondition")}</li>
-              <li>{t("automaticStepExecute")}</li>
-              <li>{t("automaticStepEvidence")}</li>
-              <li>{t("automaticStepProject")}</li>
-            </>
-          ) : (
-            <>
-              <li>{t("taskStepSnapshot")}</li>
-              <li>{t("taskStepPrecondition")}</li>
-              <li>{t("taskStepAudit")}</li>
-              <li>{t("taskStepAgent")}</li>
-            </>
-          )}
-        </ol>
-      </section>
-      <section className="control-boundary">
-        <span className="section-label"><LockKeyhole size={13} /> {t("controlBoundary")}</span>
-        <div><Check size={13} /><span><strong>{t("evidenceRemainsReadOnly")}</strong><small>{t("evidenceRemainsReadOnlyDescription")}</small></span></div>
-        <div><Check size={13} /><span><strong>{t("evalRemainsImmutable")}</strong><small>{t("evalRemainsImmutableDescription")}</small></span></div>
-      </section>
-      <details className="inline-technical-facts">
-        <summary>{t("technicalTrace")}</summary>
-        <code>{data.action_center.task_gateway.request_endpoint}</code>
-        <code>{data.action_center.task_gateway.audit_endpoint}</code>
       </details>
     </div>
   );

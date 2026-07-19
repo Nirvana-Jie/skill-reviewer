@@ -15,7 +15,7 @@
 `skill-reviewer` does three things:
 
 - **Review** — checks triggers, instructions, resources, scripts, safety, and maintainability, then returns actionable rewrites.
-- **Verify** — when a valid `evals/evals.json` is in scope, runs the candidate and baseline through real Agent executions with retained Trace and artifacts.
+- **Verify** — compiles a valid `evals/evals.json`, dispatches candidate and baseline through a native or provider adapter, and retains dispatch, canonical Trace, source, and output evidence for the Dashboard.
 - **Evolve** — only on an explicit request, performs at most three bounded improvement rounds; Evals stay immutable during a run and a human always owns the final release decision.
 
 ## Quick start
@@ -68,6 +68,9 @@ Core rules:
 2. **Candidate and baseline stay separate** — same Case, isolated workspaces, independent Trace; no self-evaluation loop.
 3. **Missing evidence means uncertainty** — absent baselines, artifacts, or repeat disagreement never become a false improvement claim.
 4. **An invalid Manifest blocks release** — it is never silently skipped.
+5. **A Manifest is not a worker receipt** — `evals.json` declares cells; only a
+   retained provider/harness dispatch receipt proves the selected cell was
+   actually started within the stated trusted boundary.
 
 ### Three evaluation stages
 
@@ -94,15 +97,19 @@ The verdict is not a simple average. Safety and trigger red lines can block imme
 
 ## Real Evals and bounded evolution
 
-The strict Manifest lives at `<skill>/evals/evals.json`. The lead Agent dispatches locked assignments; each executor runs exactly one Case, one arm, and one repeat:
+The strict Manifest lives at `<skill>/evals/evals.json`. Compilation alone does
+not start an Agent. The lead Agent uses a native host surface or a
+provider adapter; each executor still receives exactly one
+Case, one arm, and one repeat:
 
 ```mermaid
 flowchart TB
     M["Freeze Eval, candidate, and baseline"] --> C["Compile execution plan"]
-    C --> W["Candidate / with_skill"]
-    C --> O["Baseline / old_skill"]
-    W --> T1["Agent Trace + artifacts"]
-    O --> T2["Agent Trace + artifacts"]
+    C --> D["Host or paired local dispatch"]
+    D --> W["Candidate / with_skill"]
+    D --> O["Baseline / old_skill"]
+    W --> T1["Dispatch receipt + Agent Trace + artifacts"]
+    O --> T2["Dispatch receipt + Agent Trace + artifacts"]
     T1 --> G["Assertions and Judge"]
     T2 --> G
     G --> P{"Accept candidate?"}
@@ -111,7 +118,31 @@ flowchart TB
     P -- "Yes" --> A["One-shot Audit"]
 ```
 
-Real Trace contains only observable behavior: Agent messages, file reads, tool calls, commands, exit codes, errors, timing, and artifact references. It never records or displays private chain-of-thought.
+Real Trace contains only observable behavior: Agent messages, file reads, tool calls, commands, exit codes, errors, timing, and artifact references. It never records or displays private chain-of-thought. Provider-specific events are redacted and normalized before they reach the grader or Dashboard, so adding another Agent requires an adapter and execution profile—not a new Trace UI. Bundled paths cover native/external harnesses, Codex CLI, and Claude Code.
+
+For a compiled `codex-cli` profile, one command mechanically fans out paired
+arms and grades after all case/repeat batches finish:
+
+```bash
+python3 skills/skill-reviewer/scripts/run_codex_eval_plan.py \
+  --workspace /tmp/skill-reviewer-run \
+  --full-access
+```
+
+Native subagents remain host-owned. Their harness must record the real host
+dispatch and worker/thread IDs before behavior events. The receipt detects
+drift and prevents profile-only UI claims; without a provider-signed API it is
+trusted harness provenance, not cryptographic attestation.
+
+Real-provider canaries are opt-in because they may require local authentication,
+network access, and model spend. This launches the installed CLI through the
+complete compile → process → source → grade → Dashboard projection chain, then
+mounts the Trace view and expands the real marker event in the rendered UI:
+
+```bash
+SKILL_REVIEWER_REAL_AGENT_E2E=codex,claude \
+  pnpm exec vitest run dashboard/src/real-agent-trace.e2e.test.ts
+```
 
 Eval and grader authority is immutable during a run. The system may propose changes, but only explicit user confirmation and a fresh lock can establish new evaluation authority. See the [executable Eval contract](./skills/skill-reviewer/references/executable-evals.md) and [evolution protocol](./skills/skill-reviewer/references/evolution-workflow.md) for schemas, commands, and trust boundaries.
 
@@ -122,6 +153,17 @@ The Dashboard answers three questions:
 1. **Why did this pass or fail?** Drill from the release verdict to a Case, assertion, Trace event, and source artifact.
 2. **Is the candidate actually better?** Compare candidate and baseline runs, scores, file diffs, and repeats side by side.
 3. **What happens next?** Project the state machine’s `next_action`, responsibility, and human boundary.
+
+Review Overview is the only primary verdict surface. Its decision-evidence
+spine links directly to change evidence, execution coverage, and the primary
+risk. Diff, Agent Trace, and the collapsed audit archive remain independent
+evidence views; next steps open in a side drawer, and the Inspector describes
+only the currently selected evidence. An empty Diff means change evidence was
+not captured—it is never treated as proof that nothing changed.
+
+Every generated projection carries `schema_version: 2`. The UI validates the
+nested decision contract before rendering and shows an actionable regeneration
+page for incompatible data instead of a blank screen.
 
 It is not the executor and cannot mutate Eval, evidence, or release state. An explicit request to show the Dashboard is consent. Otherwise, an interactive lead Agent asks once with a standalone structured choice and recommends opening it; silence never authorizes a download or server:
 
@@ -158,6 +200,8 @@ Dashboard actions append audited local handoff tasks; they do not wake a termina
 - By default, the reviewer installs no dependency and executes no target Skill script; only isolated verification declared by a valid Manifest may run.
 - Unconfirmed destructive commands, publishing, pushes, network access, secrets, or permission expansion are blocked.
 - A `local-unattested` Trace proves what was observed, not operating-system sandbox integrity.
+- Dashboard executor labels require a valid per-cell dispatch receipt; the
+  run-level profile alone is shown only as declared configuration.
 - Public Audit fixtures calibrate behavior but cannot independently authorize release.
 
 ## Development and validation
@@ -198,6 +242,7 @@ All changes enter `main` through a branch and pull request. `Static Checks` runs
 - [Review rubric](./skills/skill-reviewer/references/review-rubric.md)
 - [Review checklist](./skills/skill-reviewer/references/review-checklist.md)
 - [Executable Eval, Trace, and evidence contract](./skills/skill-reviewer/references/executable-evals.md)
+- [Provider-neutral Agent Trace contract](./skills/skill-reviewer/references/agent-trace-contract.md)
 - [Bounded continuous evolution](./skills/skill-reviewer/references/evolution-workflow.md)
 - [Dashboard and Action Center](./skills/skill-reviewer/references/action-center.md)
 - [Paired SubAgent verification](./skills/skill-reviewer/references/subagent-eval-workflow.md)

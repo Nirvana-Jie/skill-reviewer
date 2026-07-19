@@ -129,6 +129,8 @@ Evals are not scored and their absence is never a blocker. Only propose them whe
 - [ ] If runtime effect verification is requested: assertions are graded against retained outputs; exit code alone is not a pass.
 - [ ] If `evals/evals.json` is present: it uses the strict `skill-reviewer.evals` contract; invalid manifests block worker launch and release rather than being skipped.
 - [ ] If behavior evals execute: `execution-plan.json` and `run-lock.json` freeze plan, subject, baseline, external execution-profile digest, holdout identity, and selected fixtures before dispatch.
+- [ ] If behavior evals execute: every completed cell has a valid harness/provider `dispatch-receipt.json`; Dashboard executor identity is not inferred from the run profile alone.
+- [ ] If a profile declares a provider source stream: grading revalidates the reasoning-redacted `agent-source-events.jsonl` descriptor, adapter, format, counts, and digests; the Dashboard consumes only the canonical Trace contract.
 - [ ] If behavior evals execute: deterministic cases run once and stochastic cases run three paired repeats; opposite paired directions are `inconclusive`.
 - [ ] If semantic grading is declared: deterministic assertions run first; A/B outputs are blind and order-swapped; disagreement stays `inconclusive`.
 - [ ] If evolution is requested: development / selection / audit roles are separated, selection uses hard gates + Pareto improvement, and audit runs once without feedback to the optimizer.
