@@ -30,16 +30,11 @@ const executor = join(
   "skills",
   "skill-reviewer",
   "scripts",
-  "run_codex_eval_executor.py",
+  "run_agent_eval.mjs",
 );
-const planExecutor = join(
-  repoRoot,
-  "skills",
-  "skill-reviewer",
-  "scripts",
-  "run_codex_eval_plan.py",
-);
-const python = process.env.PYTHON ?? "python3";
+const planExecutor = executor;
+const python = process.execPath;
+const runtimePython = process.env.PYTHON ?? "python3";
 
 function write(root, relative, content) {
   const path = join(root, relative);
@@ -61,6 +56,7 @@ function makeWritable(path) {
 }
 
 function run(command, args, options = {}) {
+  if (command === python && args[0] === runtime) command = runtimePython;
   return spawnSync(command, args, {
     cwd: repoRoot,
     encoding: "utf8",
@@ -164,7 +160,7 @@ import time
 
 args = sys.argv[1:]
 if args == ["--version"]:
-    print("codex-cli 0.test")
+    print(os.environ.get("FAKE_CODEX_VERSION", "codex-cli 0.144.5"))
     raise SystemExit(0)
 
 if args[:2] == ["debug", "prompt-input"]:
@@ -181,11 +177,11 @@ if args[:2] == ["debug", "prompt-input"]:
     print(json.dumps([{"role": "developer", "content": [{"type": "input_text", "text": text}]}]))
     raise SystemExit(0)
 
+arm = pathlib.Path.cwd().parent.name
 barrier_dir = os.environ.get("FAKE_CODEX_BARRIER_DIR")
 if barrier_dir:
     barrier = pathlib.Path(barrier_dir)
     barrier.mkdir(parents=True, exist_ok=True)
-    arm = pathlib.Path.cwd().parent.name
     (barrier / f"{arm}.started").write_text(str(os.getpid()), encoding="utf-8")
     deadline = time.monotonic() + 10
     while len(list(barrier.glob("*.started"))) < 2 and time.monotonic() < deadline:
@@ -197,6 +193,8 @@ if barrier_dir:
 delay_seconds = float(os.environ.get("FAKE_CODEX_DELAY_SECONDS", "0"))
 if delay_seconds:
     time.sleep(delay_seconds)
+if os.environ.get("FAKE_CODEX_SLOW_ARM") == arm:
+    time.sleep(float(os.environ.get("FAKE_CODEX_SLOW_SECONDS", "10")))
 
 argv_log = os.environ.get("FAKE_CODEX_ARGV")
 if argv_log:
@@ -206,6 +204,12 @@ output = pathlib.Path(args[output_index])
 output.parent.mkdir(parents=True, exist_ok=True)
 credential = os.environ.get("SKILL_REVIEWER_TEST_CREDENTIAL")
 output.write_text("PASS\n" + ((credential + "\n") if credential else ""), encoding="utf-8")
+if os.environ.get("FAKE_CODEX_FRAMEWORK_ERROR_ARM") == arm:
+    pathlib.Path("agent-source-events.jsonl").write_text("preexisting\n", encoding="utf-8")
+if os.environ.get("FAKE_CODEX_INVALID_UTF8") == "1":
+    sys.stdout.buffer.write(b'{"type":"thread.started","thread_id":"' + bytes([255]) + b'"}\\n')
+    sys.stdout.buffer.flush()
+    raise SystemExit(0)
 events = [
     {"type": "thread.started", "thread_id": "thread-real-jsonl"},
     {"type": "turn.started"},
@@ -224,7 +228,6 @@ completed_dir = os.environ.get("FAKE_CODEX_COMPLETED_DIR")
 if completed_dir:
     completed = pathlib.Path(completed_dir)
     completed.mkdir(parents=True, exist_ok=True)
-    arm = pathlib.Path.cwd().parent.name
     (completed / f"{arm}.completed").write_text("completed\n", encoding="utf-8")
 `,
   );
@@ -239,6 +242,7 @@ function compileRun({ root, profileOverrides = {} }) {
     root,
     "codex-execution-profile.json",
     JSON.stringify({
+      adapter_id: "openai.codex-cli.exec-jsonl",
       target: "codex-cli",
       harness: "codex-exec-jsonl",
       dispatch_observation: "process_spawn",
@@ -304,9 +308,8 @@ describe("local Codex eval executor", () => {
           planExecutor,
           "--workspace",
           workspace,
-          "--codex-bin",
+          "--agent-bin",
           fakeCodex,
-          "--full-access",
           "--pass-env",
           "FAKE_CODEX_BARRIER_DIR",
         ],
@@ -317,7 +320,7 @@ describe("local Codex eval executor", () => {
       const summary = JSON.parse(result.stdout);
       expect(summary).toEqual(
         expect.objectContaining({
-          contract: "skill-reviewer.codex-dispatch-summary",
+          contract: "skill-reviewer.agent-dispatch-summary",
           status: "completed",
           execution_count: 2,
           failed_count: 0,
@@ -343,6 +346,32 @@ describe("local Codex eval executor", () => {
       );
       expect(evidence.cases[0].with_skill.passed).toBe(true);
       expect(evidence.cases[0].without_skill.passed).toBe(true);
+      const runtimeBindingPath = join(workspace, "agent-runtime-binding.json");
+      expect(JSON.parse(readFileSync(runtimeBindingPath, "utf8"))).toEqual(
+        expect.objectContaining({
+          contract: "skill-reviewer.agent-runtime-binding",
+          adapter_id: "openai.codex-cli.exec-jsonl",
+          executable_digest: expect.stringMatching(/^[a-f0-9]{64}$/),
+          agent_version: "codex-cli 0.144.5",
+        }),
+      );
+      const runtimeBindingDigests = ["with_skill", "without_skill"].map(
+        (arm) =>
+          JSON.parse(
+            readFileSync(
+              join(
+                workspace,
+                "cases/observable-cli-trace",
+                arm,
+                "repeat-1/execution.json",
+              ),
+              "utf8",
+            ),
+          ).source_trace.runtime_binding_digest,
+      );
+      expect(new Set(runtimeBindingDigests)).toEqual(
+        new Set([sha256File(runtimeBindingPath)]),
+      );
     } finally {
       makeWritable(root);
       rmSync(root, { recursive: true, force: true });
@@ -365,9 +394,8 @@ describe("local Codex eval executor", () => {
             planExecutor,
             "--workspace",
             workspace,
-            "--codex-bin",
+            "--agent-bin",
             fakeCodex,
-            "--full-access",
             "--pass-env",
             "FAKE_CODEX_BARRIER_DIR",
             "--pass-env",
@@ -405,8 +433,8 @@ describe("local Codex eval executor", () => {
         });
         children.delete(child);
 
-        expect(exit).toEqual({ code: 130, signal: null });
-        expect(stderr).toContain("paired Codex execution interrupted");
+        expect(exit, `stderr:\n${stderr}`).toEqual({ code: 130, signal: null });
+        expect(stderr).toContain("Agent execution interrupted");
         await new Promise((resolvePromise) => setTimeout(resolvePromise, 300));
         expect(existsSync(completedDir)).toBe(false);
         for (const arm of ["with_skill", "without_skill"]) {
@@ -416,7 +444,7 @@ describe("local Codex eval executor", () => {
           expect(() => process.kill(providerPid, 0)).toThrow();
         }
         const summary = JSON.parse(
-          readFileSync(join(workspace, "codex-dispatch-summary.json"), "utf8"),
+          readFileSync(join(workspace, "agent-dispatch-summary.json"), "utf8"),
         );
         expect(summary).toEqual(
           expect.objectContaining({
@@ -426,6 +454,68 @@ describe("local Codex eval executor", () => {
         );
       } finally {
         for (const child of children) child.kill("SIGKILL");
+        makeWritable(root);
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "cancels and waits for a paired sibling after one cell hits a framework error",
+    () => {
+      const root = mkdtempSync(join(tmpdir(), "skill-reviewer-paired-error-"));
+      try {
+        const { workspace } = compileRun({ root });
+        const fakeAgent = makeFakeCodex(root);
+        const barrierDir = join(root, "paired-framework-barrier");
+        const completedDir = join(root, "paired-framework-completed");
+        const startedAt = Date.now();
+        const result = run(
+          python,
+          [
+            planExecutor,
+            "--workspace",
+            workspace,
+            "--agent-bin",
+            fakeAgent,
+            ...[
+              "FAKE_CODEX_BARRIER_DIR",
+              "FAKE_CODEX_COMPLETED_DIR",
+              "FAKE_CODEX_FRAMEWORK_ERROR_ARM",
+              "FAKE_CODEX_SLOW_ARM",
+              "FAKE_CODEX_SLOW_SECONDS",
+            ].flatMap((name) => ["--pass-env", name]),
+          ],
+          {
+            env: {
+              FAKE_CODEX_BARRIER_DIR: barrierDir,
+              FAKE_CODEX_COMPLETED_DIR: completedDir,
+              FAKE_CODEX_FRAMEWORK_ERROR_ARM: "with_skill",
+              FAKE_CODEX_SLOW_ARM: "without_skill",
+              FAKE_CODEX_SLOW_SECONDS: "10",
+            },
+          },
+        );
+
+        expect(result.status).toBe(2);
+        expect(Date.now() - startedAt).toBeLessThan(5_000);
+        expect(existsSync(join(completedDir, "with_skill.completed"))).toBe(true);
+        expect(existsSync(join(completedDir, "without_skill.completed"))).toBe(false);
+        for (const arm of ["with_skill", "without_skill"]) {
+          const agentPid = Number(
+            readFileSync(join(barrierDir, `${arm}.started`), "utf8"),
+          );
+          expect(() => process.kill(agentPid, 0)).toThrow();
+        }
+        expect(
+          JSON.parse(
+            readFileSync(join(workspace, "agent-dispatch-summary.json"), "utf8"),
+          ),
+        ).toEqual(
+          expect.objectContaining({ status: "failed", finished_at: expect.any(String) }),
+        );
+      } finally {
         makeWritable(root);
         rmSync(root, { recursive: true, force: true });
       }
@@ -447,9 +537,8 @@ describe("local Codex eval executor", () => {
           workspace,
           "--assignment",
           assignment(workspace, "with_skill"),
-          "--codex-bin",
+          "--agent-bin",
           fakeCodex,
-          "--full-access",
           "--pass-env",
           "FAKE_CODEX_ARGV",
         ],
@@ -497,7 +586,7 @@ describe("local Codex eval executor", () => {
           source_trace: expect.objectContaining({
             artifact: "agent-source-events.jsonl",
             digest: expect.stringMatching(/^[a-f0-9]{64}$/),
-            adapter: "codex-cli",
+            adapter: "openai.codex-cli.exec-jsonl",
             format: "codex-exec-jsonl-v1",
             source_stream_digest: expect.stringMatching(/^[a-f0-9]{64}$/),
             redaction: "private-reasoning-fields-removed",
@@ -538,9 +627,8 @@ describe("local Codex eval executor", () => {
           workspace,
           "--assignment",
           assignment(workspace, "without_skill"),
-          "--codex-bin",
+          "--agent-bin",
           fakeCodex,
-          "--full-access",
           "--pass-env",
           "FAKE_CODEX_ARGV",
         ],
@@ -586,9 +674,8 @@ describe("local Codex eval executor", () => {
           workspace,
           "--assignment",
           assignment(workspace, "with_skill"),
-          "--codex-bin",
+          "--agent-bin",
           makeFakeCodex(root),
-          "--full-access",
         ],
         { env: { SKILL_REVIEWER_TEST_CREDENTIAL: secret } },
       );
@@ -626,9 +713,8 @@ describe("local Codex eval executor", () => {
           workspace,
           "--assignment",
           assignment(workspace, "with_skill"),
-          "--codex-bin",
+          "--agent-bin",
           makeFakeCodex(root),
-          "--full-access",
           "--credential-env",
           "SKILL_REVIEWER_TEST_CREDENTIAL",
         ],
@@ -646,7 +732,7 @@ describe("local Codex eval executor", () => {
       expect(execution.status).toBe("failed");
       expect(execution.metrics.credential_leak_count).toBeGreaterThan(0);
       expect(execution.forbidden_actions.join("\n")).toContain(
-        "provider credential appeared in retained output",
+        "agent credential appeared in retained output",
       );
       for (const relative of [
         "outputs/response.md",
@@ -676,7 +762,7 @@ describe("local Codex eval executor", () => {
           workspace,
           "--assignment",
           assignment(workspace, "with_skill"),
-          "--codex-bin",
+          "--agent-bin",
           makeFakeCodex(root),
           "--credential-env",
           "SKILL_REVIEWER_TEST_CREDENTIAL",
@@ -692,13 +778,99 @@ describe("local Codex eval executor", () => {
       );
 
       expect(result.status).toBe(2);
-      expect(result.stderr).toContain("declared provider credentials must be non-blank");
+      expect(result.stderr).toContain("declared agent credentials must be non-blank");
       expect(existsSync(argvLog)).toBe(false);
     } finally {
       makeWritable(root);
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("rejects an Agent version outside the canary-pinned adapter contract", () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-agent-version-"));
+    try {
+      const { workspace } = compileRun({ root });
+      const fakeAgent = makeFakeCodex(root);
+      const result = run(
+        python,
+        [
+          executor,
+          "--workspace",
+          workspace,
+          "--assignment",
+          assignment(workspace, "with_skill"),
+          "--agent-bin",
+          fakeAgent,
+          "--pass-env",
+          "FAKE_CODEX_VERSION",
+        ],
+        { env: { FAKE_CODEX_VERSION: "codex-cli 999.0.0" } },
+      );
+
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain(
+        "does not satisfy the pinned adapter version 0.144.5",
+      );
+      expect(
+        existsSync(
+          join(
+            workspace,
+            "cases/observable-cli-trace/with_skill/repeat-1/dispatch-receipt.json",
+          ),
+        ),
+      ).toBe(false);
+    } finally {
+      makeWritable(root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects invalid UTF-8 in a source JSONL stream", () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-agent-utf8-"));
+    try {
+      const { workspace } = compileRun({ root });
+      const result = run(
+        python,
+        [
+          executor,
+          "--workspace",
+          workspace,
+          "--assignment",
+          assignment(workspace, "with_skill"),
+          "--agent-bin",
+          makeFakeCodex(root),
+          "--pass-env",
+          "FAKE_CODEX_INVALID_UTF8",
+        ],
+        { env: { FAKE_CODEX_INVALID_UTF8: "1" } },
+      );
+
+      expect(result.status).toBe(1);
+      const execution = JSON.parse(
+        readFileSync(
+          join(
+            workspace,
+            "cases/observable-cli-trace/with_skill/repeat-1/execution.json",
+          ),
+          "utf8",
+        ),
+      );
+      expect(execution.status).toBe("failed");
+      expect(execution.metrics.jsonl_parse_error_count).toBe(1);
+      expect(
+        readFileSync(
+          join(
+            workspace,
+            "cases/observable-cli-trace/with_skill/repeat-1/agent-source-events.jsonl",
+          ),
+          "utf8",
+        ),
+      ).toContain('"type":"invalid_utf8"');
+    } finally {
+      makeWritable(root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   it("rejects a coordinated assignment and run-lock rewrite before Codex starts", () => {
     const root = mkdtempSync(join(tmpdir(), "skill-reviewer-codex-derived-lock-"));
@@ -724,7 +896,7 @@ describe("local Codex eval executor", () => {
           workspace,
           "--assignment",
           assignmentPath,
-          "--codex-bin",
+          "--agent-bin",
           makeFakeCodex(root),
           "--pass-env",
           "FAKE_CODEX_ARGV",
@@ -756,7 +928,7 @@ describe("local Codex eval executor", () => {
           workspace,
           "--assignment",
           assignment(workspace, "with_skill"),
-          "--codex-bin",
+          "--agent-bin",
           makeFakeCodex(root),
           "--pass-env",
           "SKILL_REVIEWER_TEST_CREDENTIAL",
@@ -794,9 +966,8 @@ describe("local Codex eval executor", () => {
           workspace,
           "--assignment",
           assignment(workspace, "with_skill"),
-          "--codex-bin",
+          "--agent-bin",
           makeFakeCodex(root),
-          "--full-access",
           "--pass-env",
           "FAKE_CODEX_TURN_FAILED",
         ],
@@ -812,7 +983,7 @@ describe("local Codex eval executor", () => {
         readFileSync(join(repeatRoot, "execution.json"), "utf8"),
       );
       expect(execution.status).toBe("failed");
-      expect(execution.metrics.provider_failure_event_count).toBe(1);
+      expect(execution.metrics.agent_failure_event_count).toBe(1);
       expect(readFileSync(join(repeatRoot, "agent-trace.jsonl"), "utf8")).toContain(
         '"source_event_type":"turn.failed"',
       );
@@ -837,9 +1008,8 @@ describe("local Codex eval executor", () => {
           workspace,
           "--assignment",
           assignment(workspace, arm),
-          "--codex-bin",
+          "--agent-bin",
           fakeCodex,
-          "--full-access",
         ]);
         expectSuccess(result, `${arm} Codex execution`);
       }
@@ -884,9 +1054,8 @@ describe("local Codex eval executor", () => {
         workspace,
         "--assignment",
         assignment(workspace, "with_skill"),
-        "--codex-bin",
+        "--agent-bin",
         makeFakeCodex(root),
-        "--full-access",
       ]);
       expect(result.status).toBe(2);
       expect(result.stderr).toContain("isolation=local-unattested");
@@ -895,4 +1064,74 @@ describe("local Codex eval executor", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("rejects source provenance that conflicts with the locked registry binding", () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-agent-provenance-"));
+    try {
+      const { workspace } = compileRun({ root });
+      const fakeAgent = makeFakeCodex(root);
+      for (const arm of ["with_skill", "without_skill"]) {
+        const result = run(python, [
+          executor,
+          "--workspace",
+          workspace,
+          "--assignment",
+          assignment(workspace, arm),
+          "--agent-bin",
+          fakeAgent,
+        ]);
+        expectSuccess(result, `${arm} Agent execution`);
+      }
+      const executionPath = join(
+        workspace,
+        "cases/observable-cli-trace/with_skill/repeat-1/execution.json",
+      );
+      const execution = JSON.parse(readFileSync(executionPath, "utf8"));
+      execution.source_trace.source_agent = "unrelated.agent";
+      execution.source_trace.executable_digest = "b".repeat(64);
+      const tracePath = join(
+        workspace,
+        "cases/observable-cli-trace/with_skill/repeat-1/agent-trace.jsonl",
+      );
+      const traceEvents = readFileSync(tracePath, "utf8")
+        .trimEnd()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      for (const event of traceEvents) {
+        if (event.artifact_refs?.includes("agent-source-events.jsonl")) {
+          event.details.source_agent = "unrelated.agent";
+          event.details.executable_digest = "b".repeat(64);
+        }
+      }
+      writeFileSync(
+        tracePath,
+        `${traceEvents.map((event) => JSON.stringify(event)).join("\n")}\n`,
+        "utf8",
+      );
+      execution.trace.digest = sha256File(tracePath);
+      writeFileSync(executionPath, `${JSON.stringify(execution, null, 2)}\n`, "utf8");
+
+      const graded = run(python, [
+        runtime,
+        "grade",
+        "--plan",
+        join(workspace, "execution-plan.json"),
+        "--workspace",
+        workspace,
+      ]);
+
+      expectSuccess(graded, "grade mismatched Agent provenance");
+      const evidence = JSON.parse(graded.stdout);
+      expect(evidence.cases[0].with_skill.complete).toBe(false);
+      expect(evidence.cases[0].with_skill.binding_errors.join("\n")).toContain(
+        "source trace source_agent does not match the locked adapter binding",
+      );
+      expect(evidence.cases[0].with_skill.binding_errors.join("\n")).toContain(
+        "source trace executable_digest does not match the Agent runtime binding",
+      );
+    } finally {
+      makeWritable(root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

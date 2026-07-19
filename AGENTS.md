@@ -1,6 +1,7 @@
 # Repository Agent Instructions
 
-This repository contains the `skill-reviewer` Codex skill and its eval fixtures.
+This repository contains the agent-neutral `skill-reviewer` Skill and its eval
+fixtures.
 
 ## Package Manager
 
@@ -15,6 +16,8 @@ Run these before proposing changes:
 
 ```bash
 pnpm test
+pnpm typecheck
+pnpm dashboard:build
 python3 skills/skill-reviewer/scripts/lint_skill_package.py skills/skill-reviewer --format text --fail-on error
 python3 -m json.tool skills/skill-reviewer/evals/evals.json >/dev/null
 ```
@@ -24,7 +27,12 @@ directory:
 
 ```bash
 env PYTHONPYCACHEPREFIX=/private/tmp/skill-reviewer-pycache python3 -m py_compile skills/skill-reviewer/scripts/*.py
+find skills/skill-reviewer/scripts -type f -name '*.mjs' -print0 | xargs -0 -n1 node --check
 ```
+
+Add systematic unit and end-to-end coverage through Vitest. Do not add
+standalone JavaScript test scripts. Configuration and manifest constraints may
+be proven by direct inspection instead of a dedicated test file.
 
 ## Contribution Workflow
 
@@ -46,6 +54,7 @@ env PYTHONPYCACHEPREFIX=/private/tmp/skill-reviewer-pycache python3 -m py_compil
   `skills/skill-reviewer/references/output-contract.md`,
   `skills/skill-reviewer/references/verification-workflow.md`,
   `skills/skill-reviewer/references/evolution-workflow.md`,
+  `skills/skill-reviewer/assets/agent-adapter-registry.json`,
   `skills/skill-reviewer/evals/evals.json`, or
   `skills/skill-reviewer/evals/fixtures/**` as eval-risk
   changes.

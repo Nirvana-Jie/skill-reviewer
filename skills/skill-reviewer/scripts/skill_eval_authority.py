@@ -805,6 +805,7 @@ def validate_manifest(manifest: dict[str, Any], subject: Path) -> list[dict[str,
 # Frozen plan compilation and manifest-derived lock verification.
 RUNTIME_SKILL_ENTRIES = ("SKILL.md", "references", "scripts", "assets")
 EXECUTION_PROFILE_FIELDS = {
+    "adapter_id",
     "target",
     "harness",
     "dispatch_observation",
@@ -821,6 +822,56 @@ DISPATCH_OBSERVATIONS = {
     "external_harness",
 }
 TRACE_CAPTURE_SOURCE_PATTERN = re.compile(r"[a-z][a-z0-9_.-]{0,63}")
+AGENT_ADAPTER_ID_PATTERN = re.compile(r"[a-z0-9][a-z0-9.-]{2,127}")
+AGENT_ADAPTER_REGISTRY_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "assets"
+    / "agent-adapter-registry.json"
+)
+
+
+def _load_registered_agent_adapter(adapter_id: str) -> dict[str, Any]:
+    registry = load_json(AGENT_ADAPTER_REGISTRY_PATH)
+    if (
+        registry.get("contract") != "skill-reviewer.agent-adapter-registry"
+        or registry.get("schema_version") != "1.0.0"
+    ):
+        raise ManifestError("bundled agent adapter registry contract is invalid")
+    entries = registry.get("adapters")
+    if not isinstance(entries, list):
+        raise ManifestError("bundled agent adapter registry is invalid")
+    matches = [
+        entry
+        for entry in entries
+        if isinstance(entry, dict) and entry.get("id") == adapter_id
+    ]
+    if len(matches) != 1:
+        raise ManifestError(f"unknown or duplicate agent adapter: {adapter_id}")
+    entry = matches[0]
+    implementation = entry.get("implementation")
+    profile = entry.get("profile")
+    if (
+        not isinstance(implementation, dict)
+        or implementation.get("execution") != "implemented"
+        or not isinstance(profile, dict)
+    ):
+        raise ManifestError(
+            f"agent adapter is not implemented for execution: {adapter_id}"
+        )
+    return entry
+
+
+def _registered_profile_string(
+    raw: dict[str, Any], field: str, registered: dict[str, Any]
+) -> str:
+    label = f"execution_profile.{field}"
+    expected = require_string(registered.get(field), f"registered adapter {field}")
+    if field not in raw:
+        return expected
+    provided = require_string(raw.get(field), label)
+    if provided != expected:
+        raise ManifestError(f"{label} does not match the registered agent adapter")
+    return provided
 
 
 def _load_execution_profile(
@@ -847,18 +898,50 @@ def _load_execution_profile(
         raise ManifestError(
             "execution profile contains unsupported fields: " + ", ".join(unknown)
         )
-    target = require_string(raw.get("target"), "execution_profile.target")
-    harness = require_string(raw.get("harness"), "execution_profile.harness")
-    dispatch_observation = require_string(
-        raw.get("dispatch_observation"),
-        "execution_profile.dispatch_observation",
-    )
+    raw_adapter_id = raw.get("adapter_id")
+    adapter_id: str | None
+    adapter_entry: dict[str, Any] | None = None
+    adapter_profile: dict[str, Any] | None = None
+    if raw_adapter_id is None:
+        adapter_id = None
+    else:
+        adapter_id = require_string(
+            raw_adapter_id, "execution_profile.adapter_id"
+        )
+        if AGENT_ADAPTER_ID_PATTERN.fullmatch(adapter_id) is None:
+            raise ManifestError(
+                "execution_profile.adapter_id must be a lowercase adapter id"
+            )
+        adapter_entry = _load_registered_agent_adapter(adapter_id)
+        adapter_profile = adapter_entry["profile"]
+
+    if adapter_profile is None:
+        target = require_string(raw.get("target"), "execution_profile.target")
+        harness = require_string(raw.get("harness"), "execution_profile.harness")
+        dispatch_observation = require_string(
+            raw.get("dispatch_observation"),
+            "execution_profile.dispatch_observation",
+        )
+    else:
+        target = _registered_profile_string(raw, "target", adapter_profile)
+        harness = _registered_profile_string(raw, "harness", adapter_profile)
+        dispatch_observation = _registered_profile_string(
+            raw, "dispatch_observation", adapter_profile
+        )
     if dispatch_observation not in DISPATCH_OBSERVATIONS:
         raise ManifestError(
             "execution_profile.dispatch_observation must be host_dispatch, "
             "process_spawn, or external_harness"
         )
     trace = raw.get("trace")
+    if trace is None and adapter_profile is not None:
+        trace = {
+            "capture_source": adapter_profile.get("capture_source"),
+            "source": {
+                "artifact": adapter_profile.get("source_artifact"),
+                "format": adapter_profile.get("source_format"),
+            },
+        }
     if not isinstance(trace, dict):
         raise ManifestError("execution_profile.trace must be an object")
     unknown_trace = sorted(set(trace) - EXECUTION_PROFILE_TRACE_FIELDS)
@@ -906,6 +989,26 @@ def _load_execution_profile(
         }
     else:
         raise ManifestError("execution_profile.trace.source must be an object or null")
+    if adapter_profile is not None:
+        expected_trace = {
+            "capture_source": adapter_profile.get("capture_source"),
+            "source": {
+                "artifact": adapter_profile.get("source_artifact"),
+                "format": adapter_profile.get("source_format"),
+            },
+        }
+        if {
+            "capture_source": capture_source,
+            "source": normalized_source,
+        } != expected_trace:
+            raise ManifestError(
+                "execution_profile.trace does not match the registered agent adapter"
+            )
+    if capture_source == "provider_stream" and normalized_source is not None:
+        if adapter_id is None:
+            raise ManifestError(
+                "execution_profile.adapter_id is required for a provider source stream"
+            )
     isolation = require_string(
         raw.get("isolation"), "execution_profile.isolation"
     )
@@ -914,6 +1017,8 @@ def _load_execution_profile(
             "execution_profile.isolation must be trusted-orchestrator or local-unattested"
         )
     capabilities = raw.get("capabilities")
+    if capabilities is None and adapter_profile is not None:
+        capabilities = adapter_profile.get("required_capabilities")
     if (
         not isinstance(capabilities, list)
         or not capabilities
@@ -923,11 +1028,46 @@ def _load_execution_profile(
         raise ManifestError(
             "execution_profile.capabilities must be a non-empty unique string array"
         )
+    if adapter_profile is not None:
+        required_capabilities = adapter_profile.get("required_capabilities")
+        if not isinstance(required_capabilities, list) or not all(
+            isinstance(item, str) and item.strip() for item in required_capabilities
+        ):
+            raise ManifestError("registered agent adapter capabilities are invalid")
+        missing_capabilities = [
+            item for item in required_capabilities if item not in capabilities
+        ]
+        if missing_capabilities:
+            raise ManifestError(
+                "execution_profile.capabilities is missing registered agent adapter "
+                "capabilities: " + ", ".join(missing_capabilities)
+            )
     sampling = raw.get("sampling")
     if not isinstance(sampling, dict) or not sampling:
         raise ManifestError("execution_profile.sampling must be a non-empty object")
     require_finite_json(sampling, "execution_profile.sampling")
+    adapter_binding = (
+        {
+            "source_agent": adapter_entry["source_agent"]["id"],
+            "source_format": adapter_entry["source_format"]["id"],
+            "source_contract_version": adapter_entry["source_format"][
+                "contract_version"
+            ],
+            "contract_stability": adapter_entry["source_format"]["stability"],
+            "official_sources": adapter_entry["source_format"]["official_sources"],
+            "evidence_authority": adapter_entry["evidence_authority"],
+            "implementation_maturity": adapter_entry["implementation"]["maturity"],
+            "executable_version": adapter_entry["runtime"]["version_policy"][
+                "value"
+            ],
+            "registry_entry_digest": sha256_json(adapter_entry),
+        }
+        if adapter_entry is not None
+        else None
+    )
     normalized = {
+        "adapter_id": adapter_id,
+        **({"adapter_binding": adapter_binding} if adapter_binding is not None else {}),
         "target": target,
         "harness": harness,
         "dispatch_observation": dispatch_observation,
@@ -1786,6 +1926,7 @@ def compile_manifest(
                         *(str(record["path"]) for record in input_files),
                     ],
                     "permissions": case["permissions"],
+                    "agent_adapter_id": execution_profile["adapter_id"],
                     "execution_profile_digest": execution_profile["digest"],
                     "writable_root": str(repeat_root.resolve()),
                     "execution_artifact": "execution.json",
@@ -2209,6 +2350,7 @@ def verify_locked_inputs(
                         *(str(record["path"]) for record in input_files),
                     ],
                     "permissions": case["permissions"],
+                    "agent_adapter_id": expected_execution_profile["adapter_id"],
                     "execution_profile_digest": expected_execution_profile["digest"],
                     "writable_root": str(repeat_root.resolve()),
                     "execution_artifact": "execution.json",
@@ -2267,4 +2409,136 @@ def verify_locked_inputs(
         "run_lock_digest": sha256_file(lock_path),
         "plan_digest": expected_lock["plan_digest"],
         "authority_digest": recomputed_authority["digest"],
+    }
+
+
+def prepare_agent_cell(
+    *, assignment_path: Path, workspace: Path, adapter_id: str
+) -> dict[str, Any]:
+    """Fail closed before a generic Agent adapter sees any locked input.
+
+    The adapter registry is a bundled, first-party data contract.  This seam
+    validates the complete manifest-derived lock and the exact adapter binding;
+    it does not start an Agent process or interpret a source event.
+    """
+
+    workspace = workspace.resolve()
+    assignment_path = assignment_path.resolve()
+    assignment, repeat_root, trace_path = trace_assignment_context(
+        assignment_path=assignment_path, workspace=workspace
+    )
+    plan_path = workspace / "execution-plan.json"
+    lock_path = workspace / "run-lock.json"
+    if not plan_path.is_file() or not lock_path.is_file():
+        raise ManifestError(
+            "agent executor requires execution-plan.json and run-lock.json"
+        )
+    plan = load_json(plan_path)
+    verify_locked_inputs(plan_path=plan_path, workspace=workspace, plan=plan)
+    profile = plan.get("execution_profile")
+    if not isinstance(profile, dict):
+        raise ManifestError("execution plan is missing its execution profile")
+    if (
+        profile.get("digest") != assignment.get("execution_profile_digest")
+        or profile.get("adapter_id") != assignment.get("agent_adapter_id")
+    ):
+        raise ManifestError("assignment execution profile binding is stale")
+    if profile.get("adapter_id") != adapter_id:
+        raise ManifestError(
+            "requested agent adapter does not match the locked execution profile"
+        )
+    if profile.get("dispatch_observation") != "process_spawn":
+        raise ManifestError(
+            "local agent execution requires dispatch_observation=process_spawn"
+        )
+    if profile.get("isolation") != "local-unattested":
+        raise ManifestError(
+            "local agent execution requires isolation=local-unattested"
+        )
+
+    entry = _load_registered_agent_adapter(adapter_id)
+    adapter_profile = entry["profile"]
+    adapter_binding = profile.get("adapter_binding")
+    if (
+        not isinstance(adapter_binding, dict)
+        or adapter_binding.get("registry_entry_digest") != sha256_json(entry)
+    ):
+        raise ManifestError(
+            "locked execution profile agent adapter binding is stale"
+        )
+    trace_profile = profile.get("trace")
+    expected_trace = {
+        "capture_source": adapter_profile.get("capture_source"),
+        "source": {
+            "artifact": adapter_profile.get("source_artifact"),
+            "format": adapter_profile.get("source_format"),
+        },
+    }
+    if (
+        profile.get("target") != adapter_profile.get("target")
+        or profile.get("harness") != adapter_profile.get("harness")
+        or trace_profile != expected_trace
+    ):
+        raise ManifestError(
+            "locked execution profile does not match the registered agent adapter"
+        )
+    capabilities = profile.get("capabilities")
+    required_capabilities = adapter_profile.get("required_capabilities")
+    if not isinstance(capabilities, list) or not isinstance(
+        required_capabilities, list
+    ):
+        raise ManifestError("agent adapter capability binding is invalid")
+    missing = [item for item in required_capabilities if item not in capabilities]
+    if missing:
+        raise ManifestError(
+            "locked execution profile is missing adapter capabilities: "
+            + ", ".join(str(item) for item in missing)
+        )
+
+    execution_artifact = assignment.get("execution_artifact")
+    dispatch_artifact = assignment.get("dispatch_artifact")
+    source_artifact = adapter_profile.get("source_artifact")
+    stderr_artifact = adapter_profile.get("stderr_artifact")
+    if not all(
+        isinstance(value, str)
+        for value in (
+            execution_artifact,
+            dispatch_artifact,
+            source_artifact,
+            stderr_artifact,
+        )
+    ):
+        raise ManifestError("agent adapter artifact binding is invalid")
+    generated = [
+        trace_path,
+        safe_artifact(repeat_root, execution_artifact),
+        safe_artifact(repeat_root, dispatch_artifact),
+        safe_artifact(repeat_root, source_artifact),
+        safe_artifact(repeat_root, stderr_artifact),
+    ]
+    for path in generated:
+        if path.exists() or path.is_symlink():
+            raise ManifestError(f"executor output already exists: {path.name}")
+    expected = assignment.get("expected_artifacts")
+    if not isinstance(expected, list) or not all(
+        isinstance(value, str) for value in expected
+    ):
+        raise ManifestError("assignment.expected_artifacts must be a string array")
+    for relative in expected:
+        artifact = safe_artifact(repeat_root, relative)
+        if artifact.exists() or artifact.is_symlink():
+            raise ManifestError(
+                f"expected artifact already exists before execution: {relative}"
+            )
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+    return {
+        "assignment": assignment,
+        "assignment_path": str(assignment_path),
+        "repeat_root": str(repeat_root),
+        "trace_path": str(trace_path),
+        "profile": profile,
+        "adapter": {
+            **entry,
+            "registry_entry_digest": sha256_json(entry),
+        },
     }

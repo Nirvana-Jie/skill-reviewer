@@ -8,6 +8,7 @@ on:
       - "README.zh-CN.md"
       - "AGENTS.md"
       - "dashboard/**"
+      - "docs/**"
       - "tests/**"
       - "package.json"
       - "pnpm-lock.yaml"
@@ -24,6 +25,7 @@ on:
       - "README.zh-CN.md"
       - "AGENTS.md"
       - "dashboard/**"
+      - "docs/**"
       - "tests/**"
       - "package.json"
       - "pnpm-lock.yaml"
@@ -103,3 +105,6 @@ jobs:
 
       - name: Compile Python scripts
         run: python3 -m py_compile skills/skill-reviewer/scripts/*.py
+
+      - name: Check MJS runtime syntax
+        run: find skills/skill-reviewer/scripts -type f -name '*.mjs' -print0 | xargs -0 -n1 node --check

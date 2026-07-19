@@ -18,14 +18,15 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const python = process.env.PYTHON ?? "python3";
+const python = process.execPath;
+const runtimePython = process.env.PYTHON ?? "python3";
 const runtime = join(
   repoRoot,
   "skills/skill-reviewer/scripts/skill_eval_runtime.py",
 );
 const executor = join(
   repoRoot,
-  "skills/skill-reviewer/scripts/run_claude_eval_executor.py",
+  "skills/skill-reviewer/scripts/run_agent_eval.mjs",
 );
 
 function write(root, relative, content) {
@@ -48,6 +49,7 @@ function makeWritable(path) {
 }
 
 function run(command, args, options = {}) {
+  if (command === python && args[0] === runtime) command = runtimePython;
   return spawnSync(command, args, {
     cwd: repoRoot,
     encoding: "utf8",
@@ -140,7 +142,7 @@ import time
 
 args = sys.argv[1:]
 if args == ["--version"]:
-    print("2.1.test (Claude Code)")
+    print("2.1.215 (Claude Code)")
     raise SystemExit(0)
 
 if os.environ.get("FAKE_CLAUDE_ARGV"):
@@ -165,6 +167,10 @@ events = [
     ]}},
     {"type": "result", "subtype": "success", "is_error": False, "session_id": "session-real-stream", "result": credential or "PASS", "duration_ms": 12, "total_cost_usd": 0.001, "usage": {"input_tokens": 10, "output_tokens": 2}}
 ]
+if os.environ.get("FAKE_CLAUDE_ORPHAN_RESULT") == "1":
+    events.insert(-1, {"type": "user", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "orphan-tool", "content": "unexpected", "is_error": False}
+    ]}})
 for event in events:
     print(json.dumps(event), flush=True)
 `,
@@ -180,6 +186,7 @@ function compileRun(root) {
     root,
     "claude-execution-profile.json",
     JSON.stringify({
+      adapter_id: "anthropic.claude-code.stream-json",
       target: "claude-code",
       harness: "claude-stream-json",
       dispatch_observation: "process_spawn",
@@ -225,6 +232,45 @@ function assignment(workspace, arm) {
 }
 
 describe("local Claude Code eval executor", () => {
+  it("fails evidence integrity for an orphan source tool result", () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-claude-orphan-"));
+    try {
+      const { workspace } = compileRun(root);
+      const result = run(
+        python,
+        [
+          executor,
+          "--workspace",
+          workspace,
+          "--assignment",
+          assignment(workspace, "with_skill"),
+          "--agent-bin",
+          makeFakeClaude(root),
+          "--pass-env",
+          "FAKE_CLAUDE_ORPHAN_RESULT",
+        ],
+        { env: { FAKE_CLAUDE_ORPHAN_RESULT: "1" } },
+      );
+
+      expect(result.status).toBe(1);
+      const repeatRoot = join(
+        workspace,
+        "cases/observable-agent-trace/with_skill/repeat-1",
+      );
+      const execution = JSON.parse(
+        readFileSync(join(repeatRoot, "execution.json"), "utf8"),
+      );
+      expect(execution.status).toBe("failed");
+      expect(execution.metrics.agent_failure_event_count).toBe(1);
+      expect(readFileSync(join(repeatRoot, "agent-trace.jsonl"), "utf8")).toContain(
+        "Agent source tool result has no matching tool use",
+      );
+    } finally {
+      makeWritable(root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("retains a redacted source stream and projects the shared Agent Trace", () => {
     const root = mkdtempSync(join(tmpdir(), "skill-reviewer-claude-executor-"));
     try {
@@ -240,7 +286,7 @@ describe("local Claude Code eval executor", () => {
             workspace,
             "--assignment",
             assignment(workspace, arm),
-            "--claude-bin",
+            "--agent-bin",
             fakeClaude,
             "--pass-env",
             "FAKE_CLAUDE_ARGV",
@@ -267,7 +313,7 @@ describe("local Claude Code eval executor", () => {
           }),
           source_trace: expect.objectContaining({
             artifact: "agent-source-events.jsonl",
-            adapter: "claude-code",
+            adapter: "anthropic.claude-code.stream-json",
             format: "claude-stream-json-v1",
           }),
           trace: expect.objectContaining({
@@ -326,7 +372,7 @@ describe("local Claude Code eval executor", () => {
           workspace,
           "--assignment",
           assignment(workspace, "with_skill"),
-          "--claude-bin",
+          "--agent-bin",
           makeFakeClaude(root),
         ],
         { env: { SKILL_REVIEWER_TEST_CREDENTIAL: secret } },
@@ -363,7 +409,7 @@ describe("local Claude Code eval executor", () => {
           workspace,
           "--assignment",
           assignment(workspace, "with_skill"),
-          "--claude-bin",
+          "--agent-bin",
           makeFakeClaude(root),
           "--credential-env",
           "SKILL_REVIEWER_TEST_CREDENTIAL",
@@ -382,7 +428,7 @@ describe("local Claude Code eval executor", () => {
       expect(execution.status).toBe("failed");
       expect(execution.metrics.credential_leak_count).toBeGreaterThan(0);
       expect(execution.forbidden_actions.join("\n")).toContain(
-        "provider credential appeared in retained output",
+        "agent credential appeared in retained output",
       );
       for (const relative of [
         "outputs/response.md",
@@ -423,7 +469,7 @@ describe("local Claude Code eval executor", () => {
           workspace,
           "--assignment",
           assignmentPath,
-          "--claude-bin",
+          "--agent-bin",
           makeFakeClaude(root),
           "--pass-env",
           "FAKE_CLAUDE_STARTED",
@@ -466,7 +512,7 @@ describe("local Claude Code eval executor", () => {
           workspace,
           "--assignment",
           assignmentPath,
-          "--claude-bin",
+          "--agent-bin",
           makeFakeClaude(root),
           "--pass-env",
           "FAKE_CLAUDE_STARTED",
@@ -500,7 +546,7 @@ describe("local Claude Code eval executor", () => {
           workspace,
           "--assignment",
           assignment(workspace, "with_skill"),
-          "--claude-bin",
+          "--agent-bin",
           makeFakeClaude(root),
           "--batch-id",
           "x".repeat(257),
@@ -554,7 +600,7 @@ describe("local Claude Code eval executor", () => {
           workspace,
           "--assignment",
           assignment(workspace, "with_skill"),
-          "--claude-bin",
+          "--agent-bin",
           makeFakeClaude(root),
           "--timeout-seconds",
           "1",

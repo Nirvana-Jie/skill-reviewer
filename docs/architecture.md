@@ -28,14 +28,21 @@ branch:
 - verification workflow;
 - bounded evolution workflow.
 
-Machine manifests, provider contracts, Dashboard transport, and long examples
+Machine manifests, source-Agent contracts, Dashboard transport, and long examples
 are not model references.
 
 ### Runtime interface
 
-`skill_eval_runtime.py` is now only the stable CLI façade. Callers provide a
-manifest, subject, baseline when required, execution profile, and fresh
-workspace. Four domain modules own the implementation:
+The Runtime has two intentionally separate entry points:
+
+- `skill_eval_runtime.py` is the authority façade for compile, lock, grade,
+  decide, evolve, and project operations;
+- `run_agent_eval.mjs` is the only local process-execution CLI. It exposes the
+  source-neutral `runAgentCell` and `runAgentPlan` interfaces.
+
+Callers provide a manifest, subject, baseline when required, execution profile,
+and fresh workspace. Four Python domain modules still own frozen decision
+contracts:
 
 - `skill_eval_authority.py`: normalization, compilation, snapshots, and complete
   Manifest-derived lock reconstruction;
@@ -44,11 +51,38 @@ workspace. Four domain modules own the implementation:
 - `skill_eval_decision.py`: acceptance gates and bounded evolution state;
 - `skill_eval_dashboard.py`: read-only Dashboard projection.
 
-Stable contract identities live in `skill_eval_contracts.py`; provider-neutral
-locked execution, minimal child environments, credential redaction, and process
-cleanup live in `skill_eval_execution.py`. Pure policies continue moving behind
-the façade through `skill_eval_measurement.py` and `skill_eval_evidence.py`.
-Provider adapters translate only their wire event formats. Tests target
+Stable contract identities live in `skill_eval_contracts.py`. The MJS execution
+slice has four boundaries:
+
+1. `assets/agent-adapter-registry.json` is a closed, first-party registry. It
+   separately records source-Agent identity, wire stability, evidence authority,
+   implementation maturity, and the profile fields that compilation locks.
+2. `agent-artifacts.mjs`, `agent-digest.mjs`, and
+   `agent-runtime-binding.mjs` own durable writes, canonical identity, and the
+   immutable per-run executable/operational binding.
+3. `agent-process.mjs` owns minimal child environments, credential redaction,
+   timeout/signal handling, executable provenance, and process-group cleanup;
+   `agent-source-capture.mjs` owns strict JSONL decoding and observable-event
+   retention; `agent-execution.mjs` coordinates cells and paired fan-out.
+4. `scripts/lib/agent-adapters/` contains source-specific argv and event mapping.
+   Product names belong only in this boundary, the registry, fixtures, and
+   research—not in the public runner, execution core, or Dashboard schema.
+
+Adapters are resolved by exact ID from the bundled registry. Arbitrary dynamic
+imports, protocol guessing, and fallback to a lookalike Agent are forbidden.
+Each executable adapter carries an exact, canary-qualified CLI version token;
+version mismatch fails before dispatch. The first cell atomically establishes
+`agent-runtime-binding.json` (executable path/digest/version, environment-name
+digest, timeout, and cost limit), and every later cell in that run must match it.
+Hooks remain source-specific supplemental channels and are never merged with a
+CLI stream unless the source exposes an exact correlation key. Researched Hook
+formats remain explicitly `not-implemented` until they have parsers and fixtures.
+
+The remaining Python authority code is not retained because Python is the
+preferred product language. It is a staged migration boundary: immutable plan,
+lock, grading, and snapshot digests must first gain byte-for-byte golden parity
+tests before each domain can move to MJS. A language-only big-bang rewrite would
+change the evidence authority and implementation simultaneously. Tests target
 observable CLI results rather than private helper shape.
 
 Domain modules may depend only on another module's public interface. Private
@@ -81,7 +115,13 @@ is outside evidence authority and must be revalidated by a receiving Agent.
 | Acceptance and bounded evolution | `skill_eval_decision.py` |
 | Dashboard read-model projection | `skill_eval_dashboard.py` |
 | Machine contract identities | `skill_eval_contracts.py` |
-| Provider process safety | `skill_eval_execution.py` |
+| Agent registry and locked adapter profile | `assets/agent-adapter-registry.json` |
+| Generic local execution and paired fan-out | `run_agent_eval.mjs`, `lib/agent-execution.mjs` |
+| Child process safety and provenance | `lib/agent-process.mjs` |
+| Strict source-stream capture | `lib/agent-source-capture.mjs` |
+| Atomic artifacts and immutable runtime binding | `lib/agent-artifacts.mjs`, `lib/agent-runtime-binding.mjs` |
+| Per-run executable and operational identity | generated `agent-runtime-binding.json` |
+| Source event mapping | `lib/agent-adapters/<source>.mjs` |
 | Measurement policy | `skill_eval_measurement.py` |
 | Artifact ownership | `skill_eval_evidence.py` |
 | Semantic grader machine contract | `assets/semantic-grader-contract.md` |
@@ -107,6 +147,14 @@ replaced by a pointer to its authority.
 - Preserve the evidence → measurement → candidate order across Runtime and UI.
 - Keep cross-domain imports public and the `skill_eval_*` dependency graph
   acyclic.
+- Keep the top-level execution CLI and core free of named Agent products. Add a
+  registry entry before an adapter; do not add another top-level runner.
+- Distinguish `researched`, `implemented`, fixture-verified, and canary-verified
+  support. Documentation must not collapse these states into “supported”.
+- Re-run the real canary and update the exact version policy before retaining
+  `canary-verified` after an Agent CLI upgrade.
+- Port a Python authority domain only behind golden parity tests; switch one
+  writer at a time and delete the displaced implementation in the same change.
 - A UI migration must fail closed; it cannot invent positive evidence.
 
 ## Acceptance
@@ -114,7 +162,7 @@ replaced by a pointer to its authority.
 A governance change is complete only after:
 
 1. Vitest, typecheck, and Dashboard build pass.
-2. Every Python script compiles.
+2. Every Python script compiles and every MJS runtime file passes `node --check`.
 3. The Skill linter and executable Eval Manifest JSON validation pass.
 4. The install contract produces a self-contained Skill.
 5. A prepared Dashboard projection validates.

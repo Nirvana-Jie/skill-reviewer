@@ -99,7 +99,7 @@ DISPATCH_DESCRIPTOR_FIELDS = {
     "batch_id",
     "dispatched_at",
 }
-SOURCE_TRACE_DESCRIPTOR_FIELDS = {
+SOURCE_TRACE_REQUIRED_FIELDS = {
     "artifact",
     "digest",
     "adapter",
@@ -108,6 +108,22 @@ SOURCE_TRACE_DESCRIPTOR_FIELDS = {
     "source_event_count",
     "retained_event_count",
     "redaction",
+}
+SOURCE_TRACE_DESCRIPTOR_FIELDS = SOURCE_TRACE_REQUIRED_FIELDS | {
+    "source_agent",
+    "registry_entry_digest",
+    "runtime_binding_digest",
+    "agent_version",
+    "executable_digest",
+    "argv_digest",
+    "parser_id",
+    "parser_version",
+    "parser_digest",
+    "contract_urls",
+    "adapter_maturity",
+    "source_contract_version",
+    "contract_stability",
+    "evidence_authority",
 }
 TRACE_DESCRIPTOR_FIELDS = {
     "artifact",
@@ -381,6 +397,7 @@ def _validate_dispatch_receipt(
 
 def _validate_source_trace(
     *,
+    workspace: Path,
     repeat_root: Path,
     descriptor: Any,
     assignment: dict[str, Any],
@@ -388,6 +405,7 @@ def _validate_source_trace(
     required: bool,
     expected_adapter: str | None,
     expected_format: str | None,
+    expected_binding: dict[str, Any] | None,
 ) -> tuple[dict[str, Any] | None, list[str]]:
     errors: list[str] = []
     locked_artifact = assignment.get("source_trace_artifact")
@@ -413,7 +431,7 @@ def _validate_source_trace(
             "execution source trace contains unsupported fields: "
             + ", ".join(unsupported)
         )
-    missing = sorted(SOURCE_TRACE_DESCRIPTOR_FIELDS - set(descriptor))
+    missing = sorted(SOURCE_TRACE_REQUIRED_FIELDS - set(descriptor))
     if missing:
         errors.append("execution source trace is missing fields: " + ", ".join(missing))
     if descriptor.get("artifact") != expected_artifact:
@@ -428,6 +446,100 @@ def _validate_source_trace(
         errors.append("source trace adapter does not match the locked execution profile")
     if descriptor.get("format") != expected_format:
         errors.append("source trace format does not match the locked execution profile")
+    if expected_binding is not None:
+        provenance_bindings = {
+            "source_agent": "source_agent",
+            "registry_entry_digest": "registry_entry_digest",
+            "adapter_maturity": "implementation_maturity",
+            "source_contract_version": "source_contract_version",
+            "contract_stability": "contract_stability",
+            "evidence_authority": "evidence_authority",
+        }
+        for descriptor_field, binding_field in provenance_bindings.items():
+            if descriptor.get(descriptor_field) != expected_binding.get(binding_field):
+                errors.append(
+                    f"source trace {descriptor_field} does not match the locked adapter binding"
+                )
+        runtime_binding_path = workspace / "agent-runtime-binding.json"
+        if (
+            runtime_binding_path.is_symlink()
+            or not runtime_binding_path.is_file()
+            or runtime_binding_path.stat().st_nlink != 1
+        ):
+            errors.append("Agent runtime binding is missing or not a private regular file")
+        else:
+            try:
+                runtime_binding = load_json(runtime_binding_path)
+            except ManifestError as error:
+                errors.append(f"Agent runtime binding is invalid: {error}")
+            else:
+                if runtime_binding.get("contract") != "skill-reviewer.agent-runtime-binding":
+                    errors.append("Agent runtime binding contract is invalid")
+                if runtime_binding.get("adapter_id") != expected_adapter:
+                    errors.append("Agent runtime binding adapter does not match the locked profile")
+                if runtime_binding.get("registry_entry_digest") != expected_binding.get(
+                    "registry_entry_digest"
+                ):
+                    errors.append("Agent runtime binding registry digest is stale")
+                if runtime_binding.get("agent_version") != descriptor.get("agent_version"):
+                    errors.append("source trace agent_version does not match the Agent runtime binding")
+                if runtime_binding.get("executable_digest") != descriptor.get(
+                    "executable_digest"
+                ):
+                    errors.append(
+                        "source trace executable_digest does not match the Agent runtime binding"
+                    )
+                expected_version = expected_binding.get("executable_version")
+                observed_version = runtime_binding.get("agent_version")
+                if (
+                    not isinstance(expected_version, str)
+                    or not isinstance(observed_version, str)
+                    or re.search(
+                        rf"(?:^|[^0-9A-Za-z.]){re.escape(expected_version)}(?:$|[^0-9A-Za-z.])",
+                        observed_version,
+                    )
+                    is None
+                ):
+                    errors.append("Agent runtime binding version is outside the locked adapter contract")
+                for field in (
+                    "registry_entry_digest",
+                    "executable_digest",
+                    "environment_names_digest",
+                ):
+                    value = runtime_binding.get(field)
+                    if not isinstance(value, str) or re.fullmatch(
+                        r"[a-f0-9]{64}", value
+                    ) is None:
+                        errors.append(f"Agent runtime binding {field} is invalid")
+                if not isinstance(runtime_binding.get("agent_version"), str) or not str(
+                    runtime_binding.get("agent_version")
+                ).strip():
+                    errors.append("Agent runtime binding agent_version is invalid")
+                executable_path = runtime_binding.get("executable_path")
+                if not isinstance(executable_path, str) or not Path(
+                    executable_path
+                ).is_absolute():
+                    errors.append("Agent runtime binding executable_path is invalid")
+                runtime_timeout = runtime_binding.get("timeout_seconds")
+                if (
+                    not isinstance(runtime_timeout, int)
+                    or isinstance(runtime_timeout, bool)
+                    or runtime_timeout < 1
+                ):
+                    errors.append("Agent runtime binding timeout_seconds is invalid")
+                runtime_cost = runtime_binding.get("cost_limit_usd")
+                if runtime_cost is not None and (
+                    not isinstance(runtime_cost, (int, float))
+                    or isinstance(runtime_cost, bool)
+                    or not math.isfinite(runtime_cost)
+                    or runtime_cost < 0
+                ):
+                    errors.append("Agent runtime binding cost_limit_usd is invalid")
+            actual_runtime_binding_digest = sha256_file(runtime_binding_path)
+            if descriptor.get("runtime_binding_digest") != actual_runtime_binding_digest:
+                errors.append(
+                    "source trace runtime_binding_digest does not match the Agent runtime binding"
+                )
     source_stream_digest = descriptor.get("source_stream_digest")
     if not isinstance(source_stream_digest, str) or not re.fullmatch(
         r"[a-f0-9]{64}", source_stream_digest
@@ -501,6 +613,44 @@ def _validate_source_trace(
         errors.append("source trace source_event_count is smaller than retained events")
     if descriptor.get("redaction") != "private-reasoning-fields-removed":
         errors.append("source trace redaction contract is invalid")
+    for field in (
+        "registry_entry_digest",
+        "runtime_binding_digest",
+        "executable_digest",
+        "argv_digest",
+        "parser_digest",
+    ):
+        value = descriptor.get(field)
+        if value is not None and (
+            not isinstance(value, str) or re.fullmatch(r"[a-f0-9]{64}", value) is None
+        ):
+            errors.append(f"source trace {field} is invalid")
+    for field in (
+        "source_agent",
+        "agent_version",
+        "parser_id",
+        "parser_version",
+        "adapter_maturity",
+        "contract_stability",
+        "evidence_authority",
+    ):
+        value = descriptor.get(field)
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            errors.append(f"source trace {field} is invalid")
+    contract_urls = descriptor.get("contract_urls")
+    if contract_urls is not None and (
+        not isinstance(contract_urls, list)
+        or not contract_urls
+        or not all(
+            isinstance(value, str) and value.startswith("https://")
+            for value in contract_urls
+        )
+    ):
+        errors.append("source trace contract_urls is invalid")
+    if expected_binding is not None and contract_urls != expected_binding.get(
+        "official_sources"
+    ):
+        errors.append("source trace contract_urls do not match the locked adapter binding")
     matching_events = [
         event
         for event in trace_events
@@ -521,6 +671,11 @@ def _validate_source_trace(
         and event["details"].get("redaction") == descriptor.get("redaction")
         and event["details"].get("adapter") == descriptor.get("adapter")
         and event["details"].get("format") == descriptor.get("format")
+        and all(
+            event["details"].get(field) == descriptor.get(field)
+            for field in SOURCE_TRACE_DESCRIPTOR_FIELDS - SOURCE_TRACE_REQUIRED_FIELDS
+            if field in descriptor
+        )
         for event in matching_events
     ):
         errors.append("source trace descriptor is not bound to its artifact event")
@@ -1015,15 +1170,21 @@ def finalize_execution(
     if status == "completed" and dispatch is None:
         raise ManifestError("completed execution requires a dispatch receipt")
     normalized_source_trace, source_trace_errors = _validate_source_trace(
+        workspace=workspace,
         repeat_root=repeat_root,
         descriptor=source_trace,
         assignment=assignment,
         trace_events=events,
         required=source_profile is not None and status == "completed",
-        expected_adapter=str(execution_profile.get("target")),
+        expected_adapter=str(execution_profile.get("adapter_id")),
         expected_format=(
             str(source_profile.get("format"))
             if isinstance(source_profile, dict)
+            else None
+        ),
+        expected_binding=(
+            execution_profile.get("adapter_binding")
+            if isinstance(execution_profile.get("adapter_binding"), dict)
             else None
         ),
     )
@@ -1447,6 +1608,7 @@ def grade_arm(
         )
         repeat_binding_errors.extend(trace_errors)
         source_trace_descriptor, source_trace_errors = _validate_source_trace(
+            workspace=workspace,
             repeat_root=repeat_root,
             descriptor=execution.get("source_trace"),
             assignment=assignment,
@@ -1455,10 +1617,15 @@ def grade_arm(
                 isinstance(execution_profile.get("trace", {}).get("source"), dict)
                 and execution.get("status") == "completed"
             ),
-            expected_adapter=str(execution_profile.get("target")),
+            expected_adapter=str(execution_profile.get("adapter_id")),
             expected_format=(
                 str(execution_profile["trace"]["source"].get("format"))
                 if isinstance(execution_profile.get("trace", {}).get("source"), dict)
+                else None
+            ),
+            expected_binding=(
+                execution_profile.get("adapter_binding")
+                if isinstance(execution_profile.get("adapter_binding"), dict)
                 else None
             ),
         )

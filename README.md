@@ -15,7 +15,7 @@
 `skill-reviewer` does three things:
 
 - **Review (default)** — performs read-only checks of triggers, instructions, resources, scripts, safety, and maintainability, then returns actionable rewrites without starting Eval workers.
-- **Verify (explicit)** — when requested, compiles a valid `evals/evals.json`, dispatches candidate and baseline through a native or provider adapter, and retains dispatch, canonical Trace, source, and output evidence for the Dashboard.
+- **Verify (explicit)** — when requested, compiles a valid `evals/evals.json`, dispatches candidate and baseline through a native host or registered Agent adapter, and retains dispatch, canonical Trace, source, and output evidence for the Dashboard.
 - **Evolve** — only on an explicit request, performs at most three bounded improvement rounds; Evals stay immutable during a run and a human always owns the final release decision.
 
 ## Quick start
@@ -78,7 +78,7 @@ Core rules:
    invalidate the experiment instead of blaming the Skill.
 4. **An invalid Manifest blocks release** — it is never silently skipped.
 5. **A Manifest is not a worker receipt** — `evals.json` declares cells; only a
-   retained provider/harness dispatch receipt proves the selected cell was
+   retained Agent/harness dispatch receipt proves the selected cell was
    actually started within the stated trusted boundary.
 
 ### Three evaluation stages
@@ -109,8 +109,8 @@ The verdict is not a simple average. Safety and trigger red lines can block imme
 ## Real Evals and bounded evolution
 
 The strict Manifest lives at `<skill>/evals/evals.json`. Compilation alone does
-not start an Agent. The lead Agent uses a native host surface or a
-provider adapter; each executor still receives exactly one
+not start an Agent. The lead Agent uses a native host surface or a registered
+Agent adapter; each executor still receives exactly one
 Case, one arm, and one repeat:
 
 ```mermaid
@@ -129,28 +129,35 @@ flowchart TB
     P -- "Yes" --> A["One-shot Audit"]
 ```
 
-Real Trace contains only observable behavior: Agent messages, file reads, tool calls, commands, exit codes, errors, timing, and artifact references. It never records or displays private chain-of-thought. Provider-specific events are redacted and normalized before they reach the grader or Dashboard, so adding another Agent requires an adapter and execution profile—not a new Trace UI. Bundled paths cover native/external harnesses, Codex CLI, and Claude Code.
+Real Trace contains only observable behavior: Agent messages, file reads, tool calls, commands, exit codes, errors, timing, and artifact references. It never records or displays private chain-of-thought. Source-Agent events are redacted and normalized before they reach the grader or Dashboard, so adding another Agent requires a registry entry and source adapter—not a new Trace UI. The closed first-party registry distinguishes source identity, wire-contract stability, implementation maturity, and evidence authority; a researched entry is not silently presented as executable support.
 
-For a compiled `codex-cli` profile, one command mechanically fans out paired
-arms and grades after all case/repeat batches finish:
+For any compiled profile backed by an implemented adapter, the same command
+mechanically fans out paired arms and grades after all case/repeat batches finish:
 
 ```bash
-python3 skills/skill-reviewer/scripts/run_codex_eval_plan.py \
-  --workspace /tmp/skill-reviewer-run \
-  --full-access
+node skills/skill-reviewer/scripts/run_agent_eval.mjs plan \
+  --workspace /tmp/skill-reviewer-run
 ```
 
-Provider children receive a minimal environment. Pass a required ordinary
+The adapter is locked during compilation; runtime flags may assert or narrow
+that authority but cannot replace it. Inspect supported and researched formats
+with `node skills/skill-reviewer/scripts/run_agent_eval.mjs adapters list`.
+Codex CLI `0.144.5` and Claude Code `2.1.215` are the current
+`canary-verified` execution adapters. Gemini CLI, GitHub Copilot CLI, and
+OpenCode are researched but deliberately `not-implemented`; their public
+contracts are not promoted into release evidence by guesswork. Hook formats are
+source-attributed research entries, not executable parsers.
+Agent children receive a minimal environment. Pass a required ordinary
 value with repeatable `--pass-env NAME`; pass API keys or other secrets only
 with repeatable `--credential-env NAME`. Declared credential values are removed
 from retained output, and any observed leak fails the execution.
 
 Native subagents remain host-owned. Their harness must record the real host
 dispatch and worker/thread IDs before behavior events. The receipt detects
-drift and prevents profile-only UI claims; without a provider-signed API it is
+drift and prevents profile-only UI claims; without a source-signed API it is
 trusted harness provenance, not cryptographic attestation.
 
-Real-provider canaries are opt-in because they may require local authentication,
+Real-Agent canaries are opt-in because they may require local authentication,
 network access, and model spend. This launches the installed CLI through the
 complete compile → process → source → grade → Dashboard projection chain, then
 mounts the Trace view and expands the real marker event in the rendered UI:
@@ -248,8 +255,8 @@ All changes enter `main` through a branch and pull request. `Static Checks` runs
 ├── skills/skill-reviewer/   # complete payload installed by skills add
 │   ├── SKILL.md
 │   ├── references/          # four branch-scoped model references
-│   ├── assets/              # machine contracts and pinned UI manifest
-│   ├── scripts/             # linter, runtime, executor, Dashboard launcher
+│   ├── assets/              # machine contracts, Agent registry, pinned UI manifest
+│   ├── scripts/             # linter, authority runtime, generic executor, Dashboard launcher
 │   └── evals/               # One executable Manifest and its fixtures
 ├── dashboard/               # React / TypeScript / Vite source; dist ignored
 ├── docs/                    # maintainer architecture; not model context
@@ -264,6 +271,7 @@ All changes enter `main` through a branch and pull request. `Static Checks` runs
 - [Explicit verification workflow](./skills/skill-reviewer/references/verification-workflow.md)
 - [Bounded continuous evolution](./skills/skill-reviewer/references/evolution-workflow.md)
 - [Maintainer architecture](./docs/architecture.md)
+- [Agent trace protocol research](./docs/agent-trace-protocols.md)
 
 Output language follows the request; one language-neutral contract keeps both
 languages machine-comparable.

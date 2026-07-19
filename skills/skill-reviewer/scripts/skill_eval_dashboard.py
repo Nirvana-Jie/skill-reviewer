@@ -1289,6 +1289,20 @@ def project_dashboard(
                             "source_event_count",
                             "retained_event_count",
                             "redaction",
+                            "source_agent",
+                            "registry_entry_digest",
+                            "runtime_binding_digest",
+                            "agent_version",
+                            "executable_digest",
+                            "argv_digest",
+                            "parser_id",
+                            "parser_version",
+                            "parser_digest",
+                            "contract_urls",
+                            "adapter_maturity",
+                            "source_contract_version",
+                            "contract_stability",
+                            "evidence_authority",
                         )
                     }
                     if isinstance(raw_source_trace, dict)
@@ -1569,6 +1583,7 @@ def project_dashboard(
         {
             key: raw_execution_profile.get(key)
             for key in (
+                "adapter_id",
                 "target",
                 "harness",
                 "dispatch_observation",
@@ -1579,6 +1594,11 @@ def project_dashboard(
                 "digest",
             )
         }
+        | (
+            {"adapter_binding": raw_execution_profile["adapter_binding"]}
+            if isinstance(raw_execution_profile.get("adapter_binding"), dict)
+            else {}
+        )
         if isinstance(raw_execution_profile, dict)
         else None
     )

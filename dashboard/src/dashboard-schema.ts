@@ -34,6 +34,9 @@ const forbiddenTraceDetailKeys = new Set([
 
 interface RunValidationContext {
   runId: string;
+  profileAdapterId?: string;
+  profileSourceAgent?: string;
+  profileRegistryEntryDigest?: string;
   profileTarget?: string;
   profileHarness?: string;
   profileDispatchObservation?: "host_dispatch" | "process_spawn" | "external_harness";
@@ -364,6 +367,36 @@ function validateRun(value: unknown, path: string): void {
       run.execution_profile,
       `${path}.execution_profile`,
     );
+    validateOptionalNullableString(
+      profile,
+      "adapter_id",
+      `${path}.execution_profile`,
+    );
+    if (profile.adapter_binding !== undefined) {
+      const binding = requireRecord(
+        profile.adapter_binding,
+        `${path}.execution_profile.adapter_binding`,
+      );
+      for (const key of [
+        "source_agent",
+        "source_format",
+        "source_contract_version",
+        "contract_stability",
+        "evidence_authority",
+        "implementation_maturity",
+        "executable_version",
+        "registry_entry_digest",
+      ]) {
+        requireString(
+          binding[key],
+          `${path}.execution_profile.adapter_binding.${key}`,
+        );
+      }
+      requireStringArray(
+        binding.official_sources,
+        `${path}.execution_profile.adapter_binding.official_sources`,
+      );
+    }
     for (const key of ["target", "harness", "isolation", "digest"]) {
       validateOptionalString(profile, key, `${path}.execution_profile`);
     }
@@ -867,12 +900,7 @@ function validateDispatch(
     "process_spawn",
     "external_harness",
   ] as const);
-  const expectedObservation = context.profileDispatchObservation ??
-    (provider === "codex-cli" && harness === "codex-exec-jsonl"
-      ? "process_spawn"
-      : provider === "native-agent" && harness === "lead-agent-dispatch"
-        ? "host_dispatch"
-        : null);
+  const expectedObservation = context.profileDispatchObservation ?? null;
   if (expectedObservation !== null && observation !== expectedObservation) {
     throw new DashboardCompatibilityError(
       `${path}.observation`,
@@ -895,6 +923,19 @@ function validateSourceTrace(
       "adapter",
       "format",
       "source_stream_digest",
+      "source_agent",
+      "registry_entry_digest",
+      "runtime_binding_digest",
+      "agent_version",
+      "executable_digest",
+      "argv_digest",
+      "parser_id",
+      "parser_version",
+      "parser_digest",
+      "adapter_maturity",
+      "source_contract_version",
+      "contract_stability",
+      "evidence_authority",
     ]) {
       if (source[key] !== undefined) {
         requireNullableString(source[key], `${path}.${key}`);
@@ -911,6 +952,9 @@ function validateSourceTrace(
         `${path}.redaction`,
         "private-reasoning-fields-removed",
       );
+    }
+    if (source.contract_urls !== undefined && source.contract_urls !== null) {
+      requireStringArray(source.contract_urls, `${path}.contract_urls`);
     }
     return false;
   }
@@ -932,10 +976,13 @@ function validateSourceTrace(
       "must match run.execution_profile.trace.source.artifact",
     );
   }
-  if (context.profileTarget && source.adapter !== context.profileTarget) {
+  if (
+    context.profileAdapterId &&
+    source.adapter !== context.profileAdapterId
+  ) {
     throw new DashboardCompatibilityError(
       `${path}.adapter`,
-      "must match run.execution_profile.target",
+      "must match run.execution_profile.adapter_id",
     );
   }
   if (
@@ -945,6 +992,24 @@ function validateSourceTrace(
     throw new DashboardCompatibilityError(
       `${path}.format`,
       "must match run.execution_profile.trace.source.format",
+    );
+  }
+  if (
+    context.profileSourceAgent &&
+    source.source_agent !== context.profileSourceAgent
+  ) {
+    throw new DashboardCompatibilityError(
+      `${path}.source_agent`,
+      "must match run.execution_profile.adapter_binding.source_agent",
+    );
+  }
+  if (
+    context.profileRegistryEntryDigest &&
+    source.registry_entry_digest !== context.profileRegistryEntryDigest
+  ) {
+    throw new DashboardCompatibilityError(
+      `${path}.registry_entry_digest`,
+      "must match run.execution_profile.adapter_binding.registry_entry_digest",
     );
   }
   requireNonNegativeInteger(
@@ -966,6 +1031,35 @@ function validateSourceTrace(
     `${path}.redaction`,
     "private-reasoning-fields-removed",
   );
+  for (const key of [
+    "source_agent",
+    "agent_version",
+    "parser_id",
+    "parser_version",
+    "adapter_maturity",
+    "source_contract_version",
+    "contract_stability",
+    "evidence_authority",
+  ]) {
+    if (source[key] !== undefined) requireString(source[key], `${path}.${key}`);
+  }
+  for (const key of [
+    "registry_entry_digest",
+    "runtime_binding_digest",
+    "executable_digest",
+    "argv_digest",
+    "parser_digest",
+  ]) {
+    if (source[key] !== undefined) {
+      const digest = requireString(source[key], `${path}.${key}`);
+      if (!/^[a-f0-9]{64}$/i.test(digest)) {
+        throw new DashboardCompatibilityError(`${path}.${key}`, "expected a SHA-256 digest");
+      }
+    }
+  }
+  if (source.contract_urls !== undefined) {
+    requireStringArray(source.contract_urls, `${path}.contract_urls`);
+  }
   return true;
 }
 
@@ -1264,7 +1358,7 @@ function validateExecution(
     ) {
       throw new DashboardCompatibilityError(
         `${path}.source_trace`,
-        "a completed provider-stream trace requires a valid bound source trace",
+        "a completed source-stream trace requires a valid bound source trace",
       );
     }
   }
@@ -2036,6 +2130,18 @@ export function validateAndMigrateDashboardData(input: unknown): DashboardData {
       : requireRecord(run.execution_profile, "run.execution_profile");
   const runContext: RunValidationContext = {
     runId: requireString(run.id, "run.id"),
+    profileAdapterId:
+      typeof profile?.adapter_id === "string" ? profile.adapter_id : undefined,
+    profileSourceAgent:
+      isRecord(profile?.adapter_binding) &&
+      typeof profile.adapter_binding.source_agent === "string"
+        ? profile.adapter_binding.source_agent
+        : undefined,
+    profileRegistryEntryDigest:
+      isRecord(profile?.adapter_binding) &&
+      typeof profile.adapter_binding.registry_entry_digest === "string"
+        ? profile.adapter_binding.registry_entry_digest
+        : undefined,
     profileTarget:
       typeof profile?.target === "string" ? profile.target : undefined,
     profileHarness:

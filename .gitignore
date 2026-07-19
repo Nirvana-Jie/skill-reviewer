@@ -41,5 +41,6 @@ skill-reviewer-workspace/
 /docs/*
 !/docs/architecture.md
 !/docs/validation.md
+!/docs/agent-trace-protocols.md
 /diagrams/
 /output/

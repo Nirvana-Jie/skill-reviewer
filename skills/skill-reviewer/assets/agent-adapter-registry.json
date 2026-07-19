@@ -1,0 +1,259 @@
+{
+  "contract": "skill-reviewer.agent-adapter-registry",
+  "schema_version": "1.0.0",
+  "adapters": [
+    {
+      "id": "openai.codex-cli.exec-jsonl",
+      "source_agent": {
+        "id": "openai.codex-cli",
+        "product": "Codex CLI",
+        "distribution": "codex"
+      },
+      "source_format": {
+        "id": "codex.exec-jsonl",
+        "transport": "stdio",
+        "framing": "jsonl",
+        "contract_version": "cli@0.144.5",
+        "stability": "version-pinned",
+        "official_sources": [
+          "https://developers.openai.com/codex/noninteractive",
+          "https://github.com/openai/codex/blob/0fb559f0f6e231a88ac02ea002d3ecd248e2b515/codex-rs/exec/src/exec_events.rs"
+        ]
+      },
+      "evidence_authority": "primary",
+      "terminal_authority": "event-and-process",
+      "implementation": {
+        "execution": "implemented",
+        "maturity": "canary-verified"
+      },
+      "runtime": {
+        "adapter_module": "codex-exec-jsonl",
+        "default_executable": "codex",
+        "inherited_environment": ["CODEX_HOME"],
+        "version_policy": {
+          "kind": "exact-token",
+          "value": "0.144.5"
+        }
+      },
+      "profile": {
+        "target": "codex-cli",
+        "harness": "codex-exec-jsonl",
+        "dispatch_observation": "process_spawn",
+        "capture_source": "provider_stream",
+        "source_artifact": "agent-source-events.jsonl",
+        "source_format": "codex-exec-jsonl-v1",
+        "stderr_artifact": "agent-stderr.log",
+        "required_capabilities": ["jsonl-agent-events"],
+        "full_access_capability": "danger-full-access"
+      },
+      "capabilities": {
+        "lifecycle": "exact",
+        "final_text": "exact",
+        "tool_calls": "paired-by-id",
+        "tool_correlation_key": "item.id",
+        "usage": "conditional"
+      },
+      "supplemental_sources": [
+        {
+          "channel": "hook",
+          "format": "codex.hooks-v1",
+          "contract_stability": "provisional",
+          "implementation": "not-implemented",
+          "correlation_to_primary": "not-established",
+          "terminal_authority": false,
+          "official_source": "https://github.com/openai/codex/blob/0fb559f0f6e231a88ac02ea002d3ecd248e2b515/codex-rs/hooks/schema/generated/pre-tool-use.command.input.schema.json"
+        }
+      ]
+    },
+    {
+      "id": "anthropic.claude-code.stream-json",
+      "source_agent": {
+        "id": "anthropic.claude-code",
+        "product": "Claude Code",
+        "distribution": "claude"
+      },
+      "source_format": {
+        "id": "claude.stream-json",
+        "transport": "stdio",
+        "framing": "jsonl",
+        "contract_version": "cli@2.1.215",
+        "stability": "version-pinned",
+        "official_sources": [
+          "https://code.claude.com/docs/en/headless"
+        ]
+      },
+      "evidence_authority": "primary",
+      "terminal_authority": "event-and-process",
+      "implementation": {
+        "execution": "implemented",
+        "maturity": "canary-verified"
+      },
+      "runtime": {
+        "adapter_module": "claude-stream-json",
+        "default_executable": "claude",
+        "inherited_environment": ["CLAUDE_CONFIG_DIR"],
+        "version_policy": {
+          "kind": "exact-token",
+          "value": "2.1.215"
+        }
+      },
+      "profile": {
+        "target": "claude-code",
+        "harness": "claude-stream-json",
+        "dispatch_observation": "process_spawn",
+        "capture_source": "provider_stream",
+        "source_artifact": "agent-source-events.jsonl",
+        "source_format": "claude-stream-json-v1",
+        "stderr_artifact": "agent-stderr.log",
+        "required_capabilities": ["source-event-stream"]
+      },
+      "capabilities": {
+        "lifecycle": "exact",
+        "final_text": "exact",
+        "tool_calls": "paired-by-id",
+        "tool_correlation_key": "tool_use.id",
+        "usage": "conditional"
+      },
+      "supplemental_sources": [
+        {
+          "channel": "hook",
+          "format": "claude-code.hooks-v1",
+          "contract_stability": "provisional",
+          "implementation": "not-implemented",
+          "correlation_to_primary": "not-established",
+          "terminal_authority": false,
+          "official_source": "https://code.claude.com/docs/en/hooks"
+        }
+      ]
+    },
+    {
+      "id": "google.gemini-cli.stream-json",
+      "source_agent": {
+        "id": "google.gemini-cli",
+        "product": "Gemini CLI",
+        "distribution": "gemini"
+      },
+      "source_format": {
+        "id": "gemini.stream-json",
+        "transport": "stdio",
+        "framing": "jsonl",
+        "contract_version": "source@acae7124bdd849e554eaa5e090199a0cf08cd782",
+        "stability": "version-pinned",
+        "official_sources": [
+          "https://github.com/google-gemini/gemini-cli/blob/acae7124bdd849e554eaa5e090199a0cf08cd782/docs/cli/headless.md",
+          "https://github.com/google-gemini/gemini-cli/blob/acae7124bdd849e554eaa5e090199a0cf08cd782/packages/core/src/output/types.ts"
+        ]
+      },
+      "evidence_authority": "primary",
+      "terminal_authority": "event-and-process",
+      "implementation": {
+        "execution": "not-implemented",
+        "maturity": "researched"
+      },
+      "runtime": {
+        "adapter_module": null,
+        "default_executable": "gemini",
+        "inherited_environment": []
+      },
+      "profile": null,
+      "capabilities": {
+        "lifecycle": "documented",
+        "tool_calls": "paired-by-id",
+        "tool_correlation_key": "tool_id"
+      },
+      "supplemental_sources": [
+        {
+          "channel": "hook",
+          "format": "gemini-cli.hooks-v1",
+          "contract_stability": "provisional",
+          "implementation": "not-implemented",
+          "correlation_to_primary": "not-established",
+          "terminal_authority": false,
+          "official_source": "https://geminicli.com/docs/hooks/reference/"
+        }
+      ]
+    },
+    {
+      "id": "github.copilot-cli.jsonl",
+      "source_agent": {
+        "id": "github.copilot-cli",
+        "product": "GitHub Copilot CLI",
+        "distribution": "copilot"
+      },
+      "source_format": {
+        "id": "copilot.cli-jsonl",
+        "transport": "stdio",
+        "framing": "jsonl",
+        "contract_version": "unpublished-wire-schema",
+        "stability": "provisional",
+        "official_sources": [
+          "https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-programmatic-reference"
+        ]
+      },
+      "evidence_authority": "primary-raw-only",
+      "terminal_authority": "process-only",
+      "implementation": {
+        "execution": "not-implemented",
+        "maturity": "researched"
+      },
+      "runtime": {
+        "adapter_module": null,
+        "default_executable": "copilot",
+        "inherited_environment": []
+      },
+      "profile": null,
+      "capabilities": {
+        "lifecycle": "unknown",
+        "tool_calls": "unknown",
+        "wire_schema": "not-publicly-frozen"
+      },
+      "supplemental_sources": [
+        {
+          "channel": "hook",
+          "format": "copilot-cli.hooks-v1",
+          "contract_stability": "provisional",
+          "implementation": "not-implemented",
+          "correlation_to_primary": "not-established",
+          "terminal_authority": false,
+          "official_source": "https://docs.github.com/en/copilot/reference/hooks-reference"
+        }
+      ]
+    },
+    {
+      "id": "opencode.cli.run-json",
+      "source_agent": {
+        "id": "opencode.cli",
+        "product": "OpenCode",
+        "distribution": "opencode"
+      },
+      "source_format": {
+        "id": "opencode.run-json",
+        "transport": "stdio",
+        "framing": "jsonl",
+        "contract_version": "source@78587c141bbac2c60b33c277359ba635b3410750",
+        "stability": "experimental",
+        "official_sources": [
+          "https://github.com/anomalyco/opencode/blob/78587c141bbac2c60b33c277359ba635b3410750/packages/opencode/src/cli/cmd/run.ts"
+        ]
+      },
+      "evidence_authority": "primary-reduced",
+      "terminal_authority": "process-only",
+      "implementation": {
+        "execution": "not-implemented",
+        "maturity": "researched"
+      },
+      "runtime": {
+        "adapter_module": null,
+        "default_executable": "opencode",
+        "inherited_environment": []
+      },
+      "profile": null,
+      "capabilities": {
+        "lifecycle": "reduced",
+        "tool_calls": "paired-by-id",
+        "tool_correlation_key": "part.callID"
+      },
+      "supplemental_sources": []
+    }
+  ]
+}

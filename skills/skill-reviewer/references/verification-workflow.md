@@ -17,9 +17,11 @@ retained outputs instead of reproducing schemas in prose.
 3. Choose one stage: bounded `development` diagnosis, complete `selection`, or
    one `audit`. Selection and audit require the accepted old Skill.
 4. Create a fresh workspace outside candidate and baseline roots.
-5. Supply a canonical execution profile outside all three roots. It declares
-   executor, harness observation, Trace adapter/source, capabilities, isolation,
-   and paired sampling.
+5. Supply a canonical execution profile outside all three roots. For a
+   registered process adapter, declare its exact `adapter_id`, isolation, and
+   paired sampling; the compiler derives target, harness, source format, and
+   minimum capabilities from the bundled registry. Native hosts declare those
+   fields directly.
 6. Confirm cost and permissions. Network, secrets, external writes, dependency
    installation, or `danger-full-access` require explicit authority.
 
@@ -44,24 +46,28 @@ answer-key-free Skill snapshots, and isolated inputs. Never edit them in place.
 Every `case × arm × repeat` is an independent evidence cell. It must bind:
 
 - the sanitized assignment and execution-profile digest;
-- a real harness/provider dispatch receipt;
-- one contiguous, provider-neutral `agent-trace.jsonl` without private
+- a real harness/Agent dispatch receipt;
+- one contiguous, source-neutral `agent-trace.jsonl` without private
   reasoning;
 - source events when the profile requires them;
 - finalized execution metadata and declared output artifacts.
 
-For a complete local Codex plan:
+For a complete local plan backed by an implemented registered adapter:
 
 ```bash
-python3 scripts/run_codex_eval_plan.py \
+node scripts/run_agent_eval.mjs plan \
   --workspace <fresh-workspace>
 ```
 
-Pass `--full-access` only after the user explicitly authorizes that local
-capability and the locked profile declares it. Provider authentication or
-service failure remains failed evidence; never convert it into a pass.
+The adapter and any full-access capability must already be authorized and
+locked by compilation. Runtime options may assert `--adapter ID`, choose an
+equivalent version-pinned executable with `--agent-bin`, or narrow cost and
+timeout; they cannot add authority. The first cell freezes those operational
+choices in the per-run runtime binding, and every paired cell must match it.
+Agent authentication or service failure remains failed evidence; never convert
+it into a pass.
 
-Provider children inherit only a minimal safe environment. Use repeatable
+Agent children inherit only a minimal safe environment. Use repeatable
 `--pass-env NAME` for required non-secret controls and `--credential-env NAME`
 for credentials. Never pass a secret through `--pass-env`: declared credential
 values are redacted from retained artifacts and any observed leak fails the

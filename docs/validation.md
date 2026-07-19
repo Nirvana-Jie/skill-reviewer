@@ -1,88 +1,73 @@
 # Validation record
 
-This record preserves the result boundary for the script and Dashboard
-governance change. It is maintainer evidence and is not installed as Agent
-context.
+This record preserves the current result boundary for the generic Agent runner,
+adapter registry, and Dashboard provenance change. It is maintainer evidence and
+is not installed as Agent context.
 
 ## Code under test
 
-- Final deterministic gates and Codex canary commit:
-  `9ef9972be0f1f81cccb4b6f096ff4bae7555cfc4`.
-- Claude fail-closed canary commit:
-  `a4915dc4483c36038cce014d0484b33ef798cbbb`.
 - Branch: `codex/dashboard-decision-first-ui`
 - Date: 2026-07-19 (Asia/Shanghai)
-- Local retained roots:
-  `/private/tmp/skill-reviewer-real-canary-9ef9972` and
-  `/private/tmp/skill-reviewer-real-canary-a4915dc`.
+- Execution API: `scripts/run_agent_eval.mjs`
+- Registry: `assets/agent-adapter-registry.json`
 
-The retained workspace is intentionally not committed: repository policy
-forbids generated Eval workspaces and provider state. The digests below make
-the local record independently checkable while it remains present.
+Generated Eval workspaces and Agent state were ephemeral and are intentionally
+not committed. Repository policy forbids retaining credentials, CLI state, or
+generated run workspaces.
 
 ## Deterministic quality gates
 
-The repository passed the pinned pnpm install, full Vitest suite, Dashboard
-typecheck and production build, Skill package lint, Eval Manifest JSON parse,
-all-script Python compilation, diff hygiene, deterministic Dashboard packaging,
-committed-manifest comparison, and safe extraction check.
+The worktree passed:
 
-- Vitest: 28 files; 27 passed, 1 skipped; 339 tests; 337 passed, 2 skipped.
+- `pnpm test`: 30 files; 29 passed, 1 explicitly skipped; 360 tests; 358 passed,
+  2 explicitly skipped;
+- Dashboard TypeScript checking and production build;
+- all current Python scripts through `py_compile` and all MJS runtime files
+  through `node --check`;
+- Skill package lint, Eval Manifest JSON parsing, and `git diff --check`;
+- deterministic Dashboard packaging and committed-manifest comparison.
+
+The repository contains no Python unittest cases and no local snapshot validator;
+neither no-op nor deleted commands are represented as quality evidence.
+
 - Skill package lint digest:
-  `16528f9861d994ca3955db6f51fb349f4843a80f681d3f2523d8ab28259e7c65`.
+  `e54261fd81d26c4220ec7856f901d2dfb09608f7469dd59311f6360c793035c9`
 - Dashboard tree SHA-256:
-  `0c2878b18325f09ff8bc4249a0b6694279c6a50660e3974addea28d80071ade4`
+  `fa8b1f1fad2a386b3fdb679ddf6df0918dff6a8f14387b8b59e630709b5997e5`
 - Dashboard archive SHA-256:
-  `5156276022e9b1d60889ce70d8c27207878af79ebe08f8b1790e72452cbab41d`
+  `0d2ff7aa65bf38277bfe856c78518c51d245103211113139e94f0fd4ad392040`
 
-## Real provider canary
+## Real Agent canary
 
-The opt-in `dashboard/src/real-agent-trace.e2e.test.ts` was run separately for
-each provider against the commit above. It compiles a fresh locked development
-case, invokes the real local CLI, retains the provider stream and canonical
-Trace, grades the result, projects Dashboard data, validates the schema, and
-renders the Trace UI.
+The opt-in `dashboard/src/real-agent-trace.e2e.test.ts` was run for both
+implemented adapters in one invocation:
 
-### Codex — passed on the final script boundary
+```bash
+SKILL_REVIEWER_REAL_AGENT_E2E=codex,claude \
+  pnpm exec vitest run dashboard/src/real-agent-trace.e2e.test.ts
+```
 
-- Test duration: 43.95 seconds; provider duration: 15.101 seconds.
-- Run: `run-b8f11cf7bd0f3b386690`.
-- Execution status / exit code: `completed` / `0`.
-- Source events / normalized events: `9` / `9`.
-- Credential leak count: `0`.
-- Source SHA-256:
-  `3076ab0d6911ecd99230773942923750b92886c5523acbee9b2ce1f3b5e64c0a`.
-- Trace SHA-256:
-  `7545dab997e58ed91f910181b3c7283d5096745c3dfc2e6e99336652818f332d`.
-- Verification evidence SHA-256:
-  `297cacaf787906a2fbab987abe764c8c545886236deca890eddd733f8efb96df`.
-- Dashboard data SHA-256:
-  `9be96390df673ee773cc0d348e873a4ef8cdf7cdf9e50808d6bf51745f0af50c`.
+Result: 1 file passed, 2/2 tests passed, total duration 62.36 seconds after the
+version-policy, runtime-binding, paired-cancellation, and tool-correlation fixes.
 
-### Claude — external authentication blocked, failed closed
+Each test compiled a fresh locked development case from a minimal registry-based
+profile, invoked the real local CLI, retained and normalized the source stream,
+graded the output, projected Dashboard data, validated adapter/source/digest
+bindings, rendered the Trace UI, and expanded the real marker event. The
+executable adapters now fail closed outside Codex CLI `0.144.5` and Claude Code
+`2.1.215`; a per-run binding also holds all paired cells to one executable
+digest and operational envelope. Codex and Claude Code are therefore marked
+`canary-verified` only for these exact adapter/version contracts.
 
-- Provider duration: 5.367 seconds.
-- Run: `run-8e0d6cbbb2ab9d583c32`.
-- Execution status / exit code: `failed` / `1`.
-- Provider init reported `apiKeySource: none`; provider result reported HTTP
-  `401`, `terminal_reason: api_error`, invalid authentication credentials, and
-  total cost USD `0`.
-- Source events / normalized events: `5` / `4`.
-- Credential leak count: `0`.
-- Source SHA-256:
-  `abe6c021b84f6dc9fd34e54baf276682e8856e8f49fefe282eeef0b5275f3010`.
-- Trace SHA-256:
-  `6d5a0bd238db138a7441fa3b296176d6ed4963ae43bf6c0d6f8d4de0401a5301`.
-
-The adapter retained a complete, bound failure Trace and returned non-zero; it
-did not manufacture output, grading evidence, or Dashboard success. A real
-Claude success canary requires the user to restore local Claude authentication.
+Gemini CLI, GitHub Copilot CLI, and OpenCode remain `not-implemented` execution
+entries. Their registry records preserve researched source identity, protocol
+stability, and evidence limits; they are not presented as executable support.
+OpenTelemetry GenAI is telemetry rather than an executing Agent and therefore
+stays outside the execution registry.
 
 ## Claim boundary
 
-This is a public development canary for execution and presentation plumbing.
-It proves the final Codex end-to-end path on this machine. The Claude record
-proves fail-closed behavior on the stated earlier commit; the final boundary
-refactor received deterministic coverage but was not presented as a successful
-Claude run. Neither record is an opaque audit, release authorization, or
-general Skill quality claim.
+This is a public development canary for execution and presentation plumbing. It
+does not prove opaque-audit behavior, authorize release, or establish that any
+arbitrary Skill is high quality. A future Agent version or source-format change
+must be revalidated before its adapter maturity is retained.

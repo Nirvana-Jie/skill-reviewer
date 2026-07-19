@@ -15,6 +15,7 @@ from typing import Any
 
 from skill_eval_authority import (
     compile_manifest,
+    prepare_agent_cell,
     reject_json_constant,
     require_finite_json,
 )
@@ -83,6 +84,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     dispatch_parser.add_argument("--dispatch-id", required=True)
     dispatch_parser.add_argument("--worker-id", required=True)
     dispatch_parser.add_argument("--batch-id")
+    prepare_parser = subparsers.add_parser(
+        "prepare-agent-cell",
+        help="Verify one locked execution cell and its explicit Agent adapter.",
+    )
+    prepare_parser.add_argument("--workspace", type=Path, required=True)
+    prepare_parser.add_argument("--assignment", type=Path, required=True)
+    prepare_parser.add_argument("--adapter-id", required=True)
     trace_parser = subparsers.add_parser(
         "trace-event",
         help="Append one observable Agent event to the bound execution trace.",
@@ -100,6 +108,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--capture-source",
         help="Lowercase adapter slug; defaults to the locked execution profile.",
     )
+    trace_batch_parser = subparsers.add_parser(
+        "trace-events",
+        help="Append a validated JSON array of observable Agent events from stdin.",
+    )
+    trace_batch_parser.add_argument("--workspace", type=Path, required=True)
+    trace_batch_parser.add_argument("--assignment", type=Path, required=True)
+    trace_batch_parser.add_argument("--capture-source")
     finalize_parser = subparsers.add_parser(
         "finalize-execution",
         help="Finalize the append-only Agent trace and write execution.json.",
@@ -112,6 +127,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         required=True,
     )
     finalize_parser.add_argument("--metrics-json", default="{}")
+    finalize_parser.add_argument("--source-trace-json")
     finalize_parser.add_argument(
         "--forbidden-action", action="append", dest="forbidden_actions", default=[]
     )
@@ -178,6 +194,12 @@ def main(argv: list[str] | None = None) -> int:
                 worker_id=args.worker_id,
                 batch_id=args.batch_id,
             )
+        elif args.command == "prepare-agent-cell":
+            result = prepare_agent_cell(
+                assignment_path=args.assignment,
+                workspace=args.workspace,
+                adapter_id=args.adapter_id,
+            )
         elif args.command == "trace-event":
             result = record_trace_event(
                 assignment_path=args.assignment,
@@ -189,6 +211,74 @@ def main(argv: list[str] | None = None) -> int:
                 artifact_refs=args.artifact_refs,
                 capture_source=args.capture_source,
             )
+        elif args.command == "trace-events":
+            try:
+                raw_events = json.loads(
+                    sys.stdin.read(), parse_constant=reject_json_constant
+                )
+                require_finite_json(raw_events, "trace events")
+            except (json.JSONDecodeError, ValueError, ManifestError) as error:
+                raise ManifestError(
+                    f"trace events stdin must be finite JSON: {error}"
+                ) from error
+            if not isinstance(raw_events, list):
+                raise ManifestError("trace events stdin must be a JSON array")
+            normalized_events: list[dict[str, Any]] = []
+            for index, event in enumerate(raw_events):
+                if not isinstance(event, dict):
+                    raise ManifestError(f"trace events[{index}] must be an object")
+                unknown = sorted(
+                    set(event)
+                    - {"kind", "summary", "status", "details", "artifact_refs"}
+                )
+                if unknown:
+                    raise ManifestError(
+                        f"trace events[{index}] contains unsupported fields: "
+                        + ", ".join(unknown)
+                    )
+                kind = event.get("kind")
+                summary = event.get("summary")
+                status = event.get("status", "completed")
+                details = event.get("details", {})
+                artifact_refs = event.get("artifact_refs", [])
+                if kind not in TRACE_EVENT_KINDS:
+                    raise ManifestError(f"trace events[{index}].kind is invalid")
+                if not isinstance(summary, str) or not summary.strip():
+                    raise ManifestError(f"trace events[{index}].summary is invalid")
+                if not isinstance(status, str) or not status:
+                    raise ManifestError(f"trace events[{index}].status is invalid")
+                if not isinstance(details, dict):
+                    raise ManifestError(f"trace events[{index}].details is invalid")
+                if not isinstance(artifact_refs, list) or not all(
+                    isinstance(value, str) for value in artifact_refs
+                ):
+                    raise ManifestError(
+                        f"trace events[{index}].artifact_refs is invalid"
+                    )
+                normalized_events.append(
+                    {
+                        "kind": kind,
+                        "summary": summary,
+                        "status": status,
+                        "details": details,
+                        "artifact_refs": artifact_refs,
+                    }
+                )
+            result = {
+                "events": [
+                    record_trace_event(
+                        assignment_path=args.assignment,
+                        workspace=args.workspace,
+                        kind=str(event["kind"]),
+                        summary=str(event["summary"]),
+                        status=str(event["status"]),
+                        details=dict(event["details"]),
+                        artifact_refs=list(event["artifact_refs"]),
+                        capture_source=args.capture_source,
+                    )
+                    for event in normalized_events
+                ]
+            }
         elif args.command == "finalize-execution":
             result = finalize_execution(
                 assignment_path=args.assignment,
@@ -198,6 +288,13 @@ def main(argv: list[str] | None = None) -> int:
                 forbidden_actions=args.forbidden_actions,
                 side_effects=args.side_effects,
                 capture_source=args.capture_source,
+                source_trace=(
+                    _parse_cli_object(
+                        args.source_trace_json, "--source-trace-json"
+                    )
+                    if args.source_trace_json is not None
+                    else None
+                ),
             )
         elif args.command == "decide":
             result = decide_candidate(

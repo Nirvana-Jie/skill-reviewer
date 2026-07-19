@@ -14,7 +14,7 @@
 `skill-reviewer` 解决三件事：
 
 - **Review（默认）**：只读检查触发条件、指令、资源、脚本、安全与可维护性，输出可直接修改的建议，不启动 Eval worker。
-- **Verify（显式）**：只有用户要求时，才编译合法 `evals/evals.json`，通过 native 或 provider adapter 分发候选版与基线版，并为 Dashboard 保留调度、标准 Trace、源事件和输出证据。
+- **Verify（显式）**：只有用户要求时，才编译合法 `evals/evals.json`，通过 native host 或已注册的 Agent adapter 分发候选版与基线版，并为 Dashboard 保留调度、标准 Trace、源事件和输出证据。
 - **Evolve**：只有用户要求时，才进入最多三轮的有界改进；Eval 在运行中保持不可变，最终发布始终由人确认。
 
 ## 快速开始
@@ -76,7 +76,7 @@ flowchart LR
    冲突会让实验无效，而不是让 Skill 背锅。
 4. **无效 Manifest 阻塞发布**：存在但不合法的 Eval 不会被静默跳过。
 5. **Manifest 不是 worker 凭据**：`evals.json` 只声明执行单元；只有保留的
-   provider/harness 调度凭据，才能在对应信任边界内证明该单元确实被启动。
+   Agent/harness 调度凭据，才能在对应信任边界内证明该单元确实被启动。
 
 ### 三个评测阶段
 
@@ -105,7 +105,7 @@ flowchart LR
 ## 真实 Eval 与持续改进
 
 严格 Manifest 位于 `<skill>/evals/evals.json`。仅完成编译不会启动 Agent；
-主 Agent 必须使用 native host surface 或 provider adapter。每个 executor
+主 Agent 必须使用 native host surface 或已注册 Agent adapter。每个 executor
 仍然只接收一个 Case、一个实验臂和一次 repeat：
 
 ```mermaid
@@ -124,27 +124,31 @@ flowchart TB
     P -- "是" --> A["一次性 Audit"]
 ```
 
-真实 Trace 只记录可观察行为：Agent 消息、文件读取、工具调用、命令、退出码、错误、耗时和产物引用；不会记录或展示模型私有思维链。Provider 事件会先脱敏并归一化，再进入 grader 和 Dashboard；因此接入新 Agent 只需增加 adapter 与 execution profile，不需要改 Trace UI。仓库内置 native/external harness、Codex CLI 和 Claude Code 路径。
+真实 Trace 只记录可观察行为：Agent 消息、文件读取、工具调用、命令、退出码、错误、耗时和产物引用；不会记录或展示模型私有思维链。来源 Agent 事件会先脱敏并归一化，再进入 grader 和 Dashboard；因此接入新 Agent 只需增加注册表项与 source adapter，不需要改 Trace UI。闭合的一方注册表分别记录来源身份、wire contract 稳定性、实现成熟度和证据权威；“已调研”不会被偷换成“可执行支持”。
 
-对于已编译的 `codex-cli` profile，可以用一个命令机械地成对分发全部
-实验臂，并在所有 case/repeat batch 完成后统一评分：
+任何已编译且具备已实现 adapter 的 profile，都通过同一个命令机械地成对
+分发全部实验臂，并在所有 case/repeat batch 完成后统一评分：
 
 ```bash
-python3 skills/skill-reviewer/scripts/run_codex_eval_plan.py \
-  --workspace /tmp/skill-reviewer-run \
-  --full-access
+node skills/skill-reviewer/scripts/run_agent_eval.mjs plan \
+  --workspace /tmp/skill-reviewer-run
 ```
 
-Provider 子进程只接收最小环境。普通必要变量使用可重复的
+adapter 在编译时锁定；运行参数只能断言或收窄权限，不能替换它。可用
+`node skills/skill-reviewer/scripts/run_agent_eval.mjs adapters list` 查看
+已实现与仅完成调研的格式。当前只有 Codex CLI `0.144.5` 与 Claude Code
+`2.1.215` 是 `canary-verified` 执行 adapter；Gemini CLI、GitHub Copilot CLI
+与 OpenCode 仅完成调研并明确标为 `not-implemented`，不会靠猜测进入发布证据。
+各来源 Hook 格式也是带来源的调研记录，不冒充已实现 parser。Agent 子进程只接收最小环境。普通必要变量使用可重复的
 `--pass-env NAME`；API Key 或其它密钥只能使用可重复的
 `--credential-env NAME`。声明过的凭据会从留存产物中移除，任何可观察泄漏
 都会使本次执行失败。
 
 Native subAgent 仍由 host 调度；harness 必须在行为事件之前记录真实的 host
 dispatch ID 和 worker/thread ID。该凭据可以防止 profile-only 的界面误判，
-但在没有 provider 签名 API 时仍属于可信 harness 证据，不是密码学证明。
+但在没有来源签名 API 时仍属于可信 harness 证据，不是密码学证明。
 
-真实 provider canary 默认不运行，因为它可能需要本机认证、网络和模型费用。
+真实 Agent canary 默认不运行，因为它可能需要本机认证、网络和模型费用。
 下面的命令会让已安装 CLI 走完整的“编译 → 进程 → 源事件 → 评分 →
 Dashboard 投影”链路，并实际挂载 Trace 页面、展开包含真实 marker 的事件：
 
@@ -235,8 +239,8 @@ python3 -m json.tool skills/skill-reviewer/evals/evals.json >/dev/null
 ├── skills/skill-reviewer/   # skills add 安装的完整 Skill
 │   ├── SKILL.md
 │   ├── references/          # 4 份按分支加载的模型 reference
-│   ├── assets/              # 机器契约与固定 UI manifest
-│   ├── scripts/             # linter、runtime、executor、Dashboard launcher
+│   ├── assets/              # 机器契约、Agent 注册表与固定 UI manifest
+│   ├── scripts/             # linter、权威 runtime、通用 executor、Dashboard launcher
 │   └── evals/               # 单一可执行 Manifest 及其 fixture
 ├── dashboard/               # React / TypeScript / Vite 源码，dist 不入库
 ├── docs/                    # 维护者架构，不进入模型上下文
@@ -251,6 +255,7 @@ python3 -m json.tool skills/skill-reviewer/evals/evals.json >/dev/null
 - [显式验证流程](./skills/skill-reviewer/references/verification-workflow.md)
 - [有界持续进化](./skills/skill-reviewer/references/evolution-workflow.md)
 - [维护者架构](./docs/architecture.md)
+- [Agent Trace 协议调研](./docs/agent-trace-protocols.md)
 
 输出语言跟随请求；一份语言无关契约让中英文保持机器可比较。
 

@@ -830,6 +830,7 @@ describe("skill_eval_runtime compile", () => {
         root,
         "profiles/claude.json",
         JSON.stringify({
+          adapter_id: "anthropic.claude-code.stream-json",
           target: "claude-code",
           harness: "claude-stream-json",
           dispatch_observation: "process_spawn",
@@ -858,6 +859,7 @@ describe("skill_eval_runtime compile", () => {
       const plan = JSON.parse(result.stdout);
       expect(plan.execution_profile).toEqual(
         expect.objectContaining({
+          adapter_id: "anthropic.claude-code.stream-json",
           target: "claude-code",
           harness: "claude-stream-json",
           dispatch_observation: "process_spawn",
@@ -878,6 +880,125 @@ describe("skill_eval_runtime compile", () => {
       );
       expect(assignment.source_trace_artifact).toBe(
         "agent-source-events.jsonl",
+      );
+      expect(assignment.agent_adapter_id).toBe(
+        "anthropic.claude-code.stream-json",
+      );
+    });
+  });
+
+  it("requires an explicit adapter id for a provider source stream", () => {
+    fixture((root) => {
+      const { manifest, subject } = writeMinimalPackage(root);
+      const workspace = join(root, "run");
+      const executionProfile = write(
+        root,
+        "profiles/implicit-provider.json",
+        JSON.stringify({
+          target: "some-agent",
+          harness: "some-jsonl",
+          dispatch_observation: "process_spawn",
+          trace: {
+            capture_source: "provider_stream",
+            source: {
+              artifact: "agent-source-events.jsonl",
+              format: "some-jsonl-v1",
+            },
+          },
+          capabilities: ["source-event-stream"],
+          isolation: "local-unattested",
+          sampling: { mode: "agent-default", paired: true },
+        }),
+      );
+
+      const result = compile({
+        manifest,
+        subject,
+        workspace,
+        splits: ["development"],
+        executionProfile,
+      });
+
+      expect(result.status).toBe(2);
+      expect(result.stdout).toContain(
+        "execution_profile.adapter_id is required for a provider source stream",
+      );
+    });
+  });
+
+  it("expands a registered adapter without duplicating target and wire fields", () => {
+    fixture((root) => {
+      const { manifest, subject } = writeMinimalPackage(root);
+      const workspace = join(root, "run");
+      const executionProfile = write(
+        root,
+        "profiles/registered-agent.json",
+        JSON.stringify({
+          adapter_id: "anthropic.claude-code.stream-json",
+          isolation: "local-unattested",
+          sampling: { mode: "agent-default", paired: true },
+        }),
+      );
+
+      const result = compile({
+        manifest,
+        subject,
+        workspace,
+        splits: ["development"],
+        executionProfile,
+      });
+
+      expect(result.status, result.stderr || result.stdout).toBe(0);
+      const plan = JSON.parse(result.stdout);
+      expect(plan.execution_profile).toEqual(
+        expect.objectContaining({
+          adapter_id: "anthropic.claude-code.stream-json",
+          target: "claude-code",
+          harness: "claude-stream-json",
+          dispatch_observation: "process_spawn",
+          trace: {
+            capture_source: "provider_stream",
+            source: {
+              artifact: "agent-source-events.jsonl",
+              format: "claude-stream-json-v1",
+            },
+          },
+          capabilities: ["source-event-stream"],
+          adapter_binding: expect.objectContaining({
+            source_agent: "anthropic.claude-code",
+            registry_entry_digest: expect.stringMatching(/^[a-f0-9]{64}$/),
+          }),
+        }),
+      );
+    });
+  });
+
+  it("rejects profile fields that conflict with the registered adapter", () => {
+    fixture((root) => {
+      const { manifest, subject } = writeMinimalPackage(root);
+      const workspace = join(root, "run");
+      const executionProfile = write(
+        root,
+        "profiles/spoofed-agent.json",
+        JSON.stringify({
+          adapter_id: "anthropic.claude-code.stream-json",
+          target: "lookalike-agent",
+          isolation: "local-unattested",
+          sampling: { mode: "agent-default", paired: true },
+        }),
+      );
+
+      const result = compile({
+        manifest,
+        subject,
+        workspace,
+        splits: ["development"],
+        executionProfile,
+      });
+
+      expect(result.status).toBe(2);
+      expect(result.stdout).toContain(
+        "execution_profile.target does not match the registered agent adapter",
       );
     });
   });

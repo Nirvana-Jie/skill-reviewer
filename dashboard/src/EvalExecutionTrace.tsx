@@ -737,6 +737,12 @@ export function EvalExecutionTraceView({
             {selectedExecution?.trace?.source_trace_required === true && (
               <div><FileOutput size={14} /><span><small>{t("sourceTrace")}</small><strong>{selectedExecution.source_trace?.valid ? `${localizeValue(locale, selectedExecution.source_trace.adapter)} · ${shortDigest(selectedExecution.source_trace.digest)}` : t("notRecorded")}</strong></span></div>
             )}
+            {selectedExecution?.source_trace?.valid === true && (
+              <div><Bot size={14} /><span><small>{t("sourceAgent")}</small><strong>{selectedExecution.source_trace.source_agent ?? selectedExecution.source_trace.adapter} · {selectedExecution.source_trace.adapter_maturity ?? t("notRecorded")}</strong></span></div>
+            )}
+            {selectedExecution?.source_trace?.valid === true && (
+              <div><Fingerprint size={14} /><span><small>{t("adapterProvenance")}</small><strong>{selectedExecution.source_trace.parser_id ? `${selectedExecution.source_trace.parser_id}@${selectedExecution.source_trace.parser_version ?? "?"} · ${shortDigest(selectedExecution.source_trace.parser_digest)} · run ${shortDigest(selectedExecution.source_trace.runtime_binding_digest)}` : shortDigest(selectedExecution.source_trace.registry_entry_digest)}</strong></span></div>
+            )}
           </div>
 
           {!executor.dispatchBound && (

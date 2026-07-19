@@ -138,6 +138,20 @@ interface ValidAgentSourceTrace {
   source_event_count: number;
   retained_event_count: number;
   redaction: "private-reasoning-fields-removed";
+  source_agent?: string;
+  registry_entry_digest?: string;
+  runtime_binding_digest?: string;
+  agent_version?: string;
+  executable_digest?: string;
+  argv_digest?: string;
+  parser_id?: string;
+  parser_version?: string;
+  parser_digest?: string;
+  contract_urls?: string[];
+  adapter_maturity?: string;
+  source_contract_version?: string;
+  contract_stability?: string;
+  evidence_authority?: string;
 }
 
 interface InvalidAgentSourceTrace {
@@ -150,6 +164,20 @@ interface InvalidAgentSourceTrace {
   source_event_count?: number | null;
   retained_event_count?: number | null;
   redaction?: "private-reasoning-fields-removed" | null;
+  source_agent?: string | null;
+  registry_entry_digest?: string | null;
+  runtime_binding_digest?: string | null;
+  agent_version?: string | null;
+  executable_digest?: string | null;
+  argv_digest?: string | null;
+  parser_id?: string | null;
+  parser_version?: string | null;
+  parser_digest?: string | null;
+  contract_urls?: string[] | null;
+  adapter_maturity?: string | null;
+  source_contract_version?: string | null;
+  contract_stability?: string | null;
+  evidence_authority?: string | null;
 }
 
 export type AgentSourceTrace = ValidAgentSourceTrace | InvalidAgentSourceTrace;
@@ -456,6 +484,18 @@ export interface DashboardData {
     splits: DashboardCase["split"][];
     control_anchor?: "local/trusted" | null;
     execution_profile?: {
+      adapter_id?: string | null;
+      adapter_binding?: {
+        source_agent: string;
+        source_format: string;
+        source_contract_version: string;
+        contract_stability: string;
+        official_sources: string[];
+        evidence_authority: string;
+        implementation_maturity: string;
+        executable_version: string;
+        registry_entry_digest: string;
+      };
       target?: string;
       harness?: string;
       dispatch_observation?: "host_dispatch" | "process_spawn" | "external_harness";

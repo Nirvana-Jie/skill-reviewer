@@ -182,6 +182,9 @@ Before returning, ensure that:
 - `references/evolution-workflow.md` — bounded candidate search and audit.
 - `evals/evals.json` — executable cases and objectives.
 - `scripts/skill_eval_runtime.py` — compile, grade, decide, evolve, and project.
+- `assets/agent-adapter-registry.json` — source identity, protocol evidence,
+  executable support, and locked adapter profiles.
+- `scripts/run_agent_eval.mjs` — generic local Agent plan/cell execution.
 - `assets/dashboard-ui-bundle.json` — pinned optional UI artifact.
 
 When prose and an executable contract disagree, the executable contract blocks
