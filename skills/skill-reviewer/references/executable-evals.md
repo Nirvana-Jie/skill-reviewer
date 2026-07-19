@@ -6,6 +6,8 @@ revision is measurably better.
 
 Read `agent-trace-contract.md` before changing execution profiles, provider
 adapters, source retention, or Dashboard Trace consumption.
+Read `measurement-validity.md` before changing assertions, repeat policy,
+acceptance decisions, or the Dashboard verdict.
 
 `evals/evals.json` is an executable contract, not documentation. The lead agent
 compiles it into an immutable execution plan, dispatches the plan through the
@@ -51,6 +53,7 @@ false quality gate.
       "prompt": "A realistic user request.",
       "files": ["evals/fixtures/input.md"],
       "determinism": "deterministic",
+      "sampling": {"repeats": 1, "pairing": "paired"},
       "assertions": [
         {
           "id": "response-exists",
@@ -85,6 +88,12 @@ assignments. Every selected case needs at least one
 assertion and one objective. A primary objective needs a strictly positive
 `min_material_delta`; equal scores are not material improvement. External side
 effects remain denied for every case.
+
+`determinism` describes expected output variability; `sampling` independently
+declares the number of paired observations. Explicit sampling accepts 1–10
+repeats and only `pairing: paired`. Stochastic cases require at least three
+repeats. Legacy manifests retain the one-deterministic / three-stochastic
+fallback, but new and changed cases should state sampling explicitly.
 
 ## Splits and information boundaries
 
@@ -261,13 +270,18 @@ file/directory kind, read/execute permission bits, file bytes, and empty
 directories. Snapshot and isolated-input trees must remain read-only. Symlinks,
 hard links, special files, undeclared entries, and mode drift are rejected.
 
-Repeat policy is fixed:
+Repeat policy is explicit and validity-bearing:
 
-- deterministic case: one paired repeat;
-- stochastic case: three paired repeats;
-- both positive and negative paired directions across repeats: `inconclusive`.
+- `determinism` classifies output variability; it does not choose sample size;
+- `sampling.repeats` chooses 1–10 paired observations;
+- stochastic cases require at least three paired repeats;
+- legacy deterministic/stochastic cases fall back to one/three repeats and
+  record `sampling.source: legacy-determinism`;
+- both positive and negative paired directions make measurement `invalid`.
 
-Do not replace a direction disagreement with a majority vote.
+Do not replace a direction disagreement with a majority vote or attribute that
+experiment to candidate quality. Read `measurement-validity.md` for the
+normative decision order and evolution accounting.
 
 ## Assertion registry
 
@@ -284,6 +298,23 @@ Deterministic assertions run first and may be `must_pass` or `should_pass`:
 | `numeric_range` | `artifact`, optional `path`, `minimum` and/or `maximum` | Numeric bound |
 | `event_absent` | JSONL `artifact`, `event` | Forbidden event was not recorded |
 | `digest_equals` | `artifact`, `expected_sha256` | Exact artifact identity |
+
+Every selection/audit `must_pass` text assertion (`text_contains`,
+`text_not_contains`, `text_matches`, or `text_not_matches`) also declares:
+
+```json
+"calibration": {
+  "pass_examples": ["a known-good output that must satisfy the predicate"],
+  "fail_examples": ["a known-bad output that must fail the predicate"]
+}
+```
+
+The compiler applies the exact runtime predicate to every example before any
+worker starts. Missing calibration, false negatives, false positives, and
+invalid regexes are manifest failures. Calibration text stays in Eval
+authority and never reaches executor assignments or Dashboard projection.
+Prefer structured artifacts to prose matching when the behavior can be
+represented as typed data.
 
 `semantic_pair` is supplemental. It cannot replace a deterministic hard gate.
 Every case must therefore declare at least one deterministic `must_pass`
@@ -351,6 +382,13 @@ cases/<case-id>/<arm>/repeat-<N>/
 │   └── response.md
 └── events.jsonl                 # only when an assertion declares it
 ```
+
+The assignment distinguishes `artifact_ownership`. Task outputs are
+worker-owned and appear in `expected_artifacts`; `dispatch-receipt.json`,
+`agent-trace.jsonl`, the optional provider source stream, and `execution.json`
+are framework-owned and are created by the harness/adapter/finalizer. A
+framework artifact may still be asserted after finalization, but the worker is
+never asked to create the evidence envelope that proves its own execution.
 
 `agent-trace.jsonl` is the real Agent execution record. Each line is one
 observable event with a contiguous sequence number and bound run/case/arm/repeat
@@ -553,6 +591,13 @@ python3 scripts/start_skill_dashboard.py \
 re-grades retained artifacts before applying hard gates and Pareto rules. Later
 state transitions recompute the full decision core from its digested plan and
 evidence, so editing either evidence or decision JSON cannot authorize release.
+
+Grading and decision always apply three gates in order: evidence integrity,
+measurement validity, then candidate quality. `verification-evidence.json`
+projects per-case and aggregate oracle/sampling status. `decide` requires the
+`measurement:valid` hard gate before interpreting candidate assertion or
+objective outcomes. An invalid instrument produces an `invalid` experiment,
+not a Skill failure; an incomplete execution remains `inconclusive` evidence.
 
 The commands compile, grade, decide, and project. They do not spawn agents,
 modify the candidate skill, apply a patch, change evals, or approve a release.

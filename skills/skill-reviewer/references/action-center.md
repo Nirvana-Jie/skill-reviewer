@@ -141,6 +141,8 @@ The same command projects a required `review` read model for the Dashboard's
 default human-facing view. It is derived from, but does not replace, the
 immutable `spine`:
 
+- `run.measurement` answers whether oracle calibration and paired sampling are
+  valid before the candidate verdict is interpreted.
 - `review.decision` answers whether release is ready, blocked, awaiting audit,
   or still lacks a complete decision.
 - `review.blockers` groups one independent blocker per scenario. A failed
@@ -179,10 +181,26 @@ as a side drawer from Review Overview rather than as a competing verdict page;
 the Inspector renders only the currently selected evidence. None of these
 views is an independent acceptance engine.
 
-`project-dashboard` emits `schema_version: 2`. The client validates every item
+The projection does not duplicate raw decisions in an unused `iterations`
+array. Each retained round is represented once as a digest-bound `iteration`
+node in the audit spine, while `evolution.candidate_lineage` carries the compact
+cross-round ancestry summary. A richer trend projection should be added only
+when at least two valid rounds produce a reviewer-facing comparison; it must not
+add another default Overview panel.
+
+The Overview is validity-first: evidence integrity, then measurement validity,
+then candidate quality. If measurement is invalid or unverified, the primary
+message says the Skill was not judged and routes to Eval repair. It must not
+render candidate-failure language or a green release semantic in that state.
+
+`project-dashboard` emits `schema_version: 3`. The client validates every item
 in current decision-bearing nested collections before rendering, migrates only
-structurally complete unversioned projections, and never fabricates evidence
-to make legacy data pass. Fractional versions and versions without a registered
+structurally complete schema-v2/unversioned projections, and never fabricates
+positive measurement evidence to make legacy data pass. Migrated data is
+explicitly `unverified`; release eligibility, candidate attribution, and action
+availability are downgraded until a schema-v3 projection is regenerated.
+Aggregate run status must also equal the status derived from its case, Oracle,
+and sampling records. Fractional versions and versions without a registered
 migration are rejected. Unsupported or incomplete projections produce a
 regeneration page; an Error Boundary covers unexpected render failures.
 Execution evidence uses a discriminated diagnostic shape: `valid: true`
@@ -218,13 +236,14 @@ Attribution is a routing aid, not a new acceptance score:
 | Category | Examples | Normal owner |
 |---|---|---|
 | Skill | required assertion failure, unsafe behavior, objective regression, no material improvement | candidate author / lead Agent |
-| Eval | declared objective cannot be measured, metric contract missing | eval maintainer, after user confirmation |
+| Eval | oracle calibration failure, contradictory paired directions, declared objective cannot be measured, metric contract missing | eval maintainer, after user confirmation |
 | execution environment | bound input mismatch or harness/runtime failure | lead Agent / executor maintainer |
 | evidence | missing candidate or paired-baseline artifacts | lead Agent reruns the authorized plan |
 | human | Eval/threshold change, permission or scope expansion, irreducible ambiguity, final release/publish decision | user/reviewer |
 
 Prefer concrete retained signals. Do not assign Eval blame merely because a
-candidate failed. Do not call an incomplete or unbound run a Skill regression.
+candidate failed. Conversely, never assign Skill blame when measurement is
+invalid or unverified. Do not call an incomplete or unbound run a Skill regression.
 When multiple categories contribute, expose one primary category plus all
 contributing categories.
 
@@ -246,8 +265,10 @@ not human consent. If the audit would change Eval authority, execution-profile
 digest, permissions, dependency surface, or task scope, stop before binding and
 ask for that specific expansion.
 
-`propose_eval_change` may be available for rejected, inconclusive, or no-change
-selection evidence only when retained signals identify an Eval-design problem.
+`propose_eval_change` is the required next step for a quarantined
+measurement-invalid experiment. It may also be available for rejected,
+inconclusive, or no-change selection evidence only when retained signals
+identify an Eval-design problem.
 Do not offer it merely because a candidate failed. It only asks for a proposal.
 Applying that proposal needs explicit user confirmation, a new frozen eval
 identity, and a new evaluation cycle. Never mutate the current eval in place.

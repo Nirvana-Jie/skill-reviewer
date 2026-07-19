@@ -1,6 +1,7 @@
 export type DashboardSplit = "all" | "development" | "selection" | "audit";
 export type CaseStatusFilter = "all" | "passed" | "attention";
-export type DashboardCanvasView = "evidence" | "execution" | "diff" | "action";
+export type DashboardCanvasView = "review" | "changes" | "runs" | "audit";
+export type DashboardPanel = "none" | "evidence" | "action";
 export type DashboardDiffLayout = "split" | "unified";
 
 export interface DashboardViewState {
@@ -8,6 +9,7 @@ export interface DashboardViewState {
   caseStatus: CaseStatusFilter;
   query: string;
   canvasView: DashboardCanvasView;
+  panel: DashboardPanel;
   evidenceId: string | null;
   diffId: string | null;
   diffLayout: DashboardDiffLayout;
@@ -19,7 +21,8 @@ export const defaultDashboardViewState: DashboardViewState = {
   split: "all",
   caseStatus: "all",
   query: "",
-  canvasView: "evidence",
+  canvasView: "review",
+  panel: "none",
   evidenceId: null,
   diffId: null,
   diffLayout: "split",
@@ -35,11 +38,12 @@ const splitValues: DashboardSplit[] = [
 ];
 const caseStatusValues: CaseStatusFilter[] = ["all", "passed", "attention"];
 const canvasValues: DashboardCanvasView[] = [
-  "evidence",
-  "execution",
-  "diff",
-  "action",
+  "review",
+  "changes",
+  "runs",
+  "audit",
 ];
+const panelValues: DashboardPanel[] = ["none", "evidence", "action"];
 const diffLayoutValues: DashboardDiffLayout[] = ["split", "unified"];
 
 function enumValue<T extends string>(
@@ -59,10 +63,41 @@ function booleanValue(value: string | null): boolean {
   return value === "1" || value === "true";
 }
 
+function canvasValue(
+  value: string | null,
+  evidenceId: string | null,
+): DashboardCanvasView {
+  if (value && canvasValues.includes(value as DashboardCanvasView)) {
+    return value as DashboardCanvasView;
+  }
+
+  // Preserve old shared links while keeping transient action state out of the
+  // primary information architecture.
+  if (value === "execution") return "runs";
+  if (value === "diff") return "changes";
+  if (value === "evidence" && evidenceId) return "audit";
+  return "review";
+}
+
+function panelValue(
+  value: string | null,
+  legacyView: string | null,
+  evidenceId: string | null,
+): DashboardPanel {
+  if (value && panelValues.includes(value as DashboardPanel)) {
+    return value as DashboardPanel;
+  }
+  if (legacyView === "action") return "action";
+  if (legacyView === "evidence" && evidenceId) return "evidence";
+  return "none";
+}
+
 export function readDashboardViewState(fragment: string): DashboardViewState {
   const params = new URLSearchParams(
     fragment.startsWith("#") ? fragment.slice(1) : fragment,
   );
+  const evidenceId = boundedValue(params.get("node"), 320);
+  const legacyView = params.get("view");
   return {
     split: enumValue(params.get("split"), splitValues, "all"),
     caseStatus: enumValue(
@@ -71,8 +106,9 @@ export function readDashboardViewState(fragment: string): DashboardViewState {
       "all",
     ),
     query: boundedValue(params.get("q"), 160) ?? "",
-    canvasView: enumValue(params.get("view"), canvasValues, "evidence"),
-    evidenceId: boundedValue(params.get("node"), 320),
+    canvasView: canvasValue(legacyView, evidenceId),
+    panel: panelValue(params.get("panel"), legacyView, evidenceId),
+    evidenceId,
     diffId: boundedValue(params.get("diff"), 320),
     diffLayout: enumValue(params.get("layout"), diffLayoutValues, "split"),
     wrapLines: booleanValue(params.get("wrap")),
@@ -94,6 +130,7 @@ export function dashboardViewUrl(
     "caseStatus",
     "q",
     "view",
+    "panel",
     "node",
     "diff",
     "layout",
@@ -106,7 +143,8 @@ export function dashboardViewUrl(
   if (state.split !== "all") params.set("split", state.split);
   if (state.caseStatus !== "all") params.set("caseStatus", state.caseStatus);
   if (state.query) params.set("q", state.query);
-  if (state.canvasView !== "evidence") params.set("view", state.canvasView);
+  if (state.canvasView !== "review") params.set("view", state.canvasView);
+  if (state.panel !== "none") params.set("panel", state.panel);
   if (state.evidenceId) params.set("node", state.evidenceId);
   if (state.diffId) params.set("diff", state.diffId);
   if (state.diffLayout !== "split") params.set("layout", state.diffLayout);

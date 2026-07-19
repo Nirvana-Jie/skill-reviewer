@@ -60,6 +60,7 @@ import {
   type CaseStatusFilter,
   type DashboardCanvasView,
   type DashboardDiffLayout,
+  type DashboardPanel,
   type DashboardSplit,
   type DashboardViewState,
 } from "./dashboard-view-state";
@@ -195,6 +196,29 @@ function acceptsTextInput(target: EventTarget | null): boolean {
     target instanceof HTMLTextAreaElement ||
     (target instanceof HTMLElement && target.isContentEditable)
   );
+}
+
+const dialogFocusableSelector =
+  'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])';
+
+function dialogFocusables(root: HTMLElement | null): HTMLElement[] {
+  if (!root) return [];
+  const closedDetails = Array.from(
+    root.querySelectorAll<HTMLDetailsElement>("details:not([open])"),
+  );
+  return Array.from(
+    root.querySelectorAll<HTMLElement>(dialogFocusableSelector),
+  ).filter((element) => {
+    if (element.tabIndex < 0) return false;
+    if (element.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+    return closedDetails.every((details) => {
+      if (!details.contains(element)) return true;
+      const summary = Array.from(details.children).find(
+        (child) => child.tagName === "SUMMARY",
+      );
+      return summary === element || Boolean(summary?.contains(element));
+    });
+  });
 }
 
 function StatusChip({
@@ -632,7 +656,13 @@ function EvaluationStageFilter({
   );
 }
 
-function DisplayPreferences() {
+function DisplayPreferences({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
   const {
     locale,
     theme,
@@ -647,73 +677,139 @@ function DisplayPreferences() {
   const smallerScale = fontScaleOptions[scaleIndex - 1];
   const largerScale = fontScaleOptions[scaleIndex + 1];
   const percent = Math.round(fontScale * 100);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+
+    triggerRef.current?.focus();
+
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) {
+        onOpenChange(false);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        event.key.toLowerCase() === "k"
+      ) {
+        onOpenChange(false);
+        return;
+      }
+      if (event.key === "Escape") {
+        onOpenChange(false);
+        triggerRef.current?.focus();
+      }
+    };
+
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [onOpenChange, open]);
 
   return (
-    <div className="display-controls" aria-label={t("displayPreferences")}>
-      <div className="font-scale-control" role="group" aria-label={t("textSize")}>
-        <button
-          type="button"
-          aria-label={t("decreaseTextSize")}
-          title={t("decreaseTextSize")}
-          disabled={smallerScale === undefined}
-          onClick={() => smallerScale !== undefined && setFontScale(smallerScale)}
-        >
-          <span aria-hidden="true">A−</span>
-        </button>
-        <button
-          type="button"
-          className="font-scale-value"
-          aria-label={`${t("textSizeValue", { percent })}. ${t("resetTextSize")}`}
-          title={t("resetTextSize")}
-          onClick={() => setFontScale(1)}
-        >
-          {percent}%
-        </button>
-        <button
-          type="button"
-          aria-label={t("increaseTextSize")}
-          title={t("increaseTextSize")}
-          disabled={largerScale === undefined}
-          onClick={() => largerScale !== undefined && setFontScale(largerScale)}
-        >
-          <span aria-hidden="true">A+</span>
-        </button>
-      </div>
-      <div className="locale-control" role="group" aria-label={t("language")}>
-        <Languages size={13} aria-hidden="true" />
-        <button
-          type="button"
-          className={locale === "en" ? "is-active" : ""}
-          aria-label={t("switchToEnglish")}
-          aria-pressed={locale === "en"}
-          onClick={() => setLocale("en")}
-        >
-          EN
-        </button>
-        <button
-          type="button"
-          className={locale === "zh-CN" ? "is-active" : ""}
-          aria-label={t("switchToChinese")}
-          aria-pressed={locale === "zh-CN"}
-          onClick={() => setLocale("zh-CN")}
-        >
-          中
-        </button>
-      </div>
+    <div className="display-preferences" ref={menuRef}>
       <button
+        ref={triggerRef}
         type="button"
-        className="theme-control"
-        aria-label={
-          nextTheme === "dark" ? t("switchToDarkTheme") : t("switchToLightTheme")
-        }
-        title={
-          nextTheme === "dark" ? t("switchToDarkTheme") : t("switchToLightTheme")
-        }
-        onClick={() => setTheme(nextTheme)}
+        className="chrome-icon-button display-preferences-trigger"
+        aria-label={t("displayPreferences")}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        title={t("displayPreferences")}
+        onClick={() => onOpenChange(!open)}
       >
-        <span className="theme-swatch" aria-hidden="true" />
-        <span>{nextTheme === "dark" ? t("darkTheme") : t("lightTheme")}</span>
+        <SlidersHorizontal size={14} aria-hidden="true" />
       </button>
+      {open && (
+        <div
+          className="display-controls"
+          role="dialog"
+          aria-label={t("displayPreferences")}
+        >
+          <div
+            className="font-scale-control"
+            role="group"
+            aria-label={t("textSize")}
+          >
+            <button
+              type="button"
+              aria-label={t("decreaseTextSize")}
+              title={t("decreaseTextSize")}
+              disabled={smallerScale === undefined}
+              onClick={() =>
+                smallerScale !== undefined && setFontScale(smallerScale)
+              }
+            >
+              <span aria-hidden="true">A−</span>
+            </button>
+            <button
+              type="button"
+              className="font-scale-value"
+              aria-label={`${t("textSizeValue", { percent })}. ${t("resetTextSize")}`}
+              title={t("resetTextSize")}
+              onClick={() => setFontScale(1)}
+            >
+              {percent}%
+            </button>
+            <button
+              type="button"
+              aria-label={t("increaseTextSize")}
+              title={t("increaseTextSize")}
+              disabled={largerScale === undefined}
+              onClick={() =>
+                largerScale !== undefined && setFontScale(largerScale)
+              }
+            >
+              <span aria-hidden="true">A+</span>
+            </button>
+          </div>
+          <div className="locale-control" role="group" aria-label={t("language")}>
+            <Languages size={13} aria-hidden="true" />
+            <button
+              type="button"
+              className={locale === "en" ? "is-active" : ""}
+              aria-label={t("switchToEnglish")}
+              aria-pressed={locale === "en"}
+              onClick={() => setLocale("en")}
+            >
+              EN
+            </button>
+            <button
+              type="button"
+              className={locale === "zh-CN" ? "is-active" : ""}
+              aria-label={t("switchToChinese")}
+              aria-pressed={locale === "zh-CN"}
+              onClick={() => setLocale("zh-CN")}
+            >
+              中
+            </button>
+          </div>
+          <button
+            type="button"
+            className="theme-control"
+            aria-label={
+              nextTheme === "dark"
+                ? t("switchToDarkTheme")
+                : t("switchToLightTheme")
+            }
+            title={
+              nextTheme === "dark"
+                ? t("switchToDarkTheme")
+                : t("switchToLightTheme")
+            }
+            onClick={() => setTheme(nextTheme)}
+          >
+            <span className="theme-swatch" aria-hidden="true" />
+            <span>{nextTheme === "dark" ? t("darkTheme") : t("lightTheme")}</span>
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -797,10 +893,12 @@ export function EvidenceDashboard({
     initialView.caseStatus,
   );
   const [caseQuery, setCaseQuery] = useState(initialView.query);
-  const initialEvidenceId =
-    data.spine.some((node) => node.id === initialView.evidenceId)
-      ? (initialView.evidenceId ?? "")
-      : (data.spine[0]?.id ?? "");
+  const initialEvidenceIdIsValid = data.spine.some(
+    (node) => node.id === initialView.evidenceId,
+  );
+  const initialEvidenceId = initialEvidenceIdIsValid
+    ? (initialView.evidenceId ?? "")
+    : (data.spine[0]?.id ?? "");
   const [selectedId, setSelectedId] = useState(initialEvidenceId);
   const [expandedNodeIds, setExpandedNodeIds] = useState<Set<string>>(
     () => initialExpandedNodeIds(data.spine, initialEvidenceId),
@@ -817,15 +915,33 @@ export function EvidenceDashboard({
   const [canvasView, setCanvasView] = useState<CanvasView>(
     initialView.canvasView,
   );
-  const [archiveOpen, setArchiveOpen] = useState(
-    initialView.canvasView === "evidence" && Boolean(initialView.evidenceId),
+  const [panel, setPanel] = useState<DashboardPanel>(
+    initialView.panel === "evidence" && !initialEvidenceIdIsValid
+      ? "none"
+      : initialView.panel,
   );
+  const actionOpen = panel === "action";
   const workspaceLayout = useWorkspaceLayout(canvasView);
+  const evidencePanelIsOverlay =
+    panel === "evidence" &&
+    Boolean(selectedId) &&
+    (canvasView !== "audit" || workspaceLayout.layout.mode === "two");
+  const evidenceDrawerShouldBeModal =
+    panel === "evidence" &&
+    canvasView !== "audit" &&
+    workspaceLayout.layout.mode === "stacked";
   const [focusMode, setFocusMode] = useState(initialView.focusMode);
   const [commandsOpen, setCommandsOpen] = useState(false);
+  const [displayPreferencesOpen, setDisplayPreferencesOpen] = useState(false);
   const [notification, setNotification] = useState<string | null>(null);
   const caseSearchRef = useRef<HTMLInputElement>(null);
+  const inspectorRef = useRef<HTMLElement>(null);
   const inspectorBodyRef = useRef<HTMLDivElement>(null);
+  const actionDialogRef = useRef<HTMLElement>(null);
+  const actionCloseButtonRef = useRef<HTMLButtonElement>(null);
+  const actionReturnFocusRef = useRef<HTMLElement | null>(null);
+  const evidenceDrawerCloseButtonRef = useRef<HTMLButtonElement>(null);
+  const evidenceDrawerReturnFocusRef = useRef<HTMLElement | null>(null);
   const notificationTimerRef = useRef<number | undefined>(undefined);
   const previousViewRef = useRef<DashboardViewState | null>(null);
   const restoringHistoryRef = useRef(false);
@@ -996,17 +1112,17 @@ export function EvidenceDashboard({
       caseStatus,
       query: caseQuery,
       canvasView,
+      panel,
       evidenceId:
-        (canvasView === "evidence" && archiveOpen) || canvasView === "execution"
+        panel === "evidence" || canvasView === "runs" || canvasView === "audit"
           ? selectedId || null
           : null,
-      diffId: canvasView === "diff" ? selectedDiffId : null,
+      diffId: canvasView === "changes" ? selectedDiffId : null,
       diffLayout,
       wrapLines,
       focusMode,
     }),
     [
-      archiveOpen,
       canvasView,
       caseQuery,
       caseStatus,
@@ -1015,6 +1131,7 @@ export function EvidenceDashboard({
       selectedDiffId,
       selectedId,
       split,
+      panel,
       wrapLines,
     ],
   );
@@ -1071,8 +1188,8 @@ export function EvidenceDashboard({
     setCaseQuery("");
     revealEvidence(nodeId);
     setSelectedId(nodeId);
-    setArchiveOpen(true);
-    setCanvasView("evidence");
+    setPanel("evidence");
+    setCanvasView("audit");
   }, [revealEvidence]);
 
   const openEvidence = useCallback((node: SpineNode) => {
@@ -1081,9 +1198,36 @@ export function EvidenceDashboard({
     setCaseQuery("");
     revealEvidence(node.id);
     setSelectedId(node.id);
-    setArchiveOpen(true);
-    setCanvasView("evidence");
+    setPanel("evidence");
   }, [revealEvidence]);
+
+  const showCanvas = useCallback((view: CanvasView) => {
+    setPanel("none");
+    setCanvasView(view);
+  }, []);
+
+  const openCommands = useCallback(() => {
+    setPanel("none");
+    setDisplayPreferencesOpen(false);
+    setCommandsOpen(true);
+  }, []);
+
+  const updateDisplayPreferencesOpen = useCallback((open: boolean) => {
+    if (open) {
+      if (actionOpen || evidencePanelIsOverlay) setPanel("none");
+      setCommandsOpen(false);
+    }
+    setDisplayPreferencesOpen(open);
+  }, [actionOpen, evidencePanelIsOverlay]);
+
+  useEffect(() => {
+    if (
+      displayPreferencesOpen &&
+      (actionOpen || evidencePanelIsOverlay || commandsOpen)
+    ) {
+      setDisplayPreferencesOpen(false);
+    }
+  }, [actionOpen, commandsOpen, displayPreferencesOpen, evidencePanelIsOverlay]);
 
   const toggleEvidenceGroup = useCallback((node: SpineNode) => {
     const isExpanded = expandedNodeIds.has(node.id);
@@ -1114,8 +1258,8 @@ export function EvidenceDashboard({
 
   const openDiff = useCallback((id: string) => {
     setSelectedDiffId(id);
-    setCanvasView("diff");
-  }, []);
+    showCanvas("changes");
+  }, [showCanvas]);
 
   useEffect(() => {
     if (!visibleNodes.some((node) => node.id === selectedId)) {
@@ -1134,8 +1278,51 @@ export function EvidenceDashboard({
   }, [data.run.id]);
 
   useEffect(() => {
-    if (canvasView !== "diff") setFocusMode(false);
+    if (canvasView !== "changes") setFocusMode(false);
   }, [canvasView]);
+
+  useEffect(() => {
+    if (!actionOpen) return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    setCommandsOpen(false);
+    actionReturnFocusRef.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    actionCloseButtonRef.current?.focus();
+
+    const handleActionDialogKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setPanel("none");
+        return;
+      }
+      if (event.key !== "Tab") return;
+
+      const focusable = dialogFocusables(actionDialogRef.current);
+      if (focusable.length === 0) return;
+      const first = focusable[0]!;
+      const last = focusable[focusable.length - 1]!;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", handleActionDialogKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleActionDialogKeyDown);
+      document.body.style.overflow = previousOverflow;
+      const returnFocus = actionReturnFocusRef.current;
+      actionReturnFocusRef.current = null;
+      if (returnFocus?.isConnected) returnFocus.focus();
+    };
+  }, [actionOpen]);
 
   useEffect(() => {
     if (
@@ -1159,6 +1346,7 @@ export function EvidenceDashboard({
       previous.split === currentView.split &&
       previous.caseStatus === currentView.caseStatus &&
       previous.canvasView === currentView.canvasView &&
+      previous.panel === currentView.panel &&
       previous.evidenceId === currentView.evidenceId &&
       previous.diffId === currentView.diffId &&
       previous.diffLayout === currentView.diffLayout &&
@@ -1173,19 +1361,24 @@ export function EvidenceDashboard({
   useEffect(() => {
     const restoreView = () => {
       const next = readDashboardViewState(window.location.hash);
+      const nextEvidenceIdIsValid = data.spine.some(
+        (node) => node.id === next.evidenceId,
+      );
       restoringHistoryRef.current = true;
       setSplit(next.split);
       setCaseStatus(next.caseStatus);
       setCaseQuery(next.query);
       setCanvasView(next.canvasView);
-      setArchiveOpen(
-        next.canvasView === "evidence" && Boolean(next.evidenceId),
+      setPanel(
+        next.panel === "evidence" && !nextEvidenceIdIsValid
+          ? "none"
+          : next.panel,
       );
       setDiffLayout(next.diffLayout);
       setWrapLines(next.wrapLines);
       setFocusMode(next.focusMode);
       setSelectedId(
-        next.evidenceId && data.spine.some((node) => node.id === next.evidenceId)
+        next.evidenceId && nextEvidenceIdIsValid
           ? next.evidenceId
           : (data.spine[0]?.id ?? ""),
       );
@@ -1203,7 +1396,8 @@ export function EvidenceDashboard({
     const handleShortcut = (event: globalThis.KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        setCommandsOpen((current) => !current);
+        if (commandsOpen) setCommandsOpen(false);
+        else openCommands();
         return;
       }
       if (
@@ -1212,6 +1406,7 @@ export function EvidenceDashboard({
         !event.ctrlKey &&
         !event.altKey &&
         !commandsOpen &&
+        panel === "none" &&
         !acceptsTextInput(event.target)
       ) {
         event.preventDefault();
@@ -1220,7 +1415,7 @@ export function EvidenceDashboard({
     };
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
-  }, [commandsOpen]);
+  }, [commandsOpen, openCommands, panel]);
 
   useEffect(
     () => () => window.clearTimeout(notificationTimerRef.current),
@@ -1229,7 +1424,15 @@ export function EvidenceDashboard({
 
   const selected =
     data.spine.find((node) => node.id === selectedId) ?? visibleNodes[0];
-  const inspectorVisible = archiveOpen && Boolean(selected);
+  const inspectorVisible = panel === "evidence" && Boolean(selected);
+  const auditInspectorVisible =
+    canvasView === "audit" &&
+    inspectorVisible &&
+    workspaceLayout.layout.mode !== "two";
+  const drawerInspectorVisible =
+    inspectorVisible && evidencePanelIsOverlay;
+  const evidenceDrawerModal =
+    drawerInspectorVisible && evidenceDrawerShouldBeModal;
   const selectedCase = caseForEvidenceNode(selected, nodesById, data.cases);
   const executionCase =
     selectedCase ?? data.cases.find(isAttentionCase) ?? data.cases[0] ?? null;
@@ -1251,6 +1454,46 @@ export function EvidenceDashboard({
   useEffect(() => {
     if (inspectorBodyRef.current) inspectorBodyRef.current.scrollTop = 0;
   }, [selected?.id]);
+  useEffect(() => {
+    if (!drawerInspectorVisible) return;
+
+    const previousOverflow = document.body.style.overflow;
+    if (evidenceDrawerModal) document.body.style.overflow = "hidden";
+    evidenceDrawerReturnFocusRef.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    evidenceDrawerCloseButtonRef.current?.focus();
+
+    const closeEvidenceDrawer = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setPanel("none");
+        return;
+      }
+      if (event.key !== "Tab" || !evidenceDrawerModal) return;
+
+      const focusable = dialogFocusables(inspectorRef.current);
+      if (focusable.length === 0) return;
+      const first = focusable[0]!;
+      const last = focusable[focusable.length - 1]!;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", closeEvidenceDrawer);
+    return () => {
+      document.removeEventListener("keydown", closeEvidenceDrawer);
+      document.body.style.overflow = previousOverflow;
+      const returnFocus = evidenceDrawerReturnFocusRef.current;
+      evidenceDrawerReturnFocusRef.current = null;
+      if (returnFocus?.isConnected) returnFocus.focus();
+    };
+  }, [drawerInspectorVisible, evidenceDrawerModal]);
   const copyEvidenceReference = useCallback(() => {
     if (!selected) return;
     const permalink = dashboardShareUrl(
@@ -1299,7 +1542,7 @@ export function EvidenceDashboard({
     nextActionMessageKey(data.action_center.next_action) ??
       "nextActionReviewEvidence",
   );
-  const reviewSelected = canvasView === "evidence" || canvasView === "action";
+  const reviewSelected = canvasView === "review";
 
   const renderEvidenceNode = (
     node: SpineNode,
@@ -1405,7 +1648,10 @@ export function EvidenceDashboard({
             aria-label={`${evidenceActionLabel(locale, node)}${
               locale === "zh-CN" ? "：" : ": "
             }${semantic.title}`}
-            onClick={() => setSelectedId(node.id)}
+            onClick={() => {
+              setSelectedId(node.id);
+              setPanel("evidence");
+            }}
           >
             <span className="node-copy">
               <span className="node-meta">
@@ -1435,10 +1681,7 @@ export function EvidenceDashboard({
       group: t("actionGroup"),
       label: t("showEvidence"),
       detail: t("evidenceChainDescription"),
-      run: () => {
-        setArchiveOpen(false);
-        setCanvasView("evidence");
-      },
+      run: () => showCanvas("audit"),
     },
     {
       id: "action-show-execution-trace",
@@ -1452,7 +1695,7 @@ export function EvidenceDashboard({
         : t("notRecorded"),
       run: () => {
         if (executionCase) setSelectedId(`case:${executionCase.id}`);
-        setCanvasView("execution");
+        showCanvas("runs");
       },
     },
     {
@@ -1460,7 +1703,7 @@ export function EvidenceDashboard({
       group: t("actionGroup"),
       label: t("showDiff"),
       detail: t("runtimeFilesChanged", { count: data.diffs.length }),
-      run: () => setCanvasView("diff"),
+      run: () => showCanvas("changes"),
     },
     {
       id: "action-show-action-center",
@@ -1469,7 +1712,7 @@ export function EvidenceDashboard({
       detail: t("actionCenterContext", {
         action: nextActionLabel,
       }),
-      run: () => setCanvasView("action"),
+      run: () => setPanel("action"),
     },
     {
       id: "action-attention",
@@ -1602,7 +1845,7 @@ export function EvidenceDashboard({
     <main
       className={`app-shell ${focusMode ? "is-focus-mode" : ""} ${
         refreshControls?.error ? "has-transport-warning" : ""
-      } ${
+      } ${canvasView === "audit" ? "is-audit-view" : "is-primary-view"} ${
         workspaceLayout.layout.mode === "stacked"
           ? "is-stacked-workspace"
           : ""
@@ -1652,11 +1895,14 @@ export function EvidenceDashboard({
           </div>
           <ReviewActions
             shortcut={commandShortcut}
-            onOpenCommands={() => setCommandsOpen(true)}
+            onOpenCommands={openCommands}
             onCopyLink={copyCurrentView}
             onDownload={downloadEvidence}
           />
-          <DisplayPreferences />
+          <DisplayPreferences
+            open={displayPreferencesOpen}
+            onOpenChange={updateDisplayPreferencesOpen}
+          />
         </div>
       </header>
 
@@ -1674,12 +1920,18 @@ export function EvidenceDashboard({
       <div
         ref={workspaceLayout.containerRef}
         className={`workspace-grid layout-${workspaceLayout.layout.mode} ${
-          inspectorVisible ? "has-inspector" : "without-inspector"
+          auditInspectorVisible ? "has-inspector" : "without-inspector"
+        } ${canvasView === "audit" ? "is-audit-view" : "is-primary-view"
         }`}
         data-layout-mode={workspaceLayout.layout.mode}
         style={workspaceLayout.style}
       >
-        <aside id="case-rail" className="rail pane" aria-label={t("runOverview")}>
+        <aside
+          id="case-rail"
+          className="rail pane"
+          aria-label={t("runOverview")}
+          hidden={canvasView !== "audit"}
+        >
           <div className="pane-heading">
             <div>
               <span className="pane-kicker">{t("evaluationSuite")}</span>
@@ -1860,16 +2112,18 @@ export function EvidenceDashboard({
           </details>
         </aside>
 
-        <WorkspacePaneResizeHandle
-          pane="rail"
-          value={workspaceLayout.layout.railWidth}
-          range={workspaceLayout.layout.railRange}
-          label={t("resizeCasePane")}
-          hint={t("resizePaneHint")}
-          controls="case-rail evidence-workspace"
-          onChange={(width) => workspaceLayout.resizePane("rail", width)}
-          onReset={() => workspaceLayout.resetPane("rail")}
-        />
+        {canvasView === "audit" && (
+          <WorkspacePaneResizeHandle
+            pane="rail"
+            value={workspaceLayout.layout.railWidth}
+            range={workspaceLayout.layout.railRange}
+            label={t("resizeCasePane")}
+            hint={t("resizePaneHint")}
+            controls="case-rail evidence-workspace"
+            onChange={(width) => workspaceLayout.resizePane("rail", width)}
+            onReset={() => workspaceLayout.resetPane("rail")}
+          />
+        )}
 
         <section
           id="evidence-workspace"
@@ -1885,7 +2139,7 @@ export function EvidenceDashboard({
               onKeyDown={(event) => handleRovingListKeyDown(event, "horizontal")}
             >
               <button
-                id="canvas-tab-evidence"
+                id="canvas-tab-review"
                 type="button"
                 role="tab"
                 data-roving-item
@@ -1893,64 +2147,76 @@ export function EvidenceDashboard({
                 aria-selected={reviewSelected}
                 tabIndex={reviewSelected ? 0 : -1}
                 className={reviewSelected ? "is-active" : ""}
-                onClick={() => {
-                  setArchiveOpen(false);
-                  setCanvasView("evidence");
-                }}
+                onClick={() => showCanvas("review")}
               >
-                {t("reviewOverview")}
+                {t("reviewTab")}
               </button>
               <button
-                id="canvas-tab-execution"
+                id="canvas-tab-changes"
                 type="button"
                 role="tab"
                 data-roving-item
                 aria-controls="canvas-panel"
-                aria-selected={canvasView === "execution"}
-                tabIndex={canvasView === "execution" ? 0 : -1}
-                className={canvasView === "execution" ? "is-active" : ""}
-                onClick={() => {
-                  if (executionCase) setSelectedId(`case:${executionCase.id}`);
-                  setCanvasView("execution");
-                }}
-              >
-                {t("executionTrace")}
-              </button>
-              <button
-                id="canvas-tab-diff"
-                type="button"
-                role="tab"
-                data-roving-item
-                aria-controls="canvas-panel"
-                aria-selected={canvasView === "diff"}
-                tabIndex={canvasView === "diff" ? 0 : -1}
-                className={canvasView === "diff" ? "is-active" : ""}
-                onClick={() => setCanvasView("diff")}
+                aria-selected={canvasView === "changes"}
+                tabIndex={canvasView === "changes" ? 0 : -1}
+                className={canvasView === "changes" ? "is-active" : ""}
+                onClick={() => showCanvas("changes")}
               >
                 {data.diffs.length > 0
-                  ? `${t("diff")} (${data.diffs.length})`
-                  : t("diffEvidenceMissing")}
+                  ? `${t("changesTab")} (${data.diffs.length})`
+                  : t("changesTab")}
+              </button>
+              <button
+                id="canvas-tab-runs"
+                type="button"
+                role="tab"
+                data-roving-item
+                aria-controls="canvas-panel"
+                aria-selected={canvasView === "runs"}
+                tabIndex={canvasView === "runs" ? 0 : -1}
+                className={canvasView === "runs" ? "is-active" : ""}
+                onClick={() => {
+                  if (executionCase) setSelectedId(`case:${executionCase.id}`);
+                  showCanvas("runs");
+                }}
+              >
+                {t("runsTab")}
+              </button>
+              <button
+                id="canvas-tab-audit"
+                type="button"
+                role="tab"
+                data-roving-item
+                aria-controls="canvas-panel"
+                aria-selected={canvasView === "audit"}
+                tabIndex={canvasView === "audit" ? 0 : -1}
+                className={canvasView === "audit" ? "is-active" : ""}
+                onClick={() => showCanvas("audit")}
+              >
+                {t("auditTab")}
               </button>
             </div>
             <div className="canvas-context">
-              {(!reviewSelected || archiveOpen) && (
+              {canvasView !== "review" && (
                 <span>
-                  {reviewSelected
+                  {canvasView === "audit"
                     ? t("displayedEvidenceNodes", {
                         visible: displayedNodes.length,
                         total: visibleNodes.length,
                       })
-                    : canvasView === "execution"
+                    : canvasView === "runs"
                     ? executionTrace
                       ? t("executionTraceContext", {
                           observed: executionTrace.capturedTraces,
                           expected: executionTrace.expectedExecutions,
                         })
                       : t("notRecorded")
-                    : t("runtimeFilesChanged", { count: data.diffs.length })}
+                    : data.diffs.length > 0
+                      ? t("runtimeFilesChanged", { count: data.diffs.length })
+                      : t("diffEvidenceMissing")}
                 </span>
               )}
-              {canvasView === "diff" && data.diffs.length > 0 && (
+              {canvasView === "changes" && data.diffs.length > 0 && (
                 <button
                   type="button"
                   className="icon-button"
@@ -1968,11 +2234,9 @@ export function EvidenceDashboard({
             id="canvas-panel"
             className="canvas-panel"
             role="tabpanel"
-            aria-labelledby={
-              reviewSelected ? "canvas-tab-evidence" : `canvas-tab-${canvasView}`
-            }
+            aria-labelledby={`canvas-tab-${canvasView}`}
           >
-          {canvasView === "execution" && executionTrace ? (
+          {canvasView === "runs" && executionTrace ? (
             <EvalExecutionTraceView
               trace={executionTrace}
               cases={data.cases}
@@ -1985,27 +2249,25 @@ export function EvidenceDashboard({
                 if (node) openEvidence(node);
               }}
             />
-          ) : canvasView === "execution" ? (
+          ) : canvasView === "runs" ? (
             <div className="diff-empty">
               <Bot size={24} />
               <strong>{t("noCasesMatch")}</strong>
               <p>{t("notRecorded")}</p>
             </div>
-          ) : reviewSelected ? (
-            <>
-              <ReviewOverview
-                data={data}
-                archiveOpen={archiveOpen}
-                onToggleArchive={() => setArchiveOpen((current) => !current)}
-                onOpenEvidence={openEvidence}
-                onOpenDiff={() => setCanvasView("diff")}
-                onOpenTrace={() => {
-                  if (executionCase) setSelectedId(`case:${executionCase.id}`);
-                  setCanvasView("execution");
-                }}
-                onOpenActionCenter={() => setCanvasView("action")}
-              >
-            <div className="evidence-stage review-evidence-archive-stage">
+          ) : canvasView === "review" ? (
+            <ReviewOverview
+              data={data}
+              onOpenEvidence={openEvidence}
+              onOpenDiff={() => showCanvas("changes")}
+              onOpenTrace={() => {
+                if (executionCase) setSelectedId(`case:${executionCase.id}`);
+                showCanvas("runs");
+              }}
+              onOpenActionCenter={() => setPanel("action")}
+            />
+          ) : canvasView === "audit" ? (
+            <div className="evidence-stage audit-evidence-stage">
               <div className="stage-intro">
                 <div>
                   <span className="pane-kicker">{t("immutableRunRecord")}</span>
@@ -2171,42 +2433,6 @@ export function EvidenceDashboard({
                 })}
               </div>
             </div>
-              </ReviewOverview>
-              {canvasView === "action" && (
-                <div className="action-center-drawer-backdrop">
-                  <aside
-                    className="action-center-drawer"
-                    role="dialog"
-                    aria-label={t("actionCenter")}
-                    aria-modal="true"
-                  >
-                    <header>
-                      <div>
-                        <span className="pane-kicker">{t("recommendedNextStep")}</span>
-                        <h2>{t("actionCenter")}</h2>
-                      </div>
-                      <button
-                        type="button"
-                        className="icon-button"
-                        aria-label={t("closeNextSteps")}
-                        onClick={() => setCanvasView("evidence")}
-                      >
-                        <X size={16} aria-hidden="true" />
-                      </button>
-                    </header>
-                    <ActionCenter
-                      data={data}
-                      interactive={actionsEnabled}
-                      connectionState={connectionState}
-                      onOpenEvidence={(evidenceId) => {
-                        const node = data.spine.find((item) => item.id === evidenceId);
-                        if (node) openEvidence(node);
-                      }}
-                    />
-                  </aside>
-                </div>
-              )}
-            </>
           ) : data.diffs.length ? (
             <Suspense
               fallback={
@@ -2235,7 +2461,51 @@ export function EvidenceDashboard({
           </div>
         </section>
 
-        {inspectorVisible && (
+        {actionOpen && (
+          <div
+            className="action-center-drawer-backdrop"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) setPanel("none");
+            }}
+          >
+            <aside
+              ref={actionDialogRef}
+              className="action-center-drawer"
+              role="dialog"
+              aria-label={t("actionCenter")}
+              aria-modal="true"
+            >
+              <header>
+                <div>
+                  <span className="pane-kicker">{t("recommendedNextStep")}</span>
+                  <h2>{t("actionCenter")}</h2>
+                </div>
+                <button
+                  ref={actionCloseButtonRef}
+                  type="button"
+                  className="icon-button"
+                  aria-label={t("closeNextSteps")}
+                  onClick={() => setPanel("none")}
+                >
+                  <X size={16} aria-hidden="true" />
+                </button>
+              </header>
+              <ActionCenter
+                data={data}
+                interactive={actionsEnabled}
+                connectionState={connectionState}
+                onOpenEvidence={(evidenceId) => {
+                  const node = data.spine.find((item) => item.id === evidenceId);
+                  if (node) {
+                    openEvidence(node);
+                  }
+                }}
+              />
+            </aside>
+          </div>
+        )}
+
+        {auditInspectorVisible && (
           <WorkspacePaneResizeHandle
             pane="inspector"
             value={workspaceLayout.layout.inspectorWidth}
@@ -2249,9 +2519,15 @@ export function EvidenceDashboard({
         )}
 
         <aside
+          ref={inspectorRef}
           id="evidence-inspector"
-          className="inspector pane"
+          className={`inspector pane ${
+            drawerInspectorVisible ? "evidence-drawer" : ""
+          } ${evidenceDrawerModal ? "is-modal" : ""
+          }`}
           aria-label={t("evidenceInspector")}
+          role={drawerInspectorVisible ? "dialog" : undefined}
+          aria-modal={evidenceDrawerModal ? true : undefined}
           hidden={!inspectorVisible}
         >
           <div className="pane-heading">
@@ -2261,7 +2537,20 @@ export function EvidenceDashboard({
                 {selected ? localizeValue(locale, selected.kind) : t("evidence")}
               </h2>
             </div>
-            <Fingerprint size={17} aria-hidden="true" />
+            <div className="inspector-heading-actions">
+              <Fingerprint size={17} aria-hidden="true" />
+              {drawerInspectorVisible && (
+                <button
+                  ref={evidenceDrawerCloseButtonRef}
+                  type="button"
+                  className="icon-button"
+                  aria-label={t("close")}
+                  onClick={() => setPanel("none")}
+                >
+                  <X size={16} aria-hidden="true" />
+                </button>
+              )}
+            </div>
           </div>
 
           {selected ? (
@@ -2584,42 +2873,44 @@ export function EvidenceDashboard({
             <p className="empty-note">{t("selectEvidence")}</p>
           )}
 
-          <div className="limitations-card">
-            <div className="section-label">
-              <CircleAlert size={13} /> {t("limitations")}
+          {selected?.kind === "run" && (
+            <div className="limitations-card">
+              <div className="section-label">
+                <CircleAlert size={13} /> {t("limitations")}
+              </div>
+              {data.limitations.length ? (
+                <ul className="limitation-list">
+                  {data.limitations.map((item) => {
+                    const limitation = describeLimitation(locale, item);
+                    return (
+                      <li key={item}>
+                        <article>
+                          <strong>{limitation.title}</strong>
+                          <p>{limitation.description}</p>
+                          <details className="inline-technical-facts">
+                            <summary>{t("technicalTrace")}</summary>
+                            <code>{limitation.technicalLabel}</code>
+                          </details>
+                        </article>
+                      </li>
+                    );
+                  })}
+                </ul>
+              ) : (
+                <p>{t("noLimitations")}</p>
+              )}
             </div>
-            {data.limitations.length ? (
-              <ul className="limitation-list">
-                {data.limitations.map((item) => {
-                  const limitation = describeLimitation(locale, item);
-                  return (
-                    <li key={item}>
-                      <article>
-                        <strong>{limitation.title}</strong>
-                        <p>{limitation.description}</p>
-                        <details className="inline-technical-facts">
-                          <summary>{t("technicalTrace")}</summary>
-                          <code>{limitation.technicalLabel}</code>
-                        </details>
-                      </article>
-                    </li>
-                  );
-                })}
-              </ul>
-            ) : (
-              <p>{t("noLimitations")}</p>
-            )}
-          </div>
+          )}
         </aside>
       </div>
 
       <footer className="statusbar">
-        <span title={data.generated_at ?? undefined}>
-          <Clock3 size={12} />
-          {generatedTime
-            ? t("generatedAt", { time: generatedTime })
-            : t("generationTimeUnavailable")}
-        </span>
+        {generatedTime && (
+          <span title={data.generated_at ?? undefined}>
+            <Clock3 size={12} />
+            {t("generatedAt", { time: generatedTime })}
+          </span>
+        )}
         <span>
           <RefreshCw size={12} />
           {loadedTime

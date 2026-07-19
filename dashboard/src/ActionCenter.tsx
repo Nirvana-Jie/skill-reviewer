@@ -83,6 +83,7 @@ export function nextActionMessageKey(nextAction: string): MessageKey | null {
     return "action_rerun_execution";
   }
   if (nextAction === "prepare_audit") return "action_prepare_audit";
+  if (nextAction === "propose_eval_change") return "action_propose_eval_change";
   if (nextAction === "request_user_release") {
     return "action_request_release_confirmation";
   }

@@ -738,6 +738,87 @@ describe("skill_eval_runtime compile", () => {
         plan.execution_profile.digest,
       );
       expect(assignment.trace_artifact).toBe("agent-trace.jsonl");
+      expect(assignment.artifact_ownership).toEqual(
+        expect.objectContaining({
+          worker: ["outputs/response.md"],
+          asserted_framework: [],
+          framework: expect.arrayContaining([
+            { artifact: "agent-trace.jsonl", role: "framework_trace" },
+          ]),
+        }),
+      );
+    });
+  });
+
+  it("rejects a syntactically valid oracle that cannot distinguish TTML semantics", () => {
+    fixture((root) => {
+      const testCase = minimalCase({
+        id: "ttml-oracle-calibration",
+        split: "selection",
+        assertions: [
+          {
+            id: "created-set-data",
+            type: "text_matches",
+            artifact: "outputs/response.md",
+            pattern: "(?i)(can|available|yes)",
+            calibration: {
+              pass_examples: ["created may call this.setData()."],
+              fail_examples: [
+                "Do not call this.setData() in created, though later hooks can.",
+              ],
+            },
+            severity: "must_pass",
+          },
+        ],
+      });
+      const { manifest, subject } = writeMinimalPackage(root, {
+        cases: [testCase],
+      });
+      const result = compile({
+        manifest,
+        subject,
+        workspace: join(root, "run"),
+        baselineKind: "old_skill",
+        baselinePath: write(
+          root,
+          "baseline/SKILL.md",
+          "---\nname: demo-skill\ndescription: baseline\n---\n",
+        ).replace(/\/SKILL\.md$/, ""),
+        splits: ["selection"],
+      });
+
+      expect(result.status).toBe(2);
+      const error = JSON.parse(result.stdout).error;
+      expect(error).toContain("calibration failed the declared predicate");
+      expect(error).toContain("pass_examples[0]");
+      expect(error).toContain("fail_examples[0]");
+    });
+  });
+
+  it("lets explicit paired sampling override the legacy determinism default", () => {
+    fixture((root) => {
+      const testCase = minimalCase({
+        id: "explicit-sampling",
+        determinism: "deterministic",
+        sampling: { repeats: 3, pairing: "paired" },
+      });
+      const { plan, workspace } = compiledPlanFixture(root, [testCase]);
+
+      expect(plan.cases[0]).toEqual(
+        expect.objectContaining({
+          determinism: "deterministic",
+          repeats: 3,
+          sampling: { repeats: 3, pairing: "paired", source: "explicit" },
+        }),
+      );
+      expect(
+        existsSync(
+          join(
+            workspace,
+            "assignments/explicit-sampling/with_skill/repeat-3.json",
+          ),
+        ),
+      ).toBe(true);
     });
   });
 
@@ -1647,6 +1728,92 @@ description: Review demo inputs when asked.
 });
 
 describe("skill_eval_runtime grade", () => {
+  it("finalizes a framework-owned trace before grading assertions against it", () => {
+    fixture((root) => {
+      const traceCase = minimalCase({
+        id: "trace-as-evidence",
+        assertions: [
+          {
+            id: "trace-exists",
+            type: "file_exists",
+            artifact: "agent-trace.jsonl",
+            severity: "must_pass",
+          },
+        ],
+      });
+      const { plan, planPath, workspace } = compiledPlanFixture(root, [traceCase]);
+      for (const arm of plan.cases[0].arms) {
+        const assignmentPath = join(
+          workspace,
+          "assignments/trace-as-evidence",
+          arm,
+          "repeat-1.json",
+        );
+        const assignment = JSON.parse(readFileSync(assignmentPath, "utf8"));
+        expect(assignment.expected_artifacts).toEqual([]);
+        expect(assignment.artifact_ownership.asserted_framework).toEqual([
+          "agent-trace.jsonl",
+        ]);
+        expect(
+          runtimeCommand([
+            "record-dispatch",
+            "--workspace",
+            workspace,
+            "--assignment",
+            assignmentPath,
+            "--dispatch-id",
+            `dispatch-trace-${arm}`,
+            "--worker-id",
+            `worker-trace-${arm}`,
+          ]).status,
+        ).toBe(0);
+        expect(
+          runtimeCommand([
+            "trace-event",
+            "--workspace",
+            workspace,
+            "--assignment",
+            assignmentPath,
+            "--kind",
+            "agent_message",
+            "--summary",
+            "Agent returned a retained completion",
+            "--details-json",
+            JSON.stringify({ role: "assistant", content: "completed" }),
+          ]).status,
+        ).toBe(0);
+        const finalized = runtimeCommand([
+          "finalize-execution",
+          "--workspace",
+          workspace,
+          "--assignment",
+          assignmentPath,
+          "--status",
+          "completed",
+        ]);
+        expect(finalized.status, finalized.stderr).toBe(0);
+        const execution = JSON.parse(finalized.stdout);
+        const tracePath = join(
+          workspace,
+          `cases/trace-as-evidence/${arm}/repeat-1/agent-trace.jsonl`,
+        );
+        expect(execution.artifact_digests).toEqual({});
+        expect(execution.trace.digest).toBe(sha256(tracePath));
+      }
+
+      const result = grade({ plan: planPath, workspace });
+
+      expect(result.status, result.stderr).toBe(0);
+      const evidence = JSON.parse(result.stdout);
+      expect(evidence.cases[0].with_skill).toEqual(
+        expect.objectContaining({ passed: true, binding_errors: [] }),
+      );
+      expect(
+        evidence.cases[0].with_skill.repeats[0].trace.events.at(-1).kind,
+      ).toBe("execution_finished");
+    });
+  });
+
   it("records observable Agent events and binds checks to their source event ids", () => {
     fixture((root) => {
       const { plan, planPath, workspace } = compiledPlanFixture(root, [minimalCase()]);
@@ -2082,10 +2249,10 @@ describe("skill_eval_runtime grade", () => {
 
       expect(result.status, result.stderr).toBe(0);
       const evidence = JSON.parse(result.stdout);
-      expect(evidence.level).toBe("inconclusive");
       expect(
         evidence.cases[0].with_skill.repeats[0].assertions[0].evidence.reason,
       ).toContain("invalid JSONL event log");
+      expect(evidence.level).toBe("regression-verified");
     });
   });
 
@@ -2149,7 +2316,7 @@ describe("skill_eval_runtime grade", () => {
       const evidence = JSON.parse(result.stdout);
       expect(evidence.cases[0].with_skill.required_pass_rate).toBe(0);
       expect(evidence.cases[0].old_skill.required_pass_rate).toBe(1);
-      expect(evidence.level).toBe("inconclusive");
+      expect(evidence.level).toBe("regression-verified");
     });
   });
 
@@ -2369,6 +2536,10 @@ describe("skill_eval_runtime grade", () => {
           type: "text_not_matches",
           artifact: "outputs/response.md",
           pattern: "(?im)^结论：可以发布$",
+          calibration: {
+            pass_examples: ["结论：证据不足"],
+            fail_examples: ["结论：可以发布"],
+          },
           severity: "must_pass",
         },
       ];
@@ -2455,6 +2626,10 @@ describe("skill_eval_runtime grade", () => {
                   type: "text_contains",
                   artifact: "outputs/review.md",
                   expected: "Verdict: Ready",
+                  calibration: {
+                    pass_examples: ["Verdict: Ready"],
+                    fail_examples: ["Verdict: Not ready"],
+                  },
                   severity: "must_pass",
                 },
                 {
@@ -3054,6 +3229,10 @@ describe("skill_eval_runtime decide", () => {
                   type: "text_contains",
                   artifact: "outputs/response.md",
                   expected: "PRIVATE_EXPECTED_MARKER",
+                  calibration: {
+                    pass_examples: ["PRIVATE_EXPECTED_MARKER"],
+                    fail_examples: ["PRIVATE_REJECTED_MARKER"],
+                  },
                   severity: "must_pass",
                 },
               ],
@@ -3206,6 +3385,18 @@ describe("skill_eval_runtime decide", () => {
         }),
       );
       expect(() => validateAndMigrateDashboardData(dashboard)).not.toThrow();
+      const forgedPublicRelease = structuredClone(dashboard);
+      forgedPublicRelease.run.evidence_scope = "public-calibration";
+      forgedPublicRelease.run.holdout = {
+        visibility: "public",
+        issuer: null,
+        digest: null,
+      };
+      expect(() =>
+        validateAndMigrateDashboardData(forgedPublicRelease),
+      ).toThrow(
+        /run\.evidence_scope: eligible release requires a trusted opaque holdout/,
+      );
       const projectedTraces = dashboard.cases.flatMap((testCase) =>
         testCase.arms.flatMap((arm) =>
           arm.executions.map((execution) => execution.trace),
@@ -3282,6 +3473,106 @@ describe("skill_eval_runtime decide", () => {
 });
 
 describe("skill_eval_runtime evolution", () => {
+  it("quarantines an invalid paired experiment without rejecting the candidate round", () => {
+    fixture((root) => {
+      const testCase = minimalCase({
+        id: "unstable-pairing",
+        split: "selection",
+        determinism: "deterministic",
+        sampling: { repeats: 3, pairing: "paired" },
+      });
+      const { plan, planPath, workspace } = compiledPlanFixture(root, [testCase]);
+      const candidatePasses = [true, false, true];
+      const baselinePasses = [false, true, false];
+      for (const arm of ["with_skill", "old_skill"]) {
+        const passes = arm === "with_skill" ? candidatePasses : baselinePasses;
+        for (let index = 0; index < passes.length; index += 1) {
+          const repeat = index + 1;
+          if (passes[index]) {
+            write(
+              workspace,
+              `cases/unstable-pairing/${arm}/repeat-${repeat}/outputs/response.md`,
+              `${arm} repeat ${repeat}\n`,
+            );
+          }
+          writeExecution({
+            workspace,
+            plan,
+            caseId: "unstable-pairing",
+            arm,
+            repeat,
+          });
+        }
+      }
+      const decisionResult = decide({
+        plan: planPath,
+        evidence: join(workspace, "verification-evidence.json"),
+        workspace,
+        iteration: 1,
+      });
+      expect(decisionResult.status, decisionResult.stderr).toBe(0);
+      const decision = JSON.parse(decisionResult.stdout);
+      expect(decision).toEqual(
+        expect.objectContaining({
+          status: "invalid",
+          accepted: false,
+          measurement_validity: "invalid",
+        }),
+      );
+
+      const control = join(root, "control");
+      expect(
+        runtimeCommand([
+          "evolution-init",
+          "--plan",
+          planPath,
+          "--workspace",
+          control,
+        ]).status,
+      ).toBe(0);
+      const advanced = runtimeCommand([
+        "evolution-advance",
+        "--state",
+        join(control, "evolution-state.json"),
+        "--decision",
+        join(workspace, "iteration-1/acceptance-decision.json"),
+      ]);
+      expect(advanced.status, advanced.stderr).toBe(0);
+      const state = JSON.parse(advanced.stdout);
+      expect(state).toEqual(
+        expect.objectContaining({
+          current_round: 1,
+          status: "measurement-invalid",
+          next_action: "propose_eval_change",
+          terminal: true,
+          rejected_candidates: [],
+        }),
+      );
+      expect(state.invalid_experiments).toHaveLength(1);
+      const dashboardPath = join(workspace, "dashboard-data.json");
+      const projected = runtimeCommand([
+        "project-dashboard",
+        "--workspace",
+        workspace,
+        "--output",
+        dashboardPath,
+        "--state",
+        join(control, "evolution-state.json"),
+      ]);
+      expect(projected.status, projected.stderr).toBe(0);
+      const dashboard = JSON.parse(projected.stdout);
+      expect(dashboard.run.measurement.status).toBe("invalid");
+      expect(dashboard.summary.invalid_experiments).toBe(1);
+      expect(dashboard.review.decision.reason).toBe("measurement_invalid");
+      expect(dashboard.action_center.attribution.primary).toBe("eval");
+      expect(
+        dashboard.action_center.attribution.items.find(
+          (item) => item.id === "skill",
+        ).signals,
+      ).toEqual([]);
+    });
+  });
+
   it("authorizes one selection query per round and retains candidate lineage", () => {
     fixture((root) => {
       const baselinePath = join(root, "accepted-baseline");
@@ -4532,7 +4823,11 @@ describe("skill_eval_runtime dashboard projection", () => {
       expect(data.run.id).toBe(runs[1].plan.run_id);
       expect(data.run.status).toBe("optimizing");
       expect(data.summary.current_round).toBe(3);
-      expect(data.iterations.map((item) => item.iteration)).toEqual([1, 2]);
+      expect(
+        data.spine
+          .filter((item) => item.kind === "iteration")
+          .map((item) => item.label.match(/^Round (\d+) · selection/)?.[1]),
+      ).toEqual(["1", "2"]);
       expect(data.action_center).toEqual(
         expect.objectContaining({
           next_action: "propose_candidate",
@@ -5031,7 +5326,7 @@ describe("skill_eval_runtime dashboard projection", () => {
       expect(data).toEqual(
         expect.objectContaining({
           contract: "skill-reviewer.dashboard-data",
-          schema_version: 2,
+          schema_version: 3,
           run: expect.objectContaining({
             id: plan.run_id,
             status: "awaiting-audit",

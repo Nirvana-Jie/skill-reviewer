@@ -20,7 +20,8 @@ describe("dashboard view state", () => {
       split: "audit" as const,
       caseStatus: "attention" as const,
       query: "binding error",
-      canvasView: "diff" as const,
+      canvasView: "changes" as const,
+      panel: "none" as const,
       evidenceId: null,
       diffId: "diff-skill-md",
       diffLayout: "unified" as const,
@@ -54,7 +55,7 @@ describe("dashboard view state", () => {
     const url = dashboardShareUrl(
       {
         ...defaultDashboardViewState,
-        canvasView: "diff",
+        canvasView: "changes",
         diffId: "diff-skill-md",
       },
       "http://127.0.0.1:8765/skill-reviewer/#session=session_token_abcdefghijklmnopqrstuvwxyz123456&bridge=http%3A%2F%2Fattacker.example",
@@ -62,7 +63,7 @@ describe("dashboard view state", () => {
 
     expect(url.hash).not.toContain("session=");
     expect(url.hash).not.toContain("bridge=");
-    expect(url.hash).toContain("view=diff");
+    expect(url.hash).toContain("view=changes");
     expect(url.hash).toContain("diff=diff-skill-md");
   });
 
@@ -87,30 +88,52 @@ describe("dashboard view state", () => {
     expect(window.location.hash).toContain("node=case%3Aselection-quality");
   });
 
-  it("persists the action center as a first-class review destination", () => {
+  it("persists the eval runs and their selected scenario", () => {
     const state = {
       ...defaultDashboardViewState,
-      canvasView: "action" as const,
-    };
-
-    const url = dashboardViewUrl(state, "https://review.example.test/");
-
-    expect(new URLSearchParams(url.hash.slice(1)).get("view")).toBe("action");
-    expect(readDashboardViewState(url.hash)).toEqual(state);
-  });
-
-  it("persists the eval execution trace and its selected scenario", () => {
-    const state = {
-      ...defaultDashboardViewState,
-      canvasView: "execution" as const,
+      canvasView: "runs" as const,
       evidenceId: "case:quality-check",
     };
 
     const url = dashboardViewUrl(state, "https://review.example.test/");
 
     const params = new URLSearchParams(url.hash.slice(1));
-    expect(params.get("view")).toBe("execution");
+    expect(params.get("view")).toBe("runs");
     expect(params.get("node")).toBe("case:quality-check");
+    expect(params.get("panel")).toBeNull();
     expect(readDashboardViewState(url.hash)).toEqual(state);
+  });
+
+  it("uses four decision-first destinations and migrates legacy links", () => {
+    expect(defaultDashboardViewState.canvasView).toBe("review");
+    expect(readDashboardViewState("#view=execution").canvasView).toBe("runs");
+    expect(readDashboardViewState("#view=diff").canvasView).toBe("changes");
+    expect(
+      readDashboardViewState("#view=evidence&node=case%3Aquality-check")
+        .canvasView,
+    ).toBe("audit");
+    expect(
+      readDashboardViewState("#view=evidence&node=case%3Aquality-check").panel,
+    ).toBe("evidence");
+    expect(readDashboardViewState("#view=evidence").canvasView).toBe("review");
+    expect(readDashboardViewState("#view=action").canvasView).toBe("review");
+    expect(readDashboardViewState("#view=action").panel).toBe("action");
+
+    const auditUrl = dashboardViewUrl(
+      {
+        ...defaultDashboardViewState,
+        canvasView: "audit",
+        panel: "evidence",
+        evidenceId: "case:quality-check",
+      },
+      "https://review.example.test/",
+    );
+
+    expect(new URLSearchParams(auditUrl.hash.slice(1)).get("view")).toBe(
+      "audit",
+    );
+    expect(new URLSearchParams(auditUrl.hash.slice(1)).get("panel")).toBe(
+      "evidence",
+    );
   });
 });

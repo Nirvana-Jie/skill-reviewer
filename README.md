@@ -66,7 +66,9 @@ Core rules:
 
 1. **Deterministic assertions first** — files, JSON, and command exit codes are graded before any semantic Judge.
 2. **Candidate and baseline stay separate** — same Case, isolated workspaces, independent Trace; no self-evaluation loop.
-3. **Missing evidence means uncertainty** — absent baselines, artifacts, or repeat disagreement never become a false improvement claim.
+3. **Validate the instrument before the candidate** — required text oracles
+   pass positive/negative calibration, and contradictory paired directions
+   invalidate the experiment instead of blaming the Skill.
 4. **An invalid Manifest blocks release** — it is never silently skipped.
 5. **A Manifest is not a worker receipt** — `evals.json` declares cells; only a
    retained provider/harness dispatch receipt proves the selected cell was
@@ -80,7 +82,9 @@ Core rules:
 | **Selection** | Compare a candidate fairly with the accepted baseline | Decides whether the candidate is retained |
 | **Audit** | Check release risk with one-shot evidence hidden from the optimizer | Still requires human confirmation |
 
-Default repeats: deterministic Cases run once; stochastic Cases run three paired repeats per arm; disagreement is reported as inconclusive.
+Sampling is explicit and independent from determinism. Legacy defaults remain
+one deterministic or three stochastic paired repeats; contradictory paired
+directions make measurement invalid rather than producing a majority winner.
 
 ## What you receive
 
@@ -144,15 +148,26 @@ SKILL_REVIEWER_REAL_AGENT_E2E=codex,claude \
   pnpm exec vitest run dashboard/src/real-agent-trace.e2e.test.ts
 ```
 
-Eval and grader authority is immutable during a run. The system may propose changes, but only explicit user confirmation and a fresh lock can establish new evaluation authority. See the [executable Eval contract](./skills/skill-reviewer/references/executable-evals.md) and [evolution protocol](./skills/skill-reviewer/references/evolution-workflow.md) for schemas, commands, and trust boundaries.
+Eval and grader authority is immutable during a run. Required text predicates
+are calibrated against known-good and known-bad examples before dispatch, and
+sampling is declared independently from output determinism. Evidence integrity
+and measurement validity must both pass before candidate quality is attributed.
+An invalid experiment is quarantined without consuming a candidate round. The
+system may propose changes, but only explicit user confirmation and a fresh
+lock can establish new evaluation authority. See the [measurement validity
+contract](./skills/skill-reviewer/references/measurement-validity.md),
+[executable Eval contract](./skills/skill-reviewer/references/executable-evals.md),
+and [evolution protocol](./skills/skill-reviewer/references/evolution-workflow.md)
+for schemas, commands, and trust boundaries.
 
 ## Dashboard: optional local, read-only control plane
 
-The Dashboard answers three questions:
+The Dashboard answers four questions in decision order:
 
-1. **Why did this pass or fail?** Drill from the release verdict to a Case, assertion, Trace event, and source artifact.
-2. **Is the candidate actually better?** Compare candidate and baseline runs, scores, file diffs, and repeats side by side.
-3. **What happens next?** Project the state machine’s `next_action`, responsibility, and human boundary.
+1. **Is the evidence complete?** Verify dispatch, Trace, artifacts, and bindings.
+2. **Is the measurement trustworthy?** Inspect oracle calibration and paired sampling before judging the Skill.
+3. **Is the candidate actually better?** Compare candidate and baseline runs, scores, file diffs, and repeats side by side.
+4. **What happens next?** Project the state machine’s `next_action`, responsibility, and human boundary.
 
 Review Overview is the only primary verdict surface. Its decision-evidence
 spine links directly to change evidence, execution coverage, and the primary
@@ -161,9 +176,11 @@ evidence views; next steps open in a side drawer, and the Inspector describes
 only the currently selected evidence. An empty Diff means change evidence was
 not captured—it is never treated as proof that nothing changed.
 
-Every generated projection carries `schema_version: 2`. The UI validates the
-nested decision contract before rendering and shows an actionable regeneration
-page for incompatible data instead of a blank screen.
+Every generated projection carries `schema_version: 3`. The UI validates the
+nested decision and measurement contracts before rendering. Complete v2 and
+unversioned projections migrate only to explicit `unverified` measurement—no
+green evidence is invented. Incompatible data gets an actionable regeneration
+page instead of a blank screen.
 
 It is not the executor and cannot mutate Eval, evidence, or release state. An explicit request to show the Dashboard is consent. Otherwise, an interactive lead Agent asks once with a standalone structured choice and recommends opening it; silence never authorizes a download or server:
 

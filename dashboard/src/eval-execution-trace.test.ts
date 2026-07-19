@@ -233,7 +233,6 @@ function traceData(): DashboardData {
       },
     ],
     diffs: [],
-    iterations: [],
     spine: [
       {
         id: "run:run-trace",

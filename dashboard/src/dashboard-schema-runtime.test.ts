@@ -170,10 +170,114 @@ describe("dashboard schema against runtime failure projections", () => {
       expect(projected.status, projected.stderr || projected.stdout).toBe(0);
 
       const data = JSON.parse(readFileSync(output, "utf8"));
+      expect(data.run.execution_profile).toMatchObject({
+        target: "native-agent",
+        harness: "lead-agent-dispatch",
+        dispatch_observation: "host_dispatch",
+        trace: { capture_source: "harness_native", source: null },
+      });
       const execution = data.cases[0].arms[0].executions[0];
       expect(execution.dispatch.valid).toBe(false);
       expect(execution.trace.valid).toBe(false);
       expect(() => validateAndMigrateDashboardData(data)).not.toThrow();
+
+      const missingV3Measurement = structuredClone(data);
+      delete missingV3Measurement.run.measurement;
+      expect(() =>
+        validateAndMigrateDashboardData(missingV3Measurement),
+      ).toThrow(/run\.measurement: expected an object/);
+
+      const legacyV2 = structuredClone(data);
+      legacyV2.schema_version = 2;
+      delete legacyV2.run.measurement;
+      delete legacyV2.summary.invalid_experiments;
+      delete legacyV2.evolution.invalid_experiments;
+      for (const item of legacyV2.cases) delete item.measurement;
+      legacyV2.iterations = [{ iteration: 1, status: "legacy-duplicate" }];
+      const migrated = validateAndMigrateDashboardData(legacyV2);
+      expect(migrated.schema_version).toBe(3);
+      expect(migrated).not.toHaveProperty("iterations");
+      expect(migrated.run.measurement?.status).toBe("unverified");
+      expect(migrated.cases[0].measurement?.status).toBe("unverified");
+      expect(migrated.run.release_eligible).toBe(false);
+      expect(migrated.review.decision).toMatchObject({
+        status: "inconclusive",
+        reason: "evidence_incomplete",
+        release_eligible: false,
+      });
+      expect(migrated.review.next_action).toBe("review_evidence");
+      expect(migrated.action_center).toMatchObject({
+        next_action: "review_evidence",
+        continuation: {
+          mode: "human_required",
+          owner: "human",
+          reason: "evidence_review",
+        },
+        acceptance: { status: "measurement-unverified", accepted: null },
+        attribution: { primary: null },
+      });
+      expect(
+        migrated.action_center.actions.every(
+          (action) => !action.available && !action.recommended,
+        ),
+      ).toBe(true);
+
+      const inconsistentCaseMeasurement = structuredClone(data);
+      inconsistentCaseMeasurement.cases[0].measurement.status = "invalid";
+      inconsistentCaseMeasurement.run.measurement.cases[0].status = "invalid";
+      inconsistentCaseMeasurement.run.measurement.status = "invalid";
+      expect(() =>
+        validateAndMigrateDashboardData(inconsistentCaseMeasurement),
+      ).toThrow(/measurement\.status: must aggregate oracle and sampling status as valid/);
+
+      const inconsistentRunMeasurement = structuredClone(data);
+      inconsistentRunMeasurement.run.measurement.status = "invalid";
+      expect(() =>
+        validateAndMigrateDashboardData(inconsistentRunMeasurement),
+      ).toThrow(/run\.measurement\.status: must aggregate case measurement status as valid/);
+
+      const conflictingRunEligibility = structuredClone(data);
+      conflictingRunEligibility.run.release_eligible = true;
+      expect(() =>
+        validateAndMigrateDashboardData(conflictingRunEligibility),
+      ).toThrow(/run\.release_eligible: must match review\.decision\.release_eligible/);
+
+      const invalidEligibleDecision = structuredClone(data);
+      invalidEligibleDecision.run.release_eligible = true;
+      invalidEligibleDecision.review.decision.release_eligible = true;
+      expect(() =>
+        validateAndMigrateDashboardData(invalidEligibleDecision),
+      ).toThrow(/review\.decision\.release_eligible: true requires ready/);
+
+      const eligibleWithBlocker = structuredClone(data);
+      eligibleWithBlocker.run.release_eligible = true;
+      eligibleWithBlocker.review.decision = {
+        ...eligibleWithBlocker.review.decision,
+        status: "ready",
+        reason: "release_conditions_met",
+        release_eligible: true,
+        blocking_scenario_count: 0,
+        blocking_gate_count: 0,
+      };
+      eligibleWithBlocker.run.evidence_scope = "opaque-holdout";
+      eligibleWithBlocker.run.holdout = {
+        visibility: "opaque",
+        issuer: "trusted-eval-service",
+        digest: "f".repeat(64),
+      };
+      expect(eligibleWithBlocker.review.blockers.length).toBeGreaterThan(0);
+      expect(() =>
+        validateAndMigrateDashboardData(eligibleWithBlocker),
+      ).toThrow(/review\.blockers: must be empty when release is eligible/);
+
+      const missingAcceptanceCriterion = structuredClone(data);
+      missingAcceptanceCriterion.action_center.acceptance.criteria =
+        missingAcceptanceCriterion.action_center.acceptance.criteria.filter(
+          (criterion: { id: string }) => criterion.id !== "pareto",
+        );
+      expect(() =>
+        validateAndMigrateDashboardData(missingAcceptanceCriterion),
+      ).toThrow(/action_center\.acceptance\.criteria: must contain each required criterion exactly once/);
 
       const fractionalRepeats = structuredClone(data);
       fractionalRepeats.cases[0].repeats = 1.5;
@@ -371,6 +475,13 @@ describe("dashboard schema against runtime failure projections", () => {
       };
       expect(() =>
         validateAndMigrateDashboardData(genericProcessAgent),
+      ).not.toThrow();
+
+      const legacyGenericProcessAgent = structuredClone(genericProcessAgent);
+      delete legacyGenericProcessAgent.run.execution_profile.dispatch_observation;
+      delete legacyGenericProcessAgent.run.execution_profile.trace;
+      expect(() =>
+        validateAndMigrateDashboardData(legacyGenericProcessAgent),
       ).not.toThrow();
 
       const completedWithoutRequiredSource = structuredClone(genericProcessAgent);

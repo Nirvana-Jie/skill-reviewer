@@ -270,8 +270,10 @@ After all workers finish:
 
 1. Run deterministic `grade`; it revalidates frozen inputs before inspecting
    outputs.
-2. Inspect every incomplete arm, forbidden action, failed `must_pass`
-   assertion, direction disagreement, and semantic disagreement.
+2. Apply evidence integrity, measurement validity, then candidate quality.
+   Inspect every incomplete arm, forbidden action, failed `must_pass`
+   assertion, direction disagreement, and semantic disagreement. A paired
+   direction disagreement invalidates measurement; it is not a Skill failure.
 3. Use one verification level:
    - `not-run` — no behavior run;
    - `inconclusive` — attempted evidence cannot support the claim;
