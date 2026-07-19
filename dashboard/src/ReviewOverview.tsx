@@ -1,24 +1,21 @@
 import {
-  ArrowRight,
   Bot,
   Check,
   ChevronRight,
   CircleAlert,
   FileSearch,
   GitCompareArrows,
-  ListTree,
   ShieldCheck,
   X,
 } from "lucide-react";
-import type { ReactNode } from "react";
 
 import { nextActionMessageKey } from "./ActionCenter";
-import { buildTraceCaseIndex } from "./eval-execution-trace";
 import {
   describeAssertionDecision,
   describeDashboardCase,
   describeEvidenceNode,
 } from "./evidence-semantics";
+import { buildReviewViewModel } from "./review-view-model";
 import type {
   ActionAttributionId,
   DashboardData,
@@ -50,18 +47,24 @@ function nodeMap(data: DashboardData): Map<string, SpineNode> {
   return new Map(data.spine.map((node) => [node.id, node]));
 }
 
-function DecisionIcon({ status }: { status: string }) {
-  if (status === "ready") return <Check size={17} strokeWidth={2.4} />;
-  if (status === "blocked") return <X size={17} strokeWidth={2.4} />;
+function DecisionIcon({ tone }: { tone: "good" | "bad" | "warn" | "neutral" }) {
+  if (tone === "good") return <Check size={17} strokeWidth={2.4} />;
+  if (tone === "bad") return <X size={17} strokeWidth={2.4} />;
   return <CircleAlert size={17} />;
 }
 
 function reviewDecisionCopy(
   locale: "en" | "zh-CN",
   data: DashboardData,
+  releaseReady: boolean,
 ): { title: string; detail: string } {
   const decision = data.review.decision;
-  if (decision.status === "ready") {
+  if (
+    releaseReady &&
+    decision.status === "ready" &&
+    decision.reason === "release_conditions_met" &&
+    decision.release_eligible
+  ) {
     return locale === "zh-CN"
       ? {
           title: "可以进入发布确认",
@@ -132,35 +135,30 @@ function reviewDecisionCopy(
 
 export function ReviewOverview({
   data,
-  archiveOpen,
-  onToggleArchive,
   onOpenEvidence,
   onOpenDiff,
   onOpenTrace,
   onOpenActionCenter,
-  children,
 }: {
   data: DashboardData;
-  archiveOpen: boolean;
-  onToggleArchive: () => void;
   onOpenEvidence: (node: SpineNode) => void;
   onOpenDiff: () => void;
   onOpenTrace: () => void;
   onOpenActionCenter: () => void;
-  children: ReactNode;
 }) {
   const { locale, t } = useUiPreferences();
   const nodesById = nodeMap(data);
-  const decision = reviewDecisionCopy(locale, data);
+  const viewModel = buildReviewViewModel(data);
+  const decisionTone = viewModel.decision.tone;
+  const decision = reviewDecisionCopy(
+    locale,
+    data,
+    decisionTone === "good",
+  );
   const nextActionKey = nextActionMessageKey(data.review.next_action);
-  const decisionTone = data.review.decision.status === "ready"
-    ? "good"
-    : data.review.decision.status === "blocked"
-      ? "bad"
-      : "warn";
   const automaticContinuation =
     data.action_center.continuation.mode === "automatic";
-  const noBlockersReady = data.review.decision.status === "ready";
+  const noBlockersReady = decisionTone === "good";
   const automaticNoBlockers =
     automaticContinuation && data.review.decision.reason === "audit_required";
   const noBlockersTitleKey = noBlockersReady
@@ -168,17 +166,12 @@ export function ReviewOverview({
     : "noKnownBlockerEvidenceIncomplete";
   const configuredRatio = (passed: number, total: number) =>
     total > 0 ? `${passed}/${total}` : t("notConfigured");
-  const traceIndex = buildTraceCaseIndex(data.cases);
-  const expectedTraces = traceIndex.reduce(
-    (total, item) => total + item.expectedExecutions,
-    0,
-  );
-  const capturedTraces = traceIndex.reduce(
-    (total, item) => total + item.capturedTraces,
-    0,
-  );
-  const traceCoverageComplete =
-    expectedTraces > 0 && capturedTraces === expectedTraces;
+  const expectedTraces = viewModel.execution.expected;
+  const capturedTraces = viewModel.execution.captured;
+  const releaseEvidenceIncomplete = viewModel.evidence.status !== "complete";
+  const evidenceCoverageTone = releaseEvidenceIncomplete
+    ? viewModel.evidence.tone
+    : viewModel.execution.tone;
   const primaryBlocker = data.review.blockers[0];
   const primaryRiskEvidence = primaryBlocker?.evidence_ids
     .map((id) => nodesById.get(id))
@@ -188,11 +181,11 @@ export function ReviewOverview({
     <div className="review-overview">
       <section className={`review-decision-hero tone-${decisionTone}`}>
         <div className="review-decision-mark" aria-hidden="true">
-          <DecisionIcon status={data.review.decision.status} />
+          <DecisionIcon tone={decisionTone} />
         </div>
         <div className="review-decision-copy">
           <span className="pane-kicker">{t("reviewOverview")}</span>
-          <h2>{decision.title}</h2>
+          <h2 id="review-decision-title">{decision.title}</h2>
           <p>{decision.detail}</p>
         </div>
         <div className="review-decision-counts" aria-label={t("decisionCoverage")}>
@@ -221,27 +214,45 @@ export function ReviewOverview({
         className="decision-evidence-spine"
         aria-label={t("decisionEvidence")}
       >
+        <div className={`decision-summary tone-${decisionTone}`}>
+          <DecisionIcon tone={decisionTone} />
+          <span>
+            <small>{t("releaseState")}</small>
+            <strong>{decision.title}</strong>
+          </span>
+        </div>
         <button
           type="button"
-          className={data.diffs.length > 0 ? "tone-neutral" : "tone-warn"}
-          aria-label={t("reviewChangeEvidence")}
-          onClick={onOpenDiff}
+          className={primaryBlocker ? "tone-bad" : noBlockersReady ? "tone-good" : "tone-warn"}
+          aria-label={t("reviewPrimaryRiskEvidence")}
+          onClick={() =>
+            primaryRiskEvidence
+              ? onOpenEvidence(primaryRiskEvidence)
+              : onOpenActionCenter()
+          }
         >
-          <GitCompareArrows size={17} aria-hidden="true" />
+          <CircleAlert size={17} aria-hidden="true" />
           <span>
-            <small>{t("whatChanged")}</small>
+            <small>{t("problemsToFix")}</small>
             <strong>
-              {data.diffs.length > 0
-                ? t("changeEvidenceCount", { count: data.diffs.length })
-                : t("noChangeEvidenceCaptured")}
+              {primaryBlocker
+                ? t("releaseBlockerCount", { count: data.review.blockers.length })
+                : noBlockersReady
+                  ? t("noKnownRisk")
+                  : t("evidenceIncomplete")}
             </strong>
           </span>
           <ChevronRight size={15} aria-hidden="true" />
         </button>
         <button
           type="button"
-          className={traceCoverageComplete ? "tone-good" : "tone-warn"}
+          className={`tone-${evidenceCoverageTone}`}
           aria-label={t("reviewExecutionEvidence")}
+          aria-describedby={
+            releaseEvidenceIncomplete
+              ? "review-release-evidence-quality"
+              : undefined
+          }
           onClick={onOpenTrace}
         >
           <ShieldCheck size={17} aria-hidden="true" />
@@ -255,28 +266,27 @@ export function ReviewOverview({
                   })
                 : t("notConfigured")}
             </strong>
+            {releaseEvidenceIncomplete && (
+              <em id="review-release-evidence-quality">
+                {t("evidenceIncomplete")}
+              </em>
+            )}
           </span>
           <ChevronRight size={15} aria-hidden="true" />
         </button>
         <button
           type="button"
-          className={primaryBlocker ? "tone-bad" : noBlockersReady ? "tone-good" : "tone-warn"}
-          aria-label={t("reviewPrimaryRiskEvidence")}
-          onClick={() =>
-            primaryRiskEvidence
-              ? onOpenEvidence(primaryRiskEvidence)
-              : onOpenActionCenter()
-          }
+          className={data.diffs.length > 0 ? "tone-neutral" : "tone-warn"}
+          aria-label={t("reviewChangeEvidence")}
+          onClick={onOpenDiff}
         >
-          <CircleAlert size={17} aria-hidden="true" />
+          <GitCompareArrows size={17} aria-hidden="true" />
           <span>
-            <small>{t("primaryRisk")}</small>
+            <small>{t("whatChanged")}</small>
             <strong>
-              {primaryBlocker
-                ? t("releaseBlockerCount", { count: data.review.blockers.length })
-                : noBlockersReady
-                  ? t("noKnownRisk")
-                  : t("evidenceIncomplete")}
+              {data.diffs.length > 0
+                ? t("changeEvidenceCount", { count: data.diffs.length })
+                : t("noChangeEvidenceCaptured")}
             </strong>
           </span>
           <ChevronRight size={15} aria-hidden="true" />
@@ -507,86 +517,25 @@ export function ReviewOverview({
           )}
         </section>
 
-        <aside className="review-decision-rail">
-          <section className="review-criteria-summary">
-            <div className="review-rail-label">
-              <ShieldCheck size={14} aria-hidden="true" />
-              {t("candidateAcceptanceConditions")}
-            </div>
-            <ul>
-              {data.action_center.acceptance.criteria.map((criterion) => (
-                <li className={`tone-${criterion.status}`} key={criterion.id}>
-                  <span aria-hidden="true">
-                    {criterion.status === "satisfied" ? (
-                      <Check size={11} />
-                    ) : criterion.status === "failed" ? (
-                      <X size={11} />
-                    ) : (
-                      <CircleAlert size={11} />
-                    )}
-                  </span>
-                  <div>
-                    <strong>{t(`criterion_${criterion.id}`)}</strong>
-                    <small>
-                      {configuredRatio(criterion.passed, criterion.total)}
-                    </small>
-                  </div>
-                </li>
-              ))}
-            </ul>
-            <div className="review-safeguard-footnote">
-              <span>{t("safeguardsSatisfied")}</span>
-              <strong>
-                {data.review.safeguards.passed_gate_ids.length +
-                  data.review.safeguards.passed_case_ids.length}
-              </strong>
-            </div>
-            <p>{t("passedGateCount", { count: data.review.safeguards.passed_gate_ids.length })}</p>
-            <p>{t("passedScenarioCount", { count: data.review.safeguards.passed_case_ids.length })}</p>
-          </section>
-          <section className="review-next-action">
-            <div className="review-rail-label">
-              <Bot size={14} aria-hidden="true" />
-              {t("recommendedNextStep")}
-            </div>
-            <strong>{t(nextActionKey ?? "nextActionReviewEvidence")}</strong>
-            <p>
-              {t(
-                automaticContinuation
-                  ? "automaticLeadAgentOwnerDescription"
-                  : "leadAgentOwnerDescription",
-              )}
-            </p>
-            <button type="button" onClick={onOpenActionCenter}>
-              {t("openActionCenter")}
-              <ArrowRight size={14} aria-hidden="true" />
-            </button>
-          </section>
-        </aside>
-      </div>
-
-      <section className={`review-audit-archive ${archiveOpen ? "is-open" : ""}`}>
-        <button
-          type="button"
-          className="review-archive-toggle"
-          aria-expanded={archiveOpen}
-          onClick={onToggleArchive}
-        >
-          <span className="review-archive-icon" aria-hidden="true">
-            <ListTree size={16} />
-          </span>
-          <span>
-            <strong>{t("auditArchive")}</strong>
-            <small>{t("auditArchiveDescription")}</small>
-          </span>
-          <em>{data.spine.length}</em>
-          <span className="review-archive-action">
-            {t(archiveOpen ? "closeAuditArchive" : "openAuditArchive")}
+        <section className="review-next-action review-next-action-card">
+          <div className="review-rail-label">
+            <Bot size={14} aria-hidden="true" />
+            {t("recommendedNextStep")}
+          </div>
+          <strong>{t(nextActionKey ?? "nextActionReviewEvidence")}</strong>
+          <p>
+            {t(
+              automaticContinuation
+                ? "automaticLeadAgentOwnerDescription"
+                : "leadAgentOwnerDescription",
+            )}
+          </p>
+          <button type="button" onClick={onOpenActionCenter}>
+            {t("openActionCenter")}
             <ChevronRight size={14} aria-hidden="true" />
-          </span>
-        </button>
-        {archiveOpen && <div className="review-archive-content">{children}</div>}
-      </section>
+          </button>
+        </section>
+      </div>
     </div>
   );
 }

@@ -79,6 +79,15 @@ function renderWithPreferences(node: ReactNode) {
   );
 }
 
+function openDisplayPreferences() {
+  const trigger = screen.getByRole("button", {
+    name: /^(Display preferences|显示偏好)$/,
+  });
+  if (trigger.getAttribute("aria-expanded") !== "true") {
+    fireEvent.click(trigger);
+  }
+}
+
 function traceFixture(arm: string, repeat: number) {
   const base = {
     contract: "skill-reviewer.agent-trace-event" as const,
@@ -914,7 +923,7 @@ describe("EvidenceDashboard", () => {
   it("does not use success semantics when evidence is incomplete without known blockers", () => {
     const incompleteData = structuredClone(data);
     incompleteData.review.decision = {
-      status: "inconclusive",
+      status: "ready",
       reason: "evidence_incomplete",
       release_eligible: false,
       blocking_scenario_count: 0,
@@ -958,6 +967,210 @@ describe("EvidenceDashboard", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("uses four task-based views and reserves evidence navigation for Audit", () => {
+    const { container } = renderWithPreferences(
+      <EvidenceDashboard data={data} connectionState="live" />,
+    );
+
+    expect(
+      screen.getAllByRole("tab").map((tab) => tab.textContent),
+    ).toEqual(["Review", "Changes (1)", "Runs", "Audit"]);
+    expect(container.querySelector("#case-rail")).toHaveAttribute("hidden");
+    expect(container.querySelector("#evidence-inspector")).toHaveAttribute(
+      "hidden",
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: "Audit" }));
+    expect(container.querySelector("#case-rail")).not.toHaveAttribute("hidden");
+    expect(
+      screen.getByRole("heading", { name: "Complete audit record" }),
+    ).toBeInTheDocument();
+  });
+
+  it("opens selected evidence in a contextual drawer without leaving Review", () => {
+    renderWithPreferences(
+      <EvidenceDashboard data={data} connectionState="live" />,
+    );
+
+    const opener = screen.getByRole("button", {
+      name: "Review the evidence for this problem",
+    });
+    opener.focus();
+    fireEvent.click(opener);
+
+    expect(screen.getByRole("tab", { name: "Review" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    const drawer = screen.getByRole("dialog", { name: "Evidence inspector" });
+    expect(drawer).toBeInTheDocument();
+    expect(drawer).not.toHaveAttribute("aria-modal");
+    expect(within(drawer).queryByText("Limitations")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "close" })).toHaveFocus();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(
+      screen.queryByRole("dialog", { name: "Evidence inspector" }),
+    ).not.toBeInTheDocument();
+    expect(opener).toHaveFocus();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Review the evidence for this problem" }),
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Runs" }));
+    expect(
+      screen.queryByRole("dialog", { name: "Evidence inspector" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("turns a full-width mobile evidence drawer into a focus-contained modal", () => {
+    const originalInnerWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 390,
+    });
+
+    try {
+      renderWithPreferences(
+        <EvidenceDashboard data={data} connectionState="live" />,
+      );
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: "Review the evidence for this problem",
+        }),
+      );
+
+      const drawer = screen.getByRole("dialog", {
+        name: "Evidence inspector",
+      });
+      const closeButton = within(drawer).getByRole("button", { name: "close" });
+      expect(drawer).toHaveAttribute("aria-modal", "true");
+      expect(drawer).toHaveClass("is-modal");
+
+      closeButton.focus();
+      fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
+      expect(drawer).toContainElement(document.activeElement as HTMLElement);
+      expect(closeButton).not.toHaveFocus();
+      fireEvent.keyDown(document, { key: "Tab" });
+      expect(closeButton).toHaveFocus();
+    } finally {
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        value: originalInnerWidth,
+      });
+      window.dispatchEvent(new Event("resize"));
+    }
+  });
+
+  it("coordinates drawers and command search as a single modal layer", async () => {
+    renderWithPreferences(
+      <EvidenceDashboard data={data} connectionState="live" />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Review the evidence for this problem",
+      }),
+    );
+    expect(
+      screen.getByRole("dialog", { name: "Evidence inspector" }),
+    ).toBeInTheDocument();
+
+    const preferencesTrigger = screen.getByRole("button", {
+      name: "Display preferences",
+    });
+    fireEvent.click(preferencesTrigger);
+    expect(
+      screen.queryByRole("dialog", { name: "Evidence inspector" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("dialog", { name: "Display preferences" }),
+    ).toBeInTheDocument();
+    expect(preferencesTrigger).toHaveFocus();
+    fireEvent.keyDown(document, { key: "Escape" });
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Review the evidence for this problem",
+      }),
+    );
+
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    let commandDialog = await screen.findByRole("dialog", {
+      name: "Go to evidence",
+    });
+    expect(
+      screen.queryByRole("dialog", { name: "Evidence inspector" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+
+    fireEvent.keyDown(commandDialog, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(document.body.style.overflow).toBe("");
+
+    fireEvent.click(screen.getByRole("button", { name: "Review next steps" }));
+    expect(screen.getByRole("dialog", { name: "Next steps" })).toBeInTheDocument();
+    expect(document.body.style.overflow).toBe("hidden");
+
+    fireEvent.click(screen.getByRole("button", { name: /Go to evidence/ }));
+    commandDialog = await screen.findByRole("dialog", {
+      name: "Go to evidence",
+    });
+    expect(
+      screen.queryByRole("dialog", { name: "Next steps" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+
+    fireEvent.keyDown(commandDialog, { key: "Escape" });
+    expect(document.body.style.overflow).toBe("");
+
+    openDisplayPreferences();
+    const preferencesDialog = screen.getByRole("dialog", {
+      name: "Display preferences",
+    });
+    fireEvent.keyDown(
+      within(preferencesDialog).getByRole("button", {
+        name: "Increase text size",
+      }),
+      { key: "k", ctrlKey: true },
+    );
+    commandDialog = await screen.findByRole("dialog", {
+      name: "Go to evidence",
+    });
+    expect(
+      screen.queryByRole("dialog", { name: "Display preferences" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    fireEvent.keyDown(commandDialog, { key: "Escape" });
+
+    openDisplayPreferences();
+    window.history.replaceState({}, "", "/skill-reviewer/#panel=action");
+    fireEvent.popState(window);
+    await screen.findByRole("dialog", { name: "Next steps" });
+    expect(
+      screen.queryByRole("dialog", { name: "Display preferences" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+  });
+
+  it("restores a Runs deep link without treating its selected case as an open drawer", () => {
+    window.history.replaceState(
+      {},
+      "",
+      `/skill-reviewer/#session=${localSession}&view=runs&node=case%3Aselection-quality`,
+    );
+
+    renderWithPreferences(
+      <EvidenceDashboard data={data} connectionState="live" />,
+    );
+
+    expect(screen.getByRole("tab", { name: "Runs" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(
+      screen.queryByRole("dialog", { name: "Evidence inspector" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("links the decision evidence spine directly to change and execution evidence", () => {
     renderWithPreferences(
       <EvidenceDashboard data={data} connectionState="live" />,
@@ -969,19 +1182,32 @@ describe("EvidenceDashboard", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Review change evidence" }),
     );
-    expect(screen.getByRole("tab", { name: "Diff (1)" })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: "Changes (1)" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
 
-    fireEvent.click(screen.getByRole("tab", { name: "Review overview" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Review" }));
     fireEvent.click(
       screen.getByRole("button", { name: "Review execution evidence" }),
     );
-    expect(screen.getByRole("tab", { name: "Agent trace" })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: "Runs" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
+  });
+
+  it("does not treat complete trace capture as verified release evidence", () => {
+    renderWithPreferences(
+      <EvidenceDashboard data={data} connectionState="live" />,
+    );
+
+    const executionEvidence = screen.getByRole("button", {
+      name: "Review execution evidence",
+    });
+    expect(executionEvidence).toHaveClass("tone-warn");
+    expect(executionEvidence).not.toHaveClass("tone-good");
+    expect(executionEvidence).toHaveTextContent("Release evidence is incomplete");
   });
 
   it("opens next steps as a review drawer instead of a duplicate workspace tab", () => {
@@ -990,13 +1216,18 @@ describe("EvidenceDashboard", () => {
     );
 
     expect(screen.queryByRole("tab", { name: "Next steps" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Review next steps" }));
+    const opener = screen.getByRole("button", { name: "Review next steps" });
+    opener.focus();
+    fireEvent.click(opener);
     expect(screen.getByRole("dialog", { name: "Next steps" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Close next steps" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Review overview" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Close next steps" })).toHaveFocus();
+    expect(screen.getByRole("tab", { name: "Review" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Next steps" })).not.toBeInTheDocument();
+    expect(opener).toHaveFocus();
   });
 
   it("treats an empty diff as missing change evidence rather than proof of no change", () => {
@@ -1007,7 +1238,7 @@ describe("EvidenceDashboard", () => {
     );
 
     expect(
-      screen.getByRole("tab", { name: "Diff · evidence missing" }),
+      screen.getByRole("tab", { name: "Changes" }),
     ).toBeInTheDocument();
     expect(screen.getByText("No change evidence captured")).toBeInTheDocument();
     fireEvent.click(
@@ -1040,6 +1271,8 @@ describe("EvidenceDashboard", () => {
     renderWithPreferences(
       <EvidenceDashboard data={singleCaseData} connectionState="live" />,
     );
+
+    fireEvent.click(screen.getByRole("tab", { name: "Audit" }));
 
     expect(screen.queryByRole("searchbox", { name: "Search cases" })).not.toBeInTheDocument();
     expect(screen.queryByRole("group", { name: "Scenario result" })).not.toBeInTheDocument();
@@ -1077,6 +1310,9 @@ describe("EvidenceDashboard", () => {
     expect(screen.getByText(/continuity epoch 1/)).toBeInTheDocument();
     expect(screen.getAllByText("Release quality selection").length).toBeGreaterThan(0);
     expect(screen.queryByText("selection-quality")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Why this failed").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("What to do next").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("tab", { name: "Audit" }));
     expect(
       screen.getByRole("group", { name: "Evaluation lifecycle" }),
     ).toBeInTheDocument();
@@ -1101,11 +1337,6 @@ describe("EvidenceDashboard", () => {
       ),
     ).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /execute|approve|run eval/i })).not.toBeInTheDocument();
-    expect(screen.getAllByText("Why this failed").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("What to do next").length).toBeGreaterThan(0);
-    fireEvent.click(
-      screen.getByRole("button", { name: /Complete audit record/ }),
-    );
     const failedCaseRow = screen
       .getByRole("button", {
         name: "Review scenario result: Public safety audit",
@@ -1113,7 +1344,7 @@ describe("EvidenceDashboard", () => {
       .closest(".evidence-row");
     expect(failedCaseRow?.querySelector('[data-evidence-icon="circle-x"]')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("tab", { name: "Agent trace" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Runs" }));
     expect(
       screen.getByRole("heading", { name: "Agent execution records" }),
     ).toBeInTheDocument();
@@ -1149,7 +1380,8 @@ describe("EvidenceDashboard", () => {
     expect(
       screen.queryByText("Observable execution, not private chain-of-thought"),
     ).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "Review overview" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Review" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Audit" }));
 
     fireEvent.click(
       screen.getByRole("button", { name: "Release audit; 1 cases" }),
@@ -1180,7 +1412,7 @@ describe("EvidenceDashboard", () => {
     expect(screen.getByText(/preference candidate/)).toBeInTheDocument();
     expect(screen.getByText("native-agent")).toBeInTheDocument();
     expect(screen.getByText("lead-agent-dispatch")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "Diff (1)" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Changes (1)" }));
     expect(await screen.findByText("Rendered diff SKILL.md")).toBeInTheDocument();
     expect(screen.getByRole("searchbox", { name: "Filter changed files" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Split diff" })).toHaveAttribute(
@@ -1219,11 +1451,8 @@ describe("EvidenceDashboard", () => {
       screen.getByRole("button", { name: "Exit diff focus mode" }),
     ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("tab", { name: "Review overview" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Audit" }));
     expect(container.querySelector(".app-shell")).not.toHaveClass("is-focus-mode");
-    fireEvent.click(
-      screen.getByRole("button", { name: /Expand audit record/i }),
-    );
     fireEvent.click(
       screen.getByRole("button", { name: "Expand Release quality selection" }),
     );
@@ -1261,7 +1490,7 @@ describe("EvidenceDashboard", () => {
       <EvidenceDashboard data={semanticData} connectionState="live" />,
     );
 
-    fireEvent.click(screen.getByRole("tab", { name: "Agent trace" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Runs" }));
     fireEvent.click(
       screen.getByRole("button", { name: "Release quality selection" }),
     );
@@ -1293,7 +1522,7 @@ describe("EvidenceDashboard", () => {
     renderWithPreferences(
       <EvidenceDashboard data={attentionData} connectionState="live" />,
     );
-    fireEvent.click(screen.getByRole("tab", { name: "Agent trace" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Runs" }));
 
     const attention = screen.getByRole("region", {
       name: "Trace attention summary",
@@ -1333,6 +1562,19 @@ describe("EvidenceDashboard", () => {
     renderWithPreferences(<EvidenceDashboard data={data} connectionState="live" />);
     fireEvent.click(screen.getByRole("button", { name: "Review next steps" }));
     const actionDrawer = screen.getByRole("dialog", { name: "Next steps" });
+    const actionClose = within(actionDrawer).getByRole("button", {
+      name: "Close next steps",
+    });
+    const taskAuditSummary = actionDrawer.querySelector<HTMLElement>(
+      ".task-audit > summary",
+    );
+    if (!taskAuditSummary) throw new Error("task audit summary is missing");
+
+    actionClose.focus();
+    fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
+    expect(taskAuditSummary).toHaveFocus();
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(actionClose).toHaveFocus();
 
     expect(
       within(actionDrawer).getByRole("heading", { name: "What to do next" }),
@@ -1366,9 +1608,14 @@ describe("EvidenceDashboard", () => {
       fetchMock.mock.calls.some(([, init]) => init?.method === "POST"),
     ).toBe(false);
 
+    openDisplayPreferences();
     fireEvent.click(
       screen.getByRole("button", { name: "Switch to Simplified Chinese" }),
     );
+    expect(
+      screen.queryByRole("dialog", { name: "下一步" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "查看下一步" }));
     expect(screen.getByText("发布条件检查")).toBeInTheDocument();
     expect(screen.queryByText("当前建议")).not.toBeInTheDocument();
     expect(screen.queryByText("由主 Agent 处理")).not.toBeInTheDocument();
@@ -1395,6 +1642,12 @@ describe("EvidenceDashboard", () => {
       <EvidenceDashboard data={automaticData} connectionState="live" />,
     );
 
+    const evidenceCoverage = screen.getByRole("button", {
+      name: "Review execution evidence",
+    });
+    expect(evidenceCoverage).toHaveClass("tone-warn");
+    expect(evidenceCoverage).toHaveTextContent("Release evidence is incomplete");
+
     expect(
       screen.getByText(
         "No known blocker remains, but release evidence is incomplete and release is not ready. The lead Agent continues to the next locked evaluation stage automatically.",
@@ -1405,6 +1658,36 @@ describe("EvidenceDashboard", () => {
         "No known blocker was found, but release evidence is incomplete",
       ),
     ).not.toHaveLength(0);
+  });
+
+  it("does not present release-ready copy when execution evidence is missing", () => {
+    const incompleteReadyData: DashboardData = structuredClone(data);
+    incompleteReadyData.review.decision = {
+      status: "ready",
+      reason: "release_conditions_met",
+      release_eligible: true,
+      blocking_scenario_count: 0,
+      blocking_gate_count: 0,
+    };
+    incompleteReadyData.review.blockers = [];
+    for (const item of incompleteReadyData.cases) {
+      for (const arm of item.arms) arm.executions = [];
+    }
+
+    const { container } = renderWithPreferences(
+      <EvidenceDashboard data={incompleteReadyData} connectionState="live" />,
+    );
+
+    expect(
+      screen.queryByRole("heading", { name: "Ready for release confirmation" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Evidence is still incomplete" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Review execution evidence" }),
+    ).toHaveClass("tone-warn");
+    expect(container.querySelector('a[href="#review-decision-title"]')).toBeNull();
   });
 
   it("creates an audited task only after the state reaches a human release boundary", async () => {
@@ -1540,6 +1823,7 @@ describe("EvidenceDashboard", () => {
       />,
     );
 
+    expect(screen.getByRole("dialog", { name: "Next steps" })).toBeInTheDocument();
     expect(screen.getByText("Action gateway is read-only")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Save local handoff" }),
@@ -1593,9 +1877,7 @@ describe("EvidenceDashboard", () => {
     expect(
       screen.queryByRole("button", { name: "Collapse Immutable evaluation run" }),
     ).not.toBeInTheDocument();
-    fireEvent.click(
-      screen.getByRole("button", { name: /Complete audit record/ }),
-    );
+    fireEvent.click(screen.getByRole("tab", { name: "Audit" }));
 
     expect(
       screen.getByRole("button", { name: "Collapse Immutable evaluation run" }),
@@ -1683,10 +1965,11 @@ describe("EvidenceDashboard", () => {
     renderWithPreferences(
       <EvidenceDashboard data={comparisonData} connectionState="live" />,
     );
+    openDisplayPreferences();
     fireEvent.click(
       screen.getByRole("button", { name: "Switch to Simplified Chinese" }),
     );
-    fireEvent.click(screen.getByRole("button", { name: /完整审计记录/ }));
+    fireEvent.click(screen.getByRole("tab", { name: "审计" }));
     fireEvent.click(
       screen.getByRole("button", { name: "展开 候选质量是否达到发布要求" }),
     );
@@ -1735,12 +2018,11 @@ describe("EvidenceDashboard", () => {
     renderWithPreferences(
       <EvidenceDashboard data={evidenceData} connectionState="live" />,
     );
+    openDisplayPreferences();
     fireEvent.click(
       screen.getByRole("button", { name: "Switch to Simplified Chinese" }),
     );
-    fireEvent.click(
-      screen.getByRole("button", { name: /完整审计记录/ }),
-    );
+    fireEvent.click(screen.getByRole("tab", { name: "审计" }));
     fireEvent.click(
       screen.getByRole("button", { name: "展开 候选质量是否达到发布要求" }),
     );
@@ -1830,12 +2112,11 @@ describe("EvidenceDashboard", () => {
     renderWithPreferences(
       <EvidenceDashboard data={explainableData} connectionState="live" />,
     );
+    openDisplayPreferences();
     fireEvent.click(
       screen.getByRole("button", { name: "Switch to Simplified Chinese" }),
     );
-    fireEvent.click(
-      screen.getByRole("button", { name: /完整审计记录/ }),
-    );
+    fireEvent.click(screen.getByRole("tab", { name: "审计" }));
     fireEvent.click(
       screen.getByRole("button", {
         name: "查看门禁依据：候选质量是否达到发布要求｜候选结果检查",
@@ -1863,6 +2144,29 @@ describe("EvidenceDashboard", () => {
     expect(screen.getByText("实际观察")).toBeInTheDocument();
   });
 
+  it("keeps display preferences compact and restores trigger focus on Escape", () => {
+    renderWithPreferences(
+      <EvidenceDashboard data={data} connectionState="live" />,
+    );
+
+    const trigger = screen.getByRole("button", {
+      name: "Display preferences",
+    });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(
+      screen.queryByRole("dialog", { name: "Display preferences" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(trigger);
+    expect(
+      screen.getByRole("dialog", { name: "Display preferences" }),
+    ).toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(trigger).toHaveFocus();
+  });
+
   it("switches locale and monochrome theme across the complete workbench", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -1886,6 +2190,10 @@ describe("EvidenceDashboard", () => {
     expect(document.documentElement).toHaveAttribute("data-font-scale", "100");
     expect(document.title).toBe("Skill Reviewer · Evidence Workbench");
 
+    expect(
+      screen.queryByRole("button", { name: "Switch to Simplified Chinese" }),
+    ).not.toBeInTheDocument();
+    openDisplayPreferences();
     fireEvent.click(
       screen.getByRole("button", { name: "Switch to Simplified Chinese" }),
     );
@@ -1902,6 +2210,9 @@ describe("EvidenceDashboard", () => {
     ).toBeGreaterThan(0);
     expect(screen.getAllByText("为什么没有通过").length).toBeGreaterThan(0);
     expect(screen.getAllByText("应该怎么处理").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("准备并绑定发布审计").length).toBeGreaterThan(0);
+    expect(screen.getByText("查看下一步")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "审计" }));
     expect(
       screen.getByRole("button", {
         name: "需处理场景；匹配场景数：1",
@@ -1915,8 +2226,6 @@ describe("EvidenceDashboard", () => {
     expect(
       screen.getAllByText("候选质量是否达到发布要求").length,
     ).toBeGreaterThan(0);
-    expect(screen.getAllByText("准备并绑定发布审计").length).toBeGreaterThan(0);
-    expect(screen.getByText("查看下一步")).toBeInTheDocument();
     expect(screen.getAllByText("公开校准场景").length).toBeGreaterThan(0);
     expect(screen.getByText("已完成新旧版对照验证")).toBeInTheDocument();
     expect(window.localStorage.getItem(preferenceStorageKeys.locale)).toBe("zh-CN");
@@ -1924,7 +2233,7 @@ describe("EvidenceDashboard", () => {
       screen.getByRole("button", { name: "放大文字" }),
     ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("tab", { name: "文件差异 (1)" }));
+    fireEvent.click(screen.getByRole("tab", { name: "变更 (1)" }));
     expect(await screen.findByText("Rendered diff SKILL.md")).toBeInTheDocument();
     expect(diffOptionsSpy).toHaveBeenLastCalledWith(
       expect.objectContaining({ theme: "pierre-light" }),
@@ -1951,6 +2260,7 @@ describe("EvidenceDashboard", () => {
       <EvidenceDashboard data={data} connectionState="live" />,
     );
 
+    openDisplayPreferences();
     const increase = screen.getByRole("button", {
       name: "Increase text size",
     });
@@ -2009,6 +2319,7 @@ describe("EvidenceDashboard", () => {
       "1.25",
     );
     expect(screen.getAllByText("评审总览").length).toBeGreaterThan(0);
+    openDisplayPreferences();
     expect(
       screen.getByRole("button", { name: "切换到浅色主题" }),
     ).toBeInTheDocument();
@@ -2037,11 +2348,12 @@ describe("EvidenceDashboard", () => {
         "390px",
       );
 
+      fireEvent.click(screen.getByRole("tab", { name: "Audit" }));
       const railHandle = screen.getByRole("separator", {
         name: "Resize evaluation scenarios",
       });
       fireEvent.click(
-        screen.getByRole("button", { name: /Complete audit record/ }),
+        screen.getByRole("button", { name: "Release quality selection · passed" }),
       );
       const inspectorHandle = screen.getByRole("separator", {
         name: "Resize evidence inspector",
@@ -2069,6 +2381,7 @@ describe("EvidenceDashboard", () => {
         ).toEqual({ rail: 220, inspector: 560 });
       });
 
+      openDisplayPreferences();
       fireEvent.click(
         screen.getByRole("button", { name: "Switch to Simplified Chinese" }),
       );
@@ -2084,6 +2397,42 @@ describe("EvidenceDashboard", () => {
         { key: "Enter" },
       );
       expect(workspace?.style.getPropertyValue("--rail-width")).toBe("270px");
+    } finally {
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        value: originalInnerWidth,
+      });
+      window.dispatchEvent(new Event("resize"));
+    }
+  });
+
+  it("opens Audit evidence in a drawer when the two-pane layout omits the inspector", () => {
+    const originalInnerWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 1000,
+    });
+
+    try {
+      const { container } = renderWithPreferences(
+        <EvidenceDashboard data={data} connectionState="live" />,
+      );
+      const workspace = container.querySelector<HTMLElement>(".workspace-grid");
+      expect(workspace).toHaveAttribute("data-layout-mode", "two");
+
+      fireEvent.click(screen.getByRole("tab", { name: "Audit" }));
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: "Release quality selection · passed",
+        }),
+      );
+
+      expect(container.querySelector("#evidence-inspector")).toHaveClass(
+        "evidence-drawer",
+      );
+      expect(
+        screen.queryByRole("separator", { name: "Resize evidence inspector" }),
+      ).not.toBeInTheDocument();
     } finally {
       Object.defineProperty(window, "innerWidth", {
         configurable: true,
@@ -2130,9 +2479,11 @@ describe("EvidenceDashboard", () => {
       <EvidenceDashboard data={data} connectionState="live" />,
     );
 
+    openDisplayPreferences();
     fireEvent.click(
       screen.getByRole("button", { name: "Switch to Simplified Chinese" }),
     );
+    fireEvent.click(screen.getByRole("tab", { name: "审计" }));
 
     const caseList = container.querySelector(".case-list");
     expect(caseList).toHaveTextContent("候选质量是否达到发布要求");
@@ -2183,18 +2534,8 @@ describe("EvidenceDashboard", () => {
       <EvidenceDashboard data={data} connectionState="live" />,
     );
 
-    expect(
-      screen.getByRole("button", { name: "Release audit; 1 cases" }),
-    ).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-    expect(
-      screen.getByRole("button", {
-        name: "Needs attention; matching scenario count: 1",
-      }),
-    ).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("tab", { name: "Diff (1)" })).toHaveAttribute(
+    expect(container.querySelector("#case-rail")).toHaveAttribute("hidden");
+    expect(screen.getByRole("tab", { name: "Changes (1)" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
@@ -2216,6 +2557,8 @@ describe("EvidenceDashboard", () => {
     const { container } = renderWithPreferences(
       <EvidenceDashboard data={data} connectionState="live" />,
     );
+    fireEvent.click(screen.getByRole("tab", { name: "Audit" }));
+    expect(container.querySelector("#case-rail")).not.toHaveAttribute("hidden");
     const caseRows = container.querySelectorAll<HTMLButtonElement>(".case-row");
     caseRows[0]?.focus();
     fireEvent.keyDown(caseRows[0]!, { key: "ArrowDown" });
@@ -2265,6 +2608,8 @@ describe("EvidenceDashboard", () => {
       />,
     );
 
+    fireEvent.click(screen.getByRole("tab", { name: "Audit" }));
+
     fireEvent.click(
       screen.getByRole("button", {
         name: "Needs attention; matching scenario count: 1",
@@ -2287,9 +2632,7 @@ describe("EvidenceDashboard", () => {
     expect(clipboardWrite.mock.calls[0]?.[0]).not.toContain("session=");
     expect(clipboardWrite.mock.calls[0]?.[0]).toContain("caseStatus=attention");
 
-    fireEvent.click(
-      screen.getByRole("button", { name: /Complete audit record/ }),
-    );
+    fireEvent.click(container.querySelector<HTMLButtonElement>(".case-row")!);
     fireEvent.click(
       screen.getByRole("button", { name: "Copy evidence reference" }),
     );
@@ -2322,6 +2665,7 @@ describe("EvidenceDashboard", () => {
     const view = renderWithPreferences(
       <EvidenceDashboard data={data} connectionState="live" />,
     );
+    fireEvent.click(screen.getByRole("tab", { name: "Audit" }));
     fireEvent.click(
       screen.getByRole("button", { name: "Release audit; 1 cases" }),
     );
@@ -2330,7 +2674,7 @@ describe("EvidenceDashboard", () => {
     window.history.pushState(
       {},
       "",
-      `/skill-reviewer/#session=${localSession}&split=selection&node=case%3Aselection-quality`,
+      `/skill-reviewer/#session=${localSession}&view=audit&split=selection&node=case%3Aselection-quality`,
     );
     fireEvent.popState(window);
     expect(
@@ -2647,7 +2991,7 @@ describe("EvidenceDashboard", () => {
     renderWithPreferences(
       <EvidenceDashboard data={pairedData} connectionState="live" />,
     );
-    fireEvent.click(screen.getByRole("tab", { name: "Agent trace" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Runs" }));
 
     expect(screen.getAllByText("Candidate under review").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Accepted comparison baseline").length).toBeGreaterThan(0);
@@ -2660,7 +3004,7 @@ describe("EvidenceDashboard", () => {
     expect(
       screen.getByRole("button", { name: /Read the Skill instructions/ }),
     ).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByRole("tab", { name: "Agent trace" })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: "Runs" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
@@ -2674,7 +3018,7 @@ describe("EvidenceDashboard", () => {
     renderWithPreferences(
       <EvidenceDashboard data={invalidTraceData} connectionState="live" />,
     );
-    fireEvent.click(screen.getByRole("tab", { name: "Agent trace" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Runs" }));
     fireEvent.click(
       screen.getByRole("button", { name: "Release quality selection" }),
     );

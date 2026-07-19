@@ -170,10 +170,59 @@ describe("dashboard schema against runtime failure projections", () => {
       expect(projected.status, projected.stderr || projected.stdout).toBe(0);
 
       const data = JSON.parse(readFileSync(output, "utf8"));
+      expect(data.run.execution_profile).toMatchObject({
+        target: "native-agent",
+        harness: "lead-agent-dispatch",
+        dispatch_observation: "host_dispatch",
+        trace: { capture_source: "harness_native", source: null },
+      });
       const execution = data.cases[0].arms[0].executions[0];
       expect(execution.dispatch.valid).toBe(false);
       expect(execution.trace.valid).toBe(false);
       expect(() => validateAndMigrateDashboardData(data)).not.toThrow();
+
+      const conflictingRunEligibility = structuredClone(data);
+      conflictingRunEligibility.run.release_eligible = true;
+      expect(() =>
+        validateAndMigrateDashboardData(conflictingRunEligibility),
+      ).toThrow(/run\.release_eligible: must match review\.decision\.release_eligible/);
+
+      const invalidEligibleDecision = structuredClone(data);
+      invalidEligibleDecision.run.release_eligible = true;
+      invalidEligibleDecision.review.decision.release_eligible = true;
+      expect(() =>
+        validateAndMigrateDashboardData(invalidEligibleDecision),
+      ).toThrow(/review\.decision\.release_eligible: true requires ready/);
+
+      const eligibleWithBlocker = structuredClone(data);
+      eligibleWithBlocker.run.release_eligible = true;
+      eligibleWithBlocker.review.decision = {
+        ...eligibleWithBlocker.review.decision,
+        status: "ready",
+        reason: "release_conditions_met",
+        release_eligible: true,
+        blocking_scenario_count: 0,
+        blocking_gate_count: 0,
+      };
+      eligibleWithBlocker.run.evidence_scope = "opaque-holdout";
+      eligibleWithBlocker.run.holdout = {
+        visibility: "opaque",
+        issuer: "trusted-eval-service",
+        digest: "f".repeat(64),
+      };
+      expect(eligibleWithBlocker.review.blockers.length).toBeGreaterThan(0);
+      expect(() =>
+        validateAndMigrateDashboardData(eligibleWithBlocker),
+      ).toThrow(/review\.blockers: must be empty when release is eligible/);
+
+      const missingAcceptanceCriterion = structuredClone(data);
+      missingAcceptanceCriterion.action_center.acceptance.criteria =
+        missingAcceptanceCriterion.action_center.acceptance.criteria.filter(
+          (criterion: { id: string }) => criterion.id !== "pareto",
+        );
+      expect(() =>
+        validateAndMigrateDashboardData(missingAcceptanceCriterion),
+      ).toThrow(/action_center\.acceptance\.criteria: must contain each required criterion exactly once/);
 
       const fractionalRepeats = structuredClone(data);
       fractionalRepeats.cases[0].repeats = 1.5;
@@ -371,6 +420,13 @@ describe("dashboard schema against runtime failure projections", () => {
       };
       expect(() =>
         validateAndMigrateDashboardData(genericProcessAgent),
+      ).not.toThrow();
+
+      const legacyGenericProcessAgent = structuredClone(genericProcessAgent);
+      delete legacyGenericProcessAgent.run.execution_profile.dispatch_observation;
+      delete legacyGenericProcessAgent.run.execution_profile.trace;
+      expect(() =>
+        validateAndMigrateDashboardData(legacyGenericProcessAgent),
       ).not.toThrow();
 
       const completedWithoutRequiredSource = structuredClone(genericProcessAgent);

@@ -3206,6 +3206,18 @@ describe("skill_eval_runtime decide", () => {
         }),
       );
       expect(() => validateAndMigrateDashboardData(dashboard)).not.toThrow();
+      const forgedPublicRelease = structuredClone(dashboard);
+      forgedPublicRelease.run.evidence_scope = "public-calibration";
+      forgedPublicRelease.run.holdout = {
+        visibility: "public",
+        issuer: null,
+        digest: null,
+      };
+      expect(() =>
+        validateAndMigrateDashboardData(forgedPublicRelease),
+      ).toThrow(
+        /run\.evidence_scope: eligible release requires a trusted opaque holdout/,
+      );
       const projectedTraces = dashboard.cases.flatMap((testCase) =>
         testCase.arms.flatMap((arm) =>
           arm.executions.map((execution) => execution.trace),

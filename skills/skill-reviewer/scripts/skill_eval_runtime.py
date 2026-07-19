@@ -7476,6 +7476,8 @@ def project_dashboard(
             for key in (
                 "target",
                 "harness",
+                "dispatch_observation",
+                "trace",
                 "capabilities",
                 "isolation",
                 "sampling",

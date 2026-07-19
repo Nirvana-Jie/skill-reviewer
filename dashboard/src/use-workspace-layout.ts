@@ -48,7 +48,7 @@ export function useWorkspaceLayout(canvasView: DashboardCanvasView) {
   const [preferences, setPreferences] =
     useState<WorkspacePanePreferences>(initialPreferences);
   const [measurement, setMeasurement] = useState(initialMeasurement);
-  const expandedCanvas = canvasView === "action" || canvasView === "execution";
+  const expandedCanvas = canvasView !== "audit";
 
   useLayoutEffect(() => {
     const element = containerRef.current;

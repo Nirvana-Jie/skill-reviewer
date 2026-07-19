@@ -500,6 +500,10 @@ function validateActionCenter(value: unknown, path: string): void {
     acceptance.decision_run_id,
     `${path}.acceptance.decision_run_id`,
   );
+  const acceptanceCriteria = requireArray(
+    acceptance.criteria,
+    `${path}.acceptance.criteria`,
+  );
   requireArrayOf(
     acceptance.criteria,
     `${path}.acceptance.criteria`,
@@ -519,6 +523,28 @@ function validateActionCenter(value: unknown, path: string): void {
       requireStringArray(criterion.evidence_ids, `${itemPath}.evidence_ids`);
     },
   );
+  const requiredCriterionIds = [
+    "hard_gates",
+    "pareto",
+    "material_improvement",
+  ];
+  const criterionIds = acceptanceCriteria.map((item, index) =>
+    requireString(
+      requireRecord(item, `${path}.acceptance.criteria[${index}]`).id,
+      `${path}.acceptance.criteria[${index}].id`,
+    ),
+  );
+  const uniqueCriterionIds = new Set(criterionIds);
+  if (
+    criterionIds.length !== requiredCriterionIds.length ||
+    uniqueCriterionIds.size !== requiredCriterionIds.length ||
+    requiredCriterionIds.some((id) => !uniqueCriterionIds.has(id))
+  ) {
+    throw new DashboardCompatibilityError(
+      `${path}.acceptance.criteria`,
+      "must contain each required criterion exactly once",
+    );
+  }
 
   const attribution = requireRecord(
     actionCenter.attribution,
@@ -757,8 +783,8 @@ function validateDispatch(
       ? "process_spawn"
       : provider === "native-agent" && harness === "lead-agent-dispatch"
         ? "host_dispatch"
-        : "external_harness");
-  if (observation !== expectedObservation) {
+        : null);
+  if (expectedObservation !== null && observation !== expectedObservation) {
     throw new DashboardCompatibilityError(
       `${path}.observation`,
       `expected ${expectedObservation} for the declared execution profile`,
@@ -1410,7 +1436,86 @@ function validateProjectionInvariants(
   summary: Record<string, unknown>,
   evolution: Record<string, unknown>,
   cases: unknown[],
+  review: Record<string, unknown>,
 ): void {
+  const decision = requireRecord(review.decision, "review.decision");
+  if (run.release_eligible !== decision.release_eligible) {
+    throw new DashboardCompatibilityError(
+      "run.release_eligible",
+      "must match review.decision.release_eligible",
+    );
+  }
+  if (
+    decision.release_eligible === true &&
+    (decision.status !== "ready" ||
+      decision.reason !== "release_conditions_met")
+  ) {
+    throw new DashboardCompatibilityError(
+      "review.decision.release_eligible",
+      "true requires ready status and release_conditions_met reason",
+    );
+  }
+  if (
+    decision.release_eligible === false &&
+    (decision.status === "ready" ||
+      decision.reason === "release_conditions_met")
+  ) {
+    throw new DashboardCompatibilityError(
+      "review.decision.release_eligible",
+      "false cannot accompany ready status or release_conditions_met reason",
+    );
+  }
+  if (decision.release_eligible === true) {
+    const holdout = isRecord(run.holdout) ? run.holdout : null;
+    if (
+      run.evidence_scope !== "opaque-holdout" ||
+      holdout?.visibility !== "opaque" ||
+      typeof holdout.issuer !== "string" ||
+      holdout.issuer.trim().length === 0 ||
+      typeof holdout.digest !== "string" ||
+      holdout.digest.trim().length === 0
+    ) {
+      throw new DashboardCompatibilityError(
+        "run.evidence_scope",
+        "eligible release requires a trusted opaque holdout",
+      );
+    }
+    const blockers = requireArray(review.blockers, "review.blockers");
+    if (blockers.length > 0) {
+      throw new DashboardCompatibilityError(
+        "review.blockers",
+        "must be empty when release is eligible",
+      );
+    }
+    if (
+      decision.blocking_scenario_count !== 0 ||
+      decision.blocking_gate_count !== 0
+    ) {
+      throw new DashboardCompatibilityError(
+        "review.decision",
+        "eligible release cannot declare blocking scenarios or gates",
+      );
+    }
+    if (
+      Number(summary.case_count) <= 0 ||
+      summary.candidate_passed !== summary.case_count ||
+      summary.candidate_failed !== 0
+    ) {
+      throw new DashboardCompatibilityError(
+        "summary.candidate_passed",
+        "eligible release requires every configured case to pass",
+      );
+    }
+    if (
+      Number(summary.hard_gates_total) <= 0 ||
+      summary.hard_gates_passed !== summary.hard_gates_total
+    ) {
+      throw new DashboardCompatibilityError(
+        "summary.hard_gates_passed",
+        "eligible release requires every configured hard gate to pass",
+      );
+    }
+  }
   if (summary.case_count !== cases.length) {
     throw new DashboardCompatibilityError(
       "summary.case_count",
@@ -1681,13 +1786,21 @@ export function validateAndMigrateDashboardData(input: unknown): DashboardData {
   validateSummary(summary, "summary");
   const evolution = requireRecord(root.evolution, "evolution");
   validateEvolution(evolution, "evolution");
-  validateActionCenter(root.action_center, "action_center");
-  validateReview(root.review, "review");
+  const actionCenter = requireRecord(root.action_center, "action_center");
+  validateActionCenter(actionCenter, "action_center");
+  const review = requireRecord(root.review, "review");
+  validateReview(review, "review");
   const cases = requireArray(root.cases, "cases");
   cases.forEach((item, index) =>
     validateCase(item, `cases[${index}]`, runContext),
   );
-  validateProjectionInvariants(run, summary, evolution, cases);
+  validateProjectionInvariants(
+    run,
+    summary,
+    evolution,
+    cases,
+    review,
+  );
   requireArrayOf(root.diffs, "diffs", validateDiff);
   requireArrayOf(root.iterations, "iterations", validateIteration);
   requireArrayOf(root.spine, "spine", validateSpineNode);

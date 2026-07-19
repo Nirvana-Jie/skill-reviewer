@@ -8,9 +8,25 @@ const dashboardStyles = readFileSync(
 );
 
 describe("review overview responsive layout", () => {
-  it("releases the desktop reading-width cap when the evidence canvas is ultrawide", () => {
+  it("lets the primary review grid use an ultrawide canvas without widening every section", () => {
     expect(dashboardStyles).toMatch(
-      /@container review-canvas \(min-width: 1600px\)[\s\S]*?\.review-route,\s*\.review-body-grid,\s*\.review-audit-archive\s*\{[^}]*width:\s*76%;[^}]*max-width:\s*none;/,
+      /@container review-canvas \(min-width: 1600px\)[\s\S]*?\.review-body-grid\s*\{[^}]*width:\s*76%;[^}]*max-width:\s*none;/,
+    );
+    expect(dashboardStyles).not.toMatch(
+      /@container review-canvas \(min-width: 1600px\)[\s\S]*?\.decision-evidence-spine\s*\{[^}]*max-width:\s*none;/,
+    );
+  });
+
+  it("places Runs responsive overrides after base trace styles so mobile rules win", () => {
+    const baseTraceGrid = dashboardStyles.indexOf(".trace-attention-grid {");
+    const responsiveTraceBlock = dashboardStyles.lastIndexOf(
+      "@container dashboard (max-width: 760px)",
+    );
+
+    expect(baseTraceGrid).toBeGreaterThan(-1);
+    expect(responsiveTraceBlock).toBeGreaterThan(baseTraceGrid);
+    expect(dashboardStyles.slice(responsiveTraceBlock)).toMatch(
+      /\.trace-attention-summary > header\s*\{[^}]*display:\s*grid;[^}]*\}[\s\S]*?\.trace-attention-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\);/,
     );
   });
 
