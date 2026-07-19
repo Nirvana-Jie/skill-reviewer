@@ -40,5 +40,6 @@ skill-reviewer-workspace/
 # not enter model context.
 /docs/*
 !/docs/architecture.md
+!/docs/validation.md
 /diagrams/
 /output/
