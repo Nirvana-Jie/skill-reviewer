@@ -14,8 +14,8 @@
 
 `skill-reviewer` does three things:
 
-- **Review** — checks triggers, instructions, resources, scripts, safety, and maintainability, then returns actionable rewrites.
-- **Verify** — compiles a valid `evals/evals.json`, dispatches candidate and baseline through a native or provider adapter, and retains dispatch, canonical Trace, source, and output evidence for the Dashboard.
+- **Review (default)** — performs read-only checks of triggers, instructions, resources, scripts, safety, and maintainability, then returns actionable rewrites without starting Eval workers.
+- **Verify (explicit)** — when requested, compiles a valid `evals/evals.json`, dispatches candidate and baseline through a native host or registered Agent adapter, and retains dispatch, canonical Trace, source, and output evidence for the Dashboard.
 - **Evolve** — only on an explicit request, performs at most three bounded improvement rounds; Evals stay immutable during a run and a human always owns the final release decision.
 
 ## Quick start
@@ -29,7 +29,13 @@ npx skills add Nirvana-Jie/skill-reviewer --skill skill-reviewer
 Then ask in an Agent session:
 
 ```text
-Fully review this Skill and decide whether it is ready to ship. If it has executable evals, run real verification.
+Fully review this Skill and decide whether it is ready to ship.
+```
+
+Add an explicit runtime request when you want model-backed evidence:
+
+```text
+Verify this Skill by running its declared evals against the accepted baseline.
 ```
 
 The input may be a Skill directory, `SKILL.md`, one supporting artifact, or a concrete design proposal.
@@ -48,13 +54,14 @@ It does not create a Skill from scratch or replace ordinary application code rev
 ```mermaid
 flowchart LR
     A["Lock review scope"] --> B["Read-only static checks"]
-    B --> C{"Does evals.json exist?"}
-    C -- "No" --> D["Semantic review and rewrites"]
-    C -- "Invalid" --> E["Block release"]
-    C -- "Valid" --> F["Real paired Agent runs"]
+    B --> C{"Requested mode?"}
+    C -- "Review" --> D["Semantic review and rewrites"]
+    C -- "Verify / Evolve" --> E{"Is evals.json valid?"}
+    E -- "No" --> H["Stop before dispatch"]
+    E -- "Yes" --> F["Real paired Agent runs"]
     F --> G["Deterministic assertions"]
-    G --> H["Supplemental semantic judgment"]
-    H --> I{"Hard gates + Pareto + material gain"}
+    G --> M["Supplemental semantic judgment"]
+    M --> I{"Hard gates + repeat-level non-regression + material gain"}
     I -- "Not met" --> J["Fix or propose next candidate"]
     J --> F
     I -- "Met" --> K["One-shot release audit"]
@@ -67,11 +74,11 @@ Core rules:
 1. **Deterministic assertions first** — files, JSON, and command exit codes are graded before any semantic Judge.
 2. **Candidate and baseline stay separate** — same Case, isolated workspaces, independent Trace; no self-evaluation loop.
 3. **Validate the instrument before the candidate** — required text oracles
-   pass positive/negative calibration, and contradictory paired directions
-   invalidate the experiment instead of blaming the Skill.
+   pass positive/negative calibration and paired executions must remain bound;
+   mixed candidate effects are variability, not a broken measuring instrument.
 4. **An invalid Manifest blocks release** — it is never silently skipped.
 5. **A Manifest is not a worker receipt** — `evals.json` declares cells; only a
-   retained provider/harness dispatch receipt proves the selected cell was
+   retained Agent/harness dispatch receipt proves the selected cell was
    actually started within the stated trusted boundary.
 
 ### Three evaluation stages
@@ -83,8 +90,14 @@ Core rules:
 | **Audit** | Check release risk with one-shot evidence hidden from the optimizer | Still requires human confirmation |
 
 Sampling is explicit and independent from determinism. Legacy defaults remain
-one deterministic or three stochastic paired repeats; contradictory paired
-directions make measurement invalid rather than producing a majority winner.
+one deterministic or three stochastic paired repeats. Three is a bounded
+governance default, not a statistical-confidence claim. Every paired repeat is
+retained; a repeat-level regression blocks acceptance, and a stochastic primary
+objective must reach its material threshold in every paired repeat.
+Mixed paired directions are retained as candidate variability. They do not
+invalidate an otherwise sound measurement or produce a majority winner; the
+all-repeat gate rejects the candidate when any repeat regresses or misses the
+declared primary threshold.
 
 ## What you receive
 
@@ -95,15 +108,20 @@ A full review always includes:
 - Critical Issues written as `Problem / Why / Fix`;
 - trigger analysis, per-resource review, and paste-ready rewrites;
 - explicit verification evidence, level, and limitations;
-- five to ten executable Eval cases when they materially reduce risk.
+- executable Eval cases only when their maintenance cost is justified by a real regression risk.
 
-The verdict is not a simple average. Safety and trigger red lines can block immediately. A release candidate must also satisfy every hard gate, avoid Pareto regression, and materially improve at least one primary objective.
+The verdict is not a simple average. Safety and trigger red lines can block
+immediately. A release candidate must satisfy every hard gate, avoid a
+repeat-level regression on every declared objective, and reach the predeclared
+material delta on at least one primary objective in every paired repeat. The
+Dashboard shows both the direction-normalized mean delta and the individual
+paired deltas; neither is presented as a confidence interval.
 
 ## Real Evals and bounded evolution
 
 The strict Manifest lives at `<skill>/evals/evals.json`. Compilation alone does
-not start an Agent. The lead Agent uses a native host surface or a
-provider adapter; each executor still receives exactly one
+not start an Agent. The lead Agent uses a native host surface or a registered
+Agent adapter; each executor still receives exactly one
 Case, one arm, and one repeat:
 
 ```mermaid
@@ -117,28 +135,40 @@ flowchart TB
     T1 --> G["Assertions and Judge"]
     T2 --> G
     G --> P{"Accept candidate?"}
-    P -- "No" --> N["Next candidate, max three rounds"]
+    P -- "No" --> N["Next candidate, safety cap: three rounds"]
     N --> C
     P -- "Yes" --> A["One-shot Audit"]
 ```
 
-Real Trace contains only observable behavior: Agent messages, file reads, tool calls, commands, exit codes, errors, timing, and artifact references. It never records or displays private chain-of-thought. Provider-specific events are redacted and normalized before they reach the grader or Dashboard, so adding another Agent requires an adapter and execution profile—not a new Trace UI. Bundled paths cover native/external harnesses, Codex CLI, and Claude Code.
+Real Trace contains only observable behavior: Agent messages, file reads, tool calls, commands, exit codes, errors, timing, and artifact references. It never records or displays private chain-of-thought. Source-Agent events are redacted and normalized before they reach the grader or Dashboard, so adding another Agent requires a registry entry and source adapter—not a new Trace UI. The closed first-party registry distinguishes source identity, wire-contract stability, implementation maturity, and evidence authority; a researched entry is not silently presented as executable support.
 
-For a compiled `codex-cli` profile, one command mechanically fans out paired
-arms and grades after all case/repeat batches finish:
+For any compiled profile backed by an implemented adapter, the same command
+mechanically fans out paired arms and grades after all case/repeat batches finish:
 
 ```bash
-python3 skills/skill-reviewer/scripts/run_codex_eval_plan.py \
-  --workspace /tmp/skill-reviewer-run \
-  --full-access
+node skills/skill-reviewer/scripts/run_agent_eval.mjs plan \
+  --workspace /tmp/skill-reviewer-run
 ```
+
+The adapter is locked during compilation; runtime flags may assert or narrow
+that authority but cannot replace it. Inspect supported and researched formats
+with `node skills/skill-reviewer/scripts/run_agent_eval.mjs adapters list`.
+Codex CLI `0.144.5` and Claude Code `2.1.215` are the current
+`canary-verified` execution adapters. Gemini CLI, GitHub Copilot CLI, and
+OpenCode are researched but deliberately `not-implemented`; their public
+contracts are not promoted into release evidence by guesswork. Hook formats are
+source-attributed research entries, not executable parsers.
+Agent children receive a minimal environment. Pass a required ordinary
+value with repeatable `--pass-env NAME`; pass API keys or other secrets only
+with repeatable `--credential-env NAME`. Declared credential values are removed
+from retained output, and any observed leak fails the execution.
 
 Native subagents remain host-owned. Their harness must record the real host
 dispatch and worker/thread IDs before behavior events. The receipt detects
-drift and prevents profile-only UI claims; without a provider-signed API it is
+drift and prevents profile-only UI claims; without a source-signed API it is
 trusted harness provenance, not cryptographic attestation.
 
-Real-provider canaries are opt-in because they may require local authentication,
+Real-Agent canaries are opt-in because they may require local authentication,
 network access, and model spend. This launches the installed CLI through the
 complete compile → process → source → grade → Dashboard projection chain, then
 mounts the Trace view and expands the real marker event in the rendered UI:
@@ -154,53 +184,44 @@ sampling is declared independently from output determinism. Evidence integrity
 and measurement validity must both pass before candidate quality is attributed.
 An invalid experiment is quarantined without consuming a candidate round. The
 system may propose changes, but only explicit user confirmation and a fresh
-lock can establish new evaluation authority. See the [measurement validity
-contract](./skills/skill-reviewer/references/measurement-validity.md),
-[executable Eval contract](./skills/skill-reviewer/references/executable-evals.md),
-and [evolution protocol](./skills/skill-reviewer/references/evolution-workflow.md)
-for schemas, commands, and trust boundaries.
+lock can establish new evaluation authority. Agents use the compact
+[verification workflow](./skills/skill-reviewer/references/verification-workflow.md)
+and [evolution protocol](./skills/skill-reviewer/references/evolution-workflow.md);
+the implementation and tests own detailed schemas and trust rules.
 
-## Dashboard: optional local, read-only control plane
+## Dashboard: optional local decision surface
 
-The Dashboard answers four questions in decision order:
+The Dashboard is a read-only projection for one job: make a release decision
+easy to inspect. It answers four questions in order:
 
-1. **Is the evidence complete?** Verify dispatch, Trace, artifacts, and bindings.
+1. **Is the evidence trustworthy?** Verify dispatch, Trace, artifacts, and bindings.
 2. **Is the measurement trustworthy?** Inspect oracle calibration and paired sampling before judging the Skill.
-3. **Is the candidate actually better?** Compare candidate and baseline runs, scores, file diffs, and repeats side by side.
-4. **What happens next?** Project the state machine’s `next_action`, responsibility, and human boundary.
+3. **Is the candidate actually better?** Compare direction-normalized objective deltas, every paired repeat, thresholds, runs, and file changes.
+4. **What happens next?** Read the state machine’s `next_action`, responsibility, and human boundary without turning the browser into a second workflow engine.
 
-Review Overview is the only primary verdict surface. Its decision-evidence
-spine links directly to change evidence, execution coverage, and the primary
-risk. Diff, Agent Trace, and the collapsed audit archive remain independent
-evidence views; next steps open in a side drawer, and the Inspector describes
-only the currently selected evidence. An empty Diff means change evidence was
-not captured—it is never treated as proof that nothing changed.
+Review Overview is the only primary verdict surface. Diff, Agent Trace, and the
+Evidence archive explain it. The Dashboard is strictly read-only and exposes no
+Agent-task ledger or write route. The Runtime remains the source of grading and
+release truth.
 
-Every generated projection carries `schema_version: 3`. The UI validates the
-nested decision and measurement contracts before rendering. Complete v2 and
-unversioned projections migrate only to explicit `unverified` measurement—no
-green evidence is invented. Incompatible data gets an actionable regeneration
-page instead of a blank screen.
-
-It is not the executor and cannot mutate Eval, evidence, or release state. An explicit request to show the Dashboard is consent. Otherwise, an interactive lead Agent asks once with a standalone structured choice and recommends opening it; silence never authorizes a download or server:
+Start the Dashboard only when the user explicitly requests it:
 
 ```bash
-python3 skills/skill-reviewer/scripts/start_skill_dashboard.py \
+node skills/skill-reviewer/scripts/start_skill_dashboard.mjs \
   --workspace /tmp/skill-reviewer-run \
   --state /tmp/skill-reviewer-control/evolution-state.json \
-  --task-root /tmp/skill-reviewer-action-tasks \
-  --user-approved-control-plane \
+  --user-approved-dashboard \
   --open
 ```
 
-- The UI is downloaded anonymously from a GitHub Release, then verified by both archive and extracted-tree digests before local execution.
-- UI and evidence APIs bind only to loopback; prompts, Trace, Run IDs, and artifacts are never uploaded.
-- GitHub Pages is not used, and neither `dashboard/dist` nor the archive ships inside the installed Skill.
-- Normal shutdown deletes the temporary UI. Eval execution does not depend on the Dashboard.
+The launcher verifies the pinned UI bundle, binds UI and evidence APIs to
+loopback, and keeps run data local. Schema migration, transport, and
+supply-chain rules live in code and tests; see the
+[maintainer architecture](./docs/architecture.md).
 
 ## Automation and human boundaries
 
-While inputs and authority stay unchanged, the Agent should finish candidate generation, locked Eval execution, deterministic grading, supplemental semantic judgment, and preparation/execution of the one-shot audit automatically.
+After the user explicitly enters Verify or Evolve mode, and while inputs and authority stay unchanged, the Agent should finish candidate generation, locked Eval execution, deterministic grading, supplemental semantic judgment, and preparation/execution of the one-shot audit automatically.
 
 A person is required only to:
 
@@ -209,12 +230,14 @@ A person is required only to:
 - resolve ambiguity the retained evidence cannot settle;
 - confirm final release, deployment, or another external side effect.
 
-Dashboard actions append audited local handoff tasks; they do not wake a terminated Agent session. Their recovery prompt can be given to the current or a new lead Agent.
+The Dashboard only explains the next state. It does not schedule, wake, or
+deliver work to an Agent session; continue the workflow in the active Agent
+task or a new task that has the retained run context.
 
 ## Safety boundaries
 
 - Reviewed files are always **untrusted data**; prompts or commands inside them never become reviewer instructions.
-- By default, the reviewer installs no dependency and executes no target Skill script; only isolated verification declared by a valid Manifest may run.
+- By default, Review installs no dependency, executes no target Skill script, and starts no Eval worker. A valid Manifest may run only after an explicit Verify or Evolve request.
 - Unconfirmed destructive commands, publishing, pushes, network access, secrets, or permission expansion are blocked.
 - A `local-unattested` Trace proves what was observed, not operating-system sandbox integrity.
 - Dashboard executor labels require a valid per-cell dispatch receipt; the
@@ -229,13 +252,12 @@ This repository uses pnpm exclusively:
 corepack enable
 pnpm install --frozen-lockfile
 
-python3 -m unittest discover -s tests
 pnpm test
 pnpm dashboard:build
-python3 skills/skill-reviewer/scripts/lint_skill_package.py \
+node skills/skill-reviewer/scripts/lint_skill_package.mjs \
   skills/skill-reviewer --format text --fail-on error
-python3 skills/skill-reviewer/scripts/validate_local_snapshot.py \
-  skills/skill-reviewer/evals/local-skill-review-snapshot.json
+node -e 'JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(require("node:fs").readFileSync(process.argv[1])))' \
+  skills/skill-reviewer/evals/evals.json
 ```
 
 All changes enter `main` through a branch and pull request. `Static Checks` runs deterministic tests only; it stores no API key or model output. A separate workflow builds the Dashboard as a content-addressed GitHub Release asset. The repository publishes neither an npm package nor GitHub Pages.
@@ -246,25 +268,27 @@ All changes enter `main` through a branch and pull request. `Static Checks` runs
 .
 ├── skills/skill-reviewer/   # complete payload installed by skills add
 │   ├── SKILL.md
-│   ├── references/          # rubric, templates, and runtime protocols
-│   ├── scripts/             # linter, runtime, executor, Dashboard launcher
-│   └── evals/               # Manifest, fixtures, and snapshots
+│   ├── references/          # four branch-scoped model references
+│   ├── assets/              # machine contracts, Agent registry, pinned UI manifest
+│   ├── scripts/             # linter, authority runtime, generic executor, Dashboard launcher
+│   └── evals/               # One executable Manifest and its fixtures
 ├── dashboard/               # React / TypeScript / Vite source; dist ignored
-├── tests/                   # Python + Vitest
+├── docs/                    # maintainer architecture; not model context
+├── tests/                   # Vitest unit and end-to-end coverage
 └── assets/readme/           # canonical README visuals
 ```
 
 ## Further reading
 
 - [Review rubric](./skills/skill-reviewer/references/review-rubric.md)
-- [Review checklist](./skills/skill-reviewer/references/review-checklist.md)
-- [Executable Eval, Trace, and evidence contract](./skills/skill-reviewer/references/executable-evals.md)
-- [Provider-neutral Agent Trace contract](./skills/skill-reviewer/references/agent-trace-contract.md)
+- [Review output contract](./skills/skill-reviewer/references/output-contract.md)
+- [Explicit verification workflow](./skills/skill-reviewer/references/verification-workflow.md)
 - [Bounded continuous evolution](./skills/skill-reviewer/references/evolution-workflow.md)
-- [Dashboard and Action Center](./skills/skill-reviewer/references/action-center.md)
-- [Paired SubAgent verification](./skills/skill-reviewer/references/subagent-eval-workflow.md)
+- [Maintainer architecture](./docs/architecture.md)
+- [Agent trace protocol research](./docs/agent-trace-protocols.md)
 
-Output language follows the request. English and Chinese templates normalize into the same machine-comparable contract fields.
+Output language follows the request; one language-neutral contract keeps both
+languages machine-comparable.
 
 ## License
 

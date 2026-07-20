@@ -138,16 +138,6 @@ function traceData(): DashboardData {
         criteria: [],
       },
       attribution: { primary: "skill", items: [] },
-      actions: [],
-      task_gateway: {
-        request_endpoint: "/dashboard-action-requests",
-        audit_endpoint: "/dashboard-action-requests.json",
-        evidence_mutation: false,
-        eval_mutation: false,
-        handoff_mode: "durable_local_ledger",
-        can_wake_agent_session: false,
-        persists_after_agent_session_end: true,
-      },
     },
     review: {
       contract: "skill-reviewer.dashboard-review",
@@ -395,8 +385,18 @@ describe("execution trace navigation", () => {
   it("ranks failed checks, evidence gaps, comparison differences, and slow executions", () => {
     const data = traceData();
     const execution = data.cases[0]!.arms[0]!.executions![0]!;
-    execution.trace!.duration_ms = 6000;
-    execution.trace!.events[1]!.details = {
+    data.cases[0]!.repeats = 5;
+    data.cases[0]!.arms[0]!.executions = [6_000, 1_000, 1_100, 900, 1_050].map(
+      (durationMs, index) => ({
+        ...structuredClone(execution),
+        repeat: index + 1,
+        trace: {
+          ...structuredClone(execution.trace!),
+          duration_ms: durationMs,
+        },
+      }),
+    );
+    data.cases[0]!.arms[0]!.executions![0]!.trace!.events[1]!.details = {
       static_analysis_passed: false,
       error_count: 4,
     };
@@ -413,6 +413,34 @@ describe("execution trace navigation", () => {
           expect.objectContaining({ arm: "with_skill", repeat: 1, durationMs: 6000 }),
         ],
       }),
+    );
+  });
+
+  it("does not label normal long-running Agent executions as slow", () => {
+    const data = traceData();
+    const execution = data.cases[0]!.arms[0]!.executions![0]!;
+    const durations = [
+      28_600, 41_900, 16_900, 32_400, 26_200, 18_000, 29_500, 25_900,
+      16_900,
+    ];
+    data.cases[0]!.repeats = durations.length;
+    data.cases[0]!.arms[0]!.executions = durations.map((durationMs, index) => ({
+      ...structuredClone(execution),
+      repeat: index + 1,
+      trace: {
+        ...structuredClone(execution.trace!),
+        duration_ms: durationMs,
+      },
+    }));
+
+    const trace = buildEvalExecutionTrace(data, "quality");
+    if (!trace) throw new Error("trace fixture did not build");
+
+    expect(buildTraceAttentionSummary(trace)).toMatchObject({
+      slowExecutions: [],
+    });
+    expect(buildTraceAttentionSummary(trace).slowThresholdMs).toBeGreaterThan(
+      41_900,
     );
   });
 

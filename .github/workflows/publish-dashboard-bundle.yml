@@ -7,8 +7,10 @@ on:
       - main
     paths:
       - "dashboard/**"
-      - "skills/skill-reviewer/scripts/dashboard_bundle.py"
-      - "skills/skill-reviewer/references/dashboard-ui-bundle.json"
+      - "skills/skill-reviewer/scripts/dashboard_bundle.mjs"
+      - "skills/skill-reviewer/scripts/lib/module-entrypoint.mjs"
+      - "skills/skill-reviewer/scripts/lib/strict-utf8.mjs"
+      - "skills/skill-reviewer/assets/dashboard-ui-bundle.json"
       - "package.json"
       - "pnpm-lock.yaml"
       - ".github/workflows/publish-dashboard-bundle.yml"
@@ -29,11 +31,6 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
-      - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: "3.x"
-
       - name: Set up Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
@@ -53,19 +50,19 @@ jobs:
 
       - name: Create deterministic release archive
         run: |
-          python3 skills/skill-reviewer/scripts/dashboard_bundle.py package \
+          node skills/skill-reviewer/scripts/dashboard_bundle.mjs package \
             --ui-dir dashboard/dist \
             --output-dir .dashboard-release \
             --manifest-output .dashboard-release/generated-manifest.json
 
       - name: Verify committed digest anchor and safe extraction
         run: |
-          cmp skills/skill-reviewer/references/dashboard-ui-bundle.json \
+          cmp skills/skill-reviewer/assets/dashboard-ui-bundle.json \
             .dashboard-release/generated-manifest.json
           archive="$(find .dashboard-release -maxdepth 1 -type f -name 'dashboard-ui-*.zip' -print -quit)"
           test -n "$archive"
-          python3 skills/skill-reviewer/scripts/dashboard_bundle.py verify \
-            --manifest skills/skill-reviewer/references/dashboard-ui-bundle.json \
+          node skills/skill-reviewer/scripts/dashboard_bundle.mjs verify \
+            --manifest skills/skill-reviewer/assets/dashboard-ui-bundle.json \
             --archive "$archive" \
             --output-dir .dashboard-release/verified
           test -f .dashboard-release/verified/index.html

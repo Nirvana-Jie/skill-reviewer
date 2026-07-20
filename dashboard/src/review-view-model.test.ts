@@ -147,16 +147,6 @@ function dashboardFixture(): DashboardData {
         criteria: [],
       },
       attribution: { primary: null, items: [] },
-      actions: [],
-      task_gateway: {
-        request_endpoint: "/dashboard-action-requests",
-        audit_endpoint: "/dashboard-action-requests.json",
-        evidence_mutation: false,
-        eval_mutation: false,
-        handoff_mode: "durable_local_ledger",
-        can_wake_agent_session: false,
-        persists_after_agent_session_end: true,
-      },
     },
     review: {
       contract: "skill-reviewer.dashboard-review",
@@ -332,7 +322,12 @@ describe("review view model", () => {
     const fixture = dashboardFixture();
     markReleaseReady(fixture);
 
-    expect(buildReviewViewModel(fixture).decision.tone).toBe("good");
+    const releaseReadyModel = buildReviewViewModel(fixture);
+    expect(releaseReadyModel.decision.tone).toBe("good");
+    expect(releaseReadyModel.validity).toEqual({
+      evidence: { status: "valid", tone: "good" },
+      candidate: { status: "accepted", tone: "good" },
+    });
 
     fixture.review.blockers = [
       {
@@ -401,6 +396,11 @@ describe("review view model", () => {
     const model = buildReviewViewModel(fixture);
 
     expect(model.measurement).toEqual({ status: "invalid", tone: "warn" });
+    expect(model.validity.evidence.status).toBe("valid");
+    expect(model.validity.candidate).toEqual({
+      status: "not_judged",
+      tone: "warn",
+    });
     expect(model.decision.tone).toBe("warn");
     expect(model.evidence.status).toBe("partial");
   });
@@ -423,12 +423,7 @@ describe("review view model", () => {
 
   it("treats absent execution traces as missing evidence even if decision fields say ready", () => {
     const fixture = dashboardFixture();
-    fixture.review.decision = {
-      ...fixture.review.decision,
-      status: "ready",
-      reason: "release_conditions_met",
-      release_eligible: true,
-    };
+    markReleaseReady(fixture);
     for (const arm of fixture.cases[0].arms) arm.executions = [];
 
     const model = buildReviewViewModel(fixture);
@@ -440,6 +435,10 @@ describe("review view model", () => {
       tone: "warn",
     });
     expect(model.evidence).toEqual({ status: "missing", tone: "warn" });
+    expect(model.validity).toEqual({
+      evidence: { status: "invalid", tone: "bad" },
+      candidate: { status: "not_judged", tone: "warn" },
+    });
     expect(model.decision.tone).toBe("warn");
   });
 });

@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -11,8 +12,11 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { deflateRawSync } from "node:zlib";
 
 import { describe, expect, it } from "vitest";
+
+import { materializeDashboardUi } from "../skills/skill-reviewer/scripts/dashboard_bundle.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const bundleScript = join(
@@ -20,9 +24,8 @@ const bundleScript = join(
   "skills",
   "skill-reviewer",
   "scripts",
-  "dashboard_bundle.py",
+  "dashboard_bundle.mjs",
 );
-const python = process.env.PYTHON ?? "python3";
 
 function write(root, relative, content) {
   const path = join(root, relative);
@@ -31,10 +34,71 @@ function write(root, relative, content) {
 }
 
 function run(args) {
-  return spawnSync(python, [bundleScript, ...args], {
+  return spawnSync(process.execPath, [bundleScript, ...args], {
     cwd: repoRoot,
     encoding: "utf8",
   });
+}
+
+const CRC_TABLE = Array.from({ length: 256 }, (_, index) => {
+  let value = index;
+  for (let bit = 0; bit < 8; bit += 1) {
+    value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+  }
+  return value >>> 0;
+});
+
+function crc32(buffer) {
+  let crc = 0xffffffff;
+  for (const byte of buffer) crc = CRC_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function createFixtureArchive(path, entries) {
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+  for (const entry of entries) {
+    const name = Buffer.from(entry.name);
+    const content = Buffer.from(entry.content ?? "x");
+    const compression = entry.compression ?? 0;
+    const payload = compression === 8 ? deflateRawSync(content) : content;
+    const declaredSize = entry.declaredSize ?? content.length;
+    const crc = crc32(content);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(compression, 8);
+    local.writeUInt16LE(0x21, 12);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(payload.length, 18);
+    local.writeUInt32LE(declaredSize, 22);
+    local.writeUInt16LE(name.length, 26);
+    localParts.push(local, name, payload);
+
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE((3 << 8) | 20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(compression, 10);
+    central.writeUInt16LE(0x21, 14);
+    central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(payload.length, 20);
+    central.writeUInt32LE(declaredSize, 24);
+    central.writeUInt16LE(name.length, 28);
+    central.writeUInt32LE(((entry.mode ?? (0o100000 | 0o644)) << 16) >>> 0, 38);
+    central.writeUInt32LE(offset, 42);
+    centralParts.push(central, name);
+    offset += local.length + name.length + payload.length;
+  }
+  const centralDirectory = Buffer.concat(centralParts);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(centralDirectory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  writeFileSync(path, Buffer.concat([...localParts, centralDirectory, end]));
 }
 
 function expectSuccess(result, label) {
@@ -158,7 +222,7 @@ describe("temporary Dashboard UI bundle", () => {
     }
   });
 
-  it("removes a verified temporary UI when its control-plane context exits", () => {
+  it("removes a verified temporary UI when its Dashboard session exits", async () => {
     const root = mkdtempSync(join(tmpdir(), "skill-reviewer-dashboard-bundle-"));
     try {
       const ui = join(root, "ui");
@@ -176,32 +240,18 @@ describe("temporary Dashboard UI bundle", () => {
       ]);
       expectSuccess(packaged, "temporary package");
       const archive = JSON.parse(packaged.stdout).archive;
-      const scriptsRoot = join(repoRoot, "skills", "skill-reviewer", "scripts");
-      const materialized = spawnSync(
-        python,
-        [
-          "-c",
-          String.raw`
-import json, pathlib, shutil, sys
-sys.path.insert(0, sys.argv[1])
-import dashboard_bundle as bundle
-archive = pathlib.Path(sys.argv[2])
-manifest = pathlib.Path(sys.argv[3])
-bundle.download_archive = lambda _manifest, destination: shutil.copyfile(archive, destination)
-with bundle.materialize_dashboard_ui(manifest_path=manifest) as ui:
-    root = ui.root
-    assert ui.temporary and ui.integrity_verified and root.is_dir()
-assert not root.exists()
-print(json.dumps({"removed": True}))
-`,
-          scriptsRoot,
-          archive,
-          manifest,
-        ],
-        { cwd: repoRoot, encoding: "utf8" },
-      );
-      expect(materialized.status, materialized.stderr).toBe(0);
-      expect(JSON.parse(materialized.stdout)).toEqual({ removed: true });
+      const materialized = await materializeDashboardUi({
+        manifestPath: manifest,
+        download: async (_manifest, destination) => copyFileSync(archive, destination),
+      });
+      const temporaryUi = materialized.ui.root;
+      expect(materialized.ui).toEqual(expect.objectContaining({
+        temporary: true,
+        integrity_verified: true,
+      }));
+      expect(existsSync(temporaryUi)).toBe(true);
+      materialized.dispose();
+      expect(existsSync(temporaryUi)).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -213,37 +263,12 @@ print(json.dumps({"removed": True}))
       const root = mkdtempSync(join(tmpdir(), "skill-reviewer-dashboard-bundle-"));
       try {
         const archive = join(root, `${kind}.zip`);
-        const createArchive = spawnSync(
-          python,
-          [
-            "-c",
-            String.raw`
-import stat, sys, zipfile
-archive, kind = sys.argv[1:]
-with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as bundle:
-    def add(name, content=b"x", mode=stat.S_IFREG | 0o644):
-        info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
-        info.create_system = 3
-        info.compress_type = zipfile.ZIP_STORED
-        info.external_attr = mode << 16
-        bundle.writestr(info, content)
-    add("index.html", b"<!doctype html>")
-    if kind == "traversal":
-        add("../escape.js")
-    elif kind == "symlink":
-        add("assets/link.js", b"index.html", stat.S_IFLNK | 0o777)
-    elif kind == "casefold-duplicate":
-        add("assets/Main.js")
-        add("assets/main.js")
-    else:
-        add("docs/", b"", stat.S_IFDIR | 0o755)
-`,
-            archive,
-            kind,
-          ],
-          { cwd: repoRoot, encoding: "utf8" },
-        );
-        expect(createArchive.status, createArchive.stderr).toBe(0);
+        const entries = [{ name: "index.html", content: "<!doctype html>" }];
+        if (kind === "traversal") entries.push({ name: "../escape.js" });
+        else if (kind === "symlink") entries.push({ name: "assets/link.js", content: "index.html", mode: 0o120777 });
+        else if (kind === "casefold-duplicate") entries.push({ name: "assets/Main.js" }, { name: "assets/main.js" });
+        else entries.push({ name: "docs/", content: "", mode: 0o040755 });
+        createFixtureArchive(archive, entries);
         const manifest = join(root, "manifest.json");
         writeManifest(manifest, archive);
         const output = join(root, "output");
@@ -266,4 +291,35 @@ with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as bundle:
       }
     },
   );
+
+  it("bounds deflate output by the declared entry size before materialization", () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-dashboard-bundle-"));
+    try {
+      const archive = join(root, "oversized-deflate.zip");
+      createFixtureArchive(archive, [{
+        name: "index.html",
+        content: "x".repeat(1024 * 1024),
+        compression: 8,
+        declaredSize: 32,
+      }]);
+      const manifest = join(root, "manifest.json");
+      writeManifest(manifest, archive);
+
+      const result = run([
+        "verify",
+        "--manifest",
+        manifest,
+        "--archive",
+        archive,
+        "--output-dir",
+        join(root, "output"),
+      ]);
+
+      expect(result.status).toBe(2);
+      expect(JSON.parse(result.stdout).error).toMatch(/archive is invalid|entry size/);
+      expect(existsSync(join(root, "output"))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

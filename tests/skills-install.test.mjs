@@ -23,40 +23,27 @@ const skillsBin = join(
   ".bin",
   process.platform === "win32" ? "skills.cmd" : "skills",
 );
-const python = process.env.PYTHON ?? "python3";
+const node = process.execPath;
 
 const REQUIRED_FILES = [
   "SKILL.md",
-  "references/action-center.md",
-  "references/agent-trace-contract.md",
-  "references/dashboard-ui-bundle.json",
+  "assets/dashboard-ui-bundle.json",
+  "assets/semantic-grader-contract.md",
   "references/evolution-workflow.md",
-  "references/example-review-output.md",
-  "references/executable-evals.md",
-  "references/local-eval-snapshot.md",
-  "references/output-template-en.md",
-  "references/output-template-zh.md",
-  "references/review-checklist.md",
+  "references/output-contract.md",
   "references/review-rubric.md",
-  "references/semantic-grader-contract.md",
-  "references/subagent-eval-workflow.md",
-  "scripts/dashboard_bundle.py",
-  "scripts/lint_skill_package.py",
-  "scripts/run_codex_eval_executor.py",
-  "scripts/run_claude_eval_executor.py",
-  "scripts/run_codex_skill_evals.py",
-  "scripts/serve_skill_dashboard.py",
-  "scripts/start_skill_dashboard.py",
-  "scripts/skill_eval_runtime.py",
-  "scripts/validate_local_snapshot.py",
+  "references/verification-workflow.md",
   "evals/evals.json",
-  "evals/local-skill-review-snapshot.json",
   "evals/fixtures/README.md",
   "evals/fixtures/ready-csv-column-renamer/SKILL.md",
-  "evals/fixtures/ready-csv-column-renamer/expected.md",
   "evals/fixtures/needs-revision-meeting-note/SKILL.md",
-  "evals/fixtures/needs-revision-meeting-note/expected.md",
   "evals/fixtures/not-ready-repo-cleaner/SKILL.md",
+];
+
+const FORBIDDEN_FILES = [
+  "evals/local-skill-review-snapshot.json",
+  "evals/fixtures/ready-csv-column-renamer/expected.md",
+  "evals/fixtures/needs-revision-meeting-note/expected.md",
   "evals/fixtures/not-ready-repo-cleaner/expected.md",
 ];
 
@@ -199,6 +186,9 @@ describe("skills CLI installation contract", () => {
         for (const path of REQUIRED_FILES) {
           expect(existsSync(join(installed, path)), path).toBe(true);
         }
+        for (const path of FORBIDDEN_FILES) {
+          expect(existsSync(join(installed, path)), path).toBe(false);
+        }
         expect(fileManifest(installed)).toEqual(sourceManifest);
         expect(existsSync(join(installed, "tests"))).toBe(false);
         expect(existsSync(join(installed, "docs"))).toBe(false);
@@ -212,9 +202,9 @@ describe("skills CLI installation contract", () => {
         );
 
         const lint = run(
-          python,
+          node,
           [
-            join(installed, "scripts", "lint_skill_package.py"),
+            join(installed, "scripts", "lint_skill_package.mjs"),
             installed,
             "--format",
             "json",
@@ -228,27 +218,16 @@ describe("skills CLI installation contract", () => {
 
         expectSuccess(
           run(
-            python,
-            ["-m", "json.tool", join(installed, "evals", "evals.json")],
+            node,
+            ["-e", "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8'))", join(installed, "evals", "evals.json")],
             installed,
           ),
           "installed eval manifest validation",
         );
         expectSuccess(
           run(
-            python,
-            [
-              join(installed, "scripts", "validate_local_snapshot.py"),
-              join(installed, "evals", "local-skill-review-snapshot.json"),
-            ],
-            installed,
-          ),
-          "installed snapshot validation",
-        );
-        expectSuccess(
-          run(
-            python,
-            [join(installed, "scripts", "skill_eval_runtime.py"), "--help"],
+            node,
+            [join(installed, "scripts", "skill_eval_runtime.mjs"), "--help"],
             installed,
           ),
           "installed eval runtime",
@@ -267,9 +246,9 @@ describe("skills CLI installation contract", () => {
           }),
         );
         const dashboard = run(
-          python,
+          node,
           [
-            join(installed, "scripts", "serve_skill_dashboard.py"),
+            join(installed, "scripts", "serve_skill_dashboard.mjs"),
             "--workspace",
             workspace,
             "--check",
@@ -281,15 +260,14 @@ describe("skills CLI installation contract", () => {
           expect.objectContaining({
             ok: true,
             evidence_read_only: true,
-            action_requests_enabled: true,
             run_id: "installed-package-check",
           }),
         );
 
         const launcher = run(
-          python,
+          node,
           [
-            join(installed, "scripts", "start_skill_dashboard.py"),
+            join(installed, "scripts", "start_skill_dashboard.mjs"),
             "--workspace",
             workspace,
             "--serve-existing",
@@ -305,7 +283,7 @@ describe("skills CLI installation contract", () => {
             projection_source: "existing_projection",
             run_id: "installed-package-check",
             dashboard_hosted: false,
-            control_plane_started: false,
+            dashboard_session_started: false,
             evidence_uploaded: false,
             ui_downloaded: false,
           }),

@@ -1514,13 +1514,13 @@ export function describeEvidenceReviewGuide(
   return locale === "zh-CN"
     ? {
         purpose: "记录本轮候选的接受或拒绝决定，并关联作出决定时使用的门禁和目标指标。",
-        inputs: [{ label: "决策输入", value: "本轮场景结果、发布门禁与 Pareto 目标" }],
-        reviewerChecks: ["候选是否通过全部硬门禁。", "接受决定是否满足 Pareto 改进。", "拒绝理由是否与保留证据一致。"],
+        inputs: [{ label: "决策输入", value: "本轮场景结果、发布门禁与已声明目标" }],
+        reviewerChecks: ["候选是否通过全部硬门禁。", "所有目标是否逐次不退化，并至少有一个主要目标逐次达到实质提升。", "拒绝理由是否与保留证据一致。"],
       }
     : {
         purpose: "Records the candidate acceptance or rejection decision and binds it to gates and objective metrics.",
-        inputs: [{ label: "Decision inputs", value: "Scenario results, release gates, and Pareto objectives" }],
-        reviewerChecks: ["Did the candidate clear every hard gate?", "Does acceptance satisfy Pareto improvement?", "Does the rejection reason match retained evidence?"],
+        inputs: [{ label: "Decision inputs", value: "Scenario results, release gates, and declared objectives" }],
+        reviewerChecks: ["Did the candidate clear every hard gate?", "Did every objective avoid repeat-level regression while a primary objective improved materially in every paired repeat?", "Does the rejection reason match retained evidence?"],
       };
 }
 
@@ -1700,11 +1700,11 @@ const statusCopies: Record<string, BilingualCopy> = {
   "no-change": {
     en: {
       title: "No verified improvement",
-      description: "The candidate did not produce a measurable Pareto improvement over the accepted baseline.",
+      description: "The candidate did not produce a repeat-consistent material improvement over the accepted baseline.",
     },
     "zh-CN": {
       title: "没有验证到有效改进",
-      description: "候选版没有相对已接受旧版形成可验证的 Pareto 改进。",
+      description: "候选版没有相对已接受旧版形成逐次一致的实质提升。",
     },
   },
   exhausted: {

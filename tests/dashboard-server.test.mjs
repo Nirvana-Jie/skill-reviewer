@@ -4,17 +4,14 @@ import { once } from "node:events";
 import {
   mkdtempSync,
   mkdirSync,
-  readFileSync,
-  readdirSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const server = join(
@@ -22,16 +19,16 @@ const server = join(
   "skills",
   "skill-reviewer",
   "scripts",
-  "serve_skill_dashboard.py",
+  "serve_skill_dashboard.mjs",
 );
 const launcher = join(
   repoRoot,
   "skills",
   "skill-reviewer",
   "scripts",
-  "start_skill_dashboard.py",
+  "start_skill_dashboard.mjs",
 );
-const python = process.env.PYTHON ?? "python3";
+const node = process.execPath;
 
 function write(root, relative, content) {
   const path = join(root, relative);
@@ -49,13 +46,13 @@ function bridgeFetch(report, path, init = {}) {
   return fetch(`${report.base_url}${path}`, { ...init, headers });
 }
 
-describe("serve_skill_dashboard.py", () => {
-  it("requires an explicit user-approval gate before starting any UI", () => {
+describe("serve_skill_dashboard.mjs", () => {
+  it("requires an explicit user request before starting any UI", () => {
     const root = mkdtempSync(join(tmpdir(), "skill-reviewer-dashboard-consent-"));
     try {
       const workspace = join(root, "workspace");
       const ui = join(root, "ui");
-      write(ui, "index.html", "<!doctype html><title>Local control plane</title>");
+      write(ui, "index.html", "<!doctype html><title>Local Dashboard</title>");
       write(
         workspace,
         "dashboard-data.json",
@@ -68,7 +65,7 @@ describe("serve_skill_dashboard.py", () => {
       );
 
       const result = spawnSync(
-        python,
+        node,
         [
           launcher,
           "--workspace",
@@ -83,20 +80,20 @@ describe("serve_skill_dashboard.py", () => {
       );
 
       expect(result.status).toBe(2);
-      expect(result.stderr).toMatch(/requires explicit user approval/);
+      expect(result.stderr).toMatch(/requires an explicit user request/);
       expect(result.stdout).toBe("");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it("starts a same-origin local control plane from a trusted UI override", async () => {
+  it("starts a same-origin local Dashboard session from a trusted UI override", async () => {
     const root = mkdtempSync(join(tmpdir(), "skill-reviewer-dashboard-launcher-"));
     let child;
     try {
       const workspace = join(root, "workspace");
       const ui = join(root, "ui");
-      write(ui, "index.html", "<!doctype html><title>Local control plane</title>");
+      write(ui, "index.html", "<!doctype html><title>Local Dashboard</title>");
       write(
         workspace,
         "dashboard-data.json",
@@ -109,7 +106,7 @@ describe("serve_skill_dashboard.py", () => {
       );
 
       child = spawn(
-        python,
+        node,
         [
           launcher,
           "--workspace",
@@ -117,7 +114,7 @@ describe("serve_skill_dashboard.py", () => {
           "--serve-existing",
           "--ui-dir",
           ui,
-          "--user-approved-control-plane",
+          "--user-approved-dashboard",
           "--port",
           "0",
         ],
@@ -156,8 +153,8 @@ describe("serve_skill_dashboard.py", () => {
           run_id: "run-single-command",
           port: expect.any(Number),
           dashboard_hosted: false,
-          control_plane_started: true,
-          user_approved_control_plane: true,
+          dashboard_session_started: true,
+          user_approved_dashboard: true,
           ui_mode: "trusted_local_override",
           ui_downloaded: false,
           ui_temporary: false,
@@ -166,27 +163,18 @@ describe("serve_skill_dashboard.py", () => {
         }),
       );
       expect(report.dashboard_session).toEqual({
-        contract: "skill-reviewer.dashboard-session",
+        contract: "skill-reviewer.dashboard-launch-session",
         run_id: "run-single-command",
         page_url: report.url,
         local_origin: report.base_url,
         owner: "lead_agent",
-        lifecycle: "temporary-local-control-plane",
+        lifecycle: "temporary-local-dashboard",
         evidence_transport: "same-origin-loopback-only",
         evidence_uploaded: false,
         capability_transport: "url-fragment-to-request-header",
         ui_integrity_verified: false,
         ui_downloaded: false,
         ui_removed_on_exit: false,
-        browser_executes_actions: false,
-        agent_handoff: {
-          contract: "skill-reviewer.dashboard-agent-handoff",
-          mode: "durable_local_ledger",
-          agent_session_state: "unbound",
-          can_wake_agent_session: false,
-          persists_after_agent_session_end: true,
-          task_root: report.task_root,
-        },
       });
       const pageUrl = new URL(report.url);
       expect(`${pageUrl.origin}${pageUrl.pathname}`).toBe(
@@ -210,13 +198,14 @@ describe("serve_skill_dashboard.py", () => {
       });
       expect(sessionResponse.status).toBe(200);
       const session = await sessionResponse.json();
-      expect(session.agent_handoff).toEqual({
-        contract: "skill-reviewer.dashboard-agent-handoff",
-        mode: "durable_local_ledger",
-        agent_session_state: "unbound",
-        can_wake_agent_session: false,
-        persists_after_agent_session_end: true,
-        task_root: report.task_root,
+      expect(session).toEqual({
+        contract: "skill-reviewer.dashboard-session",
+        run_id: "run-single-command",
+        session_transport: "fragment-to-header",
+        session_header: "X-Skill-Reviewer-Session",
+        evidence_read_only: true,
+        eval_mutation: false,
+        data_endpoint: "/dashboard-data.json",
       });
       const response = await fetch(`${report.base_url}/dashboard-data.json`, {
         headers: {
@@ -237,7 +226,7 @@ describe("serve_skill_dashboard.py", () => {
     }
   }, 10_000);
 
-  it("keeps evidence read-only and reports the external action task plane", () => {
+  it("reports a strictly read-only evidence plane", () => {
     const root = mkdtempSync(join(tmpdir(), "skill-reviewer-dashboard-server-"));
     try {
       const workspace = join(root, "workspace");
@@ -251,7 +240,7 @@ describe("serve_skill_dashboard.py", () => {
       );
 
       const result = spawnSync(
-        python,
+        node,
         [
           server,
           "--workspace",
@@ -266,9 +255,7 @@ describe("serve_skill_dashboard.py", () => {
         expect.objectContaining({
           ok: true,
           evidence_read_only: true,
-          action_requests_enabled: true,
           run_id: "run-check",
-          action_task_count: 0,
         }),
       );
     } finally {
@@ -307,7 +294,7 @@ describe("serve_skill_dashboard.py", () => {
         }),
       );
       child = spawn(
-        python,
+        node,
         [
           server,
           "--workspace",
@@ -369,55 +356,24 @@ describe("serve_skill_dashboard.py", () => {
     }
   }, 10_000);
 
-  it("retains idempotent, digest-bound Agent handoffs outside evidence and across server exit", async () => {
-    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-dashboard-server-"));
+  it("rejects every write method and exposes no action-ledger routes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-dashboard-read-only-"));
     let child;
     try {
       const workspace = join(root, "workspace");
-      const taskRoot = join(root, "action-tasks");
-      const model = {
-        contract: "skill-reviewer.dashboard-data",
-        run: { id: "run-action" },
-        spine: [
-          { id: "case:failed-case", kind: "case", status: "failed" },
-        ],
-        action_center: {
-          next_action: "request_user_release",
-          owner: "lead_agent",
-          task_gateway: {
-            request_endpoint: "/dashboard-action-requests",
-            audit_endpoint: "/dashboard-action-requests.json",
-            evidence_mutation: false,
-            eval_mutation: false,
-            handoff_mode: "durable_local_ledger",
-            can_wake_agent_session: false,
-            persists_after_agent_session_end: true,
-          },
-          actions: [
-            {
-              id: "request_release_confirmation",
-              available: true,
-              owner: "lead_agent",
-              execution_mode: "request",
-              requestable: true,
-              human_confirmation_required: true,
-              evidence_ids: ["case:failed-case"],
-            },
-          ],
-        },
-      };
-      write(workspace, "dashboard-data.json", JSON.stringify(model));
+      write(
+        workspace,
+        "dashboard-data.json",
+        JSON.stringify({
+          contract: "skill-reviewer.dashboard-data",
+          run: { id: "run-read-only" },
+          spine: [],
+          diffs: [],
+        }),
+      );
       child = spawn(
-        python,
-        [
-          server,
-          "--workspace",
-          workspace,
-          "--task-root",
-          taskRoot,
-          "--port",
-          "0",
-        ],
+        node,
+        [server, "--workspace", workspace, "--port", "0"],
         { cwd: repoRoot, stdio: ["ignore", "pipe", "pipe"] },
       );
       let stdout = "";
@@ -443,198 +399,36 @@ describe("serve_skill_dashboard.py", () => {
         });
       });
 
-      const request = {
-        contract: "skill-reviewer.dashboard-action-request",
-        run_id: "run-action",
-        action_id: "request_release_confirmation",
-        expected_next_action: "request_user_release",
-        evidence_ids: ["case:failed-case"],
-        idempotency_key: "test-action-0001",
-      };
-      const create = await bridgeFetch(report, "/dashboard-action-requests", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Origin: report.base_url,
-        },
-        body: JSON.stringify(request),
-      });
-      expect(create.status).toBe(201);
-      expect(create.headers.get("access-control-allow-origin")).toBeNull();
-      const created = await create.json();
-      await vi.waitFor(() => {
-        expect(stderr).toContain('"event": "dashboard_agent_handoff_saved"');
-        expect(stderr).toContain(
-          '"action_id": "request_release_confirmation"',
-        );
-      });
-      expect(created).toEqual(
-        expect.objectContaining({
-          created: true,
-          task: expect.objectContaining({
-            action_id: "request_release_confirmation",
-            owner: "lead_agent",
-            requested_by: "human_reviewer",
-            status: "awaiting_agent",
-            delivery_mode: "durable_local_ledger",
-            agent_session_id: null,
-            dashboard_digest: expect.stringMatching(/^[a-f0-9]{64}$/),
-            digest: expect.stringMatching(/^[a-f0-9]{64}$/),
-          }),
-          handoff: expect.objectContaining({
-            mode: "durable_local_ledger",
-            agent_session_state: "unbound",
-            can_wake_agent_session: false,
-            task_root: report.task_root,
-          }),
-        }),
-      );
-      const duplicate = await bridgeFetch(report, "/dashboard-action-requests", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(request),
-      });
-      expect(duplicate.status).toBe(200);
-      expect((await duplicate.json()).created).toBe(false);
-      const semanticDuplicate = await bridgeFetch(
-        report,
-        "/dashboard-action-requests",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            ...request,
-            idempotency_key: "test-action-same-state",
-          }),
-        },
-      );
-      expect(semanticDuplicate.status).toBe(200);
-      const semanticDuplicateBody = await semanticDuplicate.json();
-      expect(semanticDuplicateBody.created).toBe(false);
-      expect(semanticDuplicateBody.task.id).toBe(created.task.id);
-
-      const logResponse = await bridgeFetch(
-        report,
-        "/dashboard-action-requests.json",
-      );
-      expect(logResponse.status).toBe(200);
-      expect(logResponse.headers.get("cache-control")).toBe("no-store");
-      const log = await logResponse.json();
-      expect(log).toEqual(
-        expect.objectContaining({
-          owner: "lead_agent",
-          evidence_mutation: false,
-          eval_mutation: false,
-          current_dashboard_digest: created.task.dashboard_digest,
-          handoff: expect.objectContaining({
-            mode: "durable_local_ledger",
-            can_wake_agent_session: false,
-            persists_after_agent_session_end: true,
-            task_root: report.task_root,
-          }),
-          tasks: [expect.objectContaining({ id: created.task.id })],
-        }),
-      );
-      expect(readdirSync(workspace)).toEqual(["dashboard-data.json"]);
-      const taskFiles = readdirSync(taskRoot);
-      expect(taskFiles).toHaveLength(1);
-      expect(statSync(taskRoot).mode & 0o777).toBe(0o700);
-      expect(statSync(join(taskRoot, taskFiles[0])).mode & 0o222).toBe(0);
-
-      const substitutedEvidence = await bridgeFetch(
-        report,
-        "/dashboard-action-requests",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            ...request,
-            evidence_ids: [],
-            idempotency_key: "test-action-0002",
-          }),
-        },
-      );
-      expect(substitutedEvidence.status).toBe(400);
-
-      write(
-        workspace,
-        "dashboard-data.json",
-        JSON.stringify({
-          ...model,
-          action_center: {
-            ...model.action_center,
-            next_action: "prepare_audit",
-            owner: "lead_agent",
-            actions: [
-              {
-                id: "prepare_audit",
-                available: true,
-                owner: "lead_agent",
-                execution_mode: "automatic",
-                requestable: false,
-                human_confirmation_required: false,
-                evidence_ids: ["case:failed-case"],
-              },
-            ],
-          },
-        }),
-      );
-      const automaticAction = await bridgeFetch(
-        report,
-        "/dashboard-action-requests",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            ...request,
-            action_id: "prepare_audit",
-            expected_next_action: "prepare_audit",
-            idempotency_key: "test-action-automatic",
-          }),
-        },
-      );
-      expect(automaticAction.status).toBe(400);
-
-      write(
-        workspace,
-        "dashboard-data.json",
-        JSON.stringify({
-          ...model,
-          action_center: {
-            ...model.action_center,
-            next_action: "prepare_audit",
-            owner: "lead_agent",
-            actions: [],
-          },
-        }),
-      );
-      const stale = await bridgeFetch(report, "/dashboard-action-requests", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...request, idempotency_key: "test-action-0003" }),
-      });
-      expect(stale.status).toBe(400);
       const evidencePost = await bridgeFetch(report, "/dashboard-data.json", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: "{}",
       });
       expect(evidencePost.status).toBe(405);
+      expect(await evidencePost.json()).toEqual({
+        ok: false,
+        error: "evidence routes are read-only",
+      });
 
-      const preflight = await fetch(`${report.base_url}/dashboard-action-requests`, {
+      const actionPost = await bridgeFetch(report, "/dashboard-action-requests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      expect(actionPost.status).toBe(405);
+      const actionRead = await bridgeFetch(report, "/dashboard-action-requests.json");
+      expect(actionRead.status).toBe(404);
+
+      const preflight = await fetch(`${report.base_url}/dashboard-data.json`, {
         method: "OPTIONS",
         headers: {
           Origin: report.base_url,
           "Access-Control-Request-Method": "POST",
-          "Access-Control-Request-Headers":
-            "Content-Type, X-Skill-Reviewer-Session",
-          "Access-Control-Request-Private-Network": "true",
+          "Access-Control-Request-Headers": "X-Skill-Reviewer-Session",
         },
       });
-      expect(preflight.status).toBe(204);
-      expect(preflight.headers.get("allow")).toBe("POST, OPTIONS");
-      expect(preflight.headers.get("access-control-allow-origin")).toBeNull();
-      expect(preflight.headers.get("access-control-allow-private-network")).toBeNull();
+      expect(preflight.status).toBe(405);
+
       const untrusted = await bridgeFetch(report, "/dashboard-data.json", {
         headers: {
           Origin: "https://attacker.example",
@@ -642,29 +436,6 @@ describe("serve_skill_dashboard.py", () => {
         },
       });
       expect(untrusted.status).toBe(403);
-      const wrongLoopbackOrigin = await bridgeFetch(
-        report,
-        "/dashboard-data.json",
-        { headers: { Origin: "http://localhost:9999" } },
-      );
-      expect(wrongLoopbackOrigin.status).toBe(403);
-      const missingToken = await fetch(`${report.base_url}/dashboard-data.json`, {
-        headers: { Origin: report.base_url },
-      });
-      expect(missingToken.status).toBe(403);
-      if (child.exitCode === null) {
-        const exited = once(child, "exit");
-        child.kill("SIGKILL");
-        await exited;
-      }
-      expect(readdirSync(taskRoot)).toEqual(taskFiles);
-      expect(JSON.parse(readFileSync(join(taskRoot, taskFiles[0]), "utf8"))).toEqual(
-        expect.objectContaining({
-          status: "awaiting_agent",
-          delivery_mode: "durable_local_ledger",
-          agent_session_id: null,
-        }),
-      );
     } finally {
       if (child && child.exitCode === null && child.signalCode === null) {
         child.kill("SIGTERM");
@@ -672,7 +443,7 @@ describe("serve_skill_dashboard.py", () => {
       }
       rmSync(root, { recursive: true, force: true });
     }
-  }, 15_000);
+  }, 10_000);
 
   it("serves only registered bounded diff sidecars", async () => {
     const root = mkdtempSync(join(tmpdir(), "skill-reviewer-dashboard-server-"));
@@ -718,7 +489,7 @@ describe("serve_skill_dashboard.py", () => {
         }),
       );
       child = spawn(
-        python,
+        node,
         [
           server,
           "--workspace",
@@ -908,7 +679,7 @@ describe("serve_skill_dashboard.py", () => {
       );
 
       const result = spawnSync(
-        python,
+        node,
         [
           server,
           "--workspace",
@@ -941,7 +712,7 @@ describe("serve_skill_dashboard.py", () => {
       );
 
       const result = spawnSync(
-        python,
+        node,
         [server, "--workspace", workspace, "--host", "0.0.0.0", "--check"],
         { cwd: repoRoot, encoding: "utf8" },
       );

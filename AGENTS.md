@@ -1,6 +1,7 @@
 # Repository Agent Instructions
 
-This repository contains the `skill-reviewer` Codex skill and its eval fixtures.
+This repository contains the agent-neutral `skill-reviewer` Skill and its eval
+fixtures.
 
 ## Package Manager
 
@@ -14,19 +15,22 @@ This repository contains the `skill-reviewer` Codex skill and its eval fixtures.
 Run these before proposing changes:
 
 ```bash
-python3 -m unittest discover -s tests
 pnpm test
-python3 skills/skill-reviewer/scripts/lint_skill_package.py skills/skill-reviewer --format text --fail-on error
-python3 -m json.tool skills/skill-reviewer/evals/evals.json >/dev/null
-python3 skills/skill-reviewer/scripts/validate_local_snapshot.py skills/skill-reviewer/evals/local-skill-review-snapshot.json
+pnpm typecheck
+pnpm dashboard:build
+node skills/skill-reviewer/scripts/lint_skill_package.mjs skills/skill-reviewer --format text --fail-on error
+node -e 'JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(require("node:fs").readFileSync(process.argv[1])))' skills/skill-reviewer/evals/evals.json
 ```
 
-For syntax-only checks in restricted macOS sandboxes, direct pycache to a writable
-directory:
+Run a syntax-only check across the native ESM runtime:
 
 ```bash
-env PYTHONPYCACHEPREFIX=/private/tmp/skill-reviewer-pycache python3 -m py_compile skills/skill-reviewer/scripts/dashboard_bundle.py skills/skill-reviewer/scripts/lint_skill_package.py skills/skill-reviewer/scripts/run_claude_eval_executor.py skills/skill-reviewer/scripts/run_codex_eval_executor.py skills/skill-reviewer/scripts/run_codex_eval_plan.py skills/skill-reviewer/scripts/run_codex_skill_evals.py skills/skill-reviewer/scripts/skill_eval_evidence.py skills/skill-reviewer/scripts/skill_eval_measurement.py skills/skill-reviewer/scripts/skill_eval_runtime.py skills/skill-reviewer/scripts/serve_skill_dashboard.py skills/skill-reviewer/scripts/start_skill_dashboard.py skills/skill-reviewer/scripts/validate_local_snapshot.py tests/test_run_codex_skill_evals.py
+find skills/skill-reviewer/scripts -type f -name '*.mjs' -print0 | xargs -0 -n1 node --check
 ```
+
+Add systematic unit and end-to-end coverage through Vitest. Do not add
+standalone JavaScript test scripts. Configuration and manifest constraints may
+be proven by direct inspection instead of a dedicated test file.
 
 ## Contribution Workflow
 
@@ -41,13 +45,15 @@ env PYTHONPYCACHEPREFIX=/private/tmp/skill-reviewer-pycache python3 -m py_compil
 ## Review Guidelines
 
 - For `skill-reviewer` PRs, focus on trigger reliability, safety constraints,
-  snapshot contract stability, fixture drift, and whether output sections remain
-  accepted by `skills/skill-reviewer/scripts/validate_local_snapshot.py`.
+  immutable run-contract stability, fixture drift, and whether the executable
+  manifest remains accepted by the Runtime compile and grade interfaces.
 - Treat changes to `skills/skill-reviewer/SKILL.md`,
   `skills/skill-reviewer/references/review-rubric.md`,
-  `skills/skill-reviewer/references/review-checklist.md`,
-  `skills/skill-reviewer/references/output-template-*.md`,
-  `skills/skill-reviewer/evals/local-skill-review-snapshot.json`, or
+  `skills/skill-reviewer/references/output-contract.md`,
+  `skills/skill-reviewer/references/verification-workflow.md`,
+  `skills/skill-reviewer/references/evolution-workflow.md`,
+  `skills/skill-reviewer/assets/agent-adapter-registry.json`,
+  `skills/skill-reviewer/evals/evals.json`, or
   `skills/skill-reviewer/evals/fixtures/**` as eval-risk
   changes.
 - Run or account for the validation commands above before recommending merge.

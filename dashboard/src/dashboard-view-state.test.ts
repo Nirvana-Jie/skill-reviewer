@@ -117,7 +117,7 @@ describe("dashboard view state", () => {
     ).toBe("evidence");
     expect(readDashboardViewState("#view=evidence").canvasView).toBe("review");
     expect(readDashboardViewState("#view=action").canvasView).toBe("review");
-    expect(readDashboardViewState("#view=action").panel).toBe("action");
+    expect(readDashboardViewState("#view=action").panel).toBe("none");
 
     const auditUrl = dashboardViewUrl(
       {

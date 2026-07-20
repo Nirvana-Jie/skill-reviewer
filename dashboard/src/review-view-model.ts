@@ -26,7 +26,27 @@ export interface ReviewViewModel {
     status: "valid" | "invalid" | "unverified" | "pending";
     tone: "good" | "warn";
   };
+  validity: {
+    evidence: {
+      status: "valid" | "invalid";
+      tone: "good" | "bad";
+    };
+    candidate: {
+      status: "accepted" | "rejected" | "pending" | "not_judged";
+      tone: "good" | "bad" | "neutral" | "warn";
+    };
+  };
 }
+
+const candidateToneByStatus: Record<
+  ReviewViewModel["validity"]["candidate"]["status"],
+  ReviewViewModel["validity"]["candidate"]["tone"]
+> = {
+  accepted: "good",
+  rejected: "bad",
+  pending: "neutral",
+  not_judged: "warn",
+};
 
 const requiredAcceptanceCriterionIds = [
   "hard_gates",
@@ -55,6 +75,31 @@ function hasTrustedOpaqueHoldout(data: DashboardData): boolean {
     holdout.issuer.trim().length > 0 &&
     typeof holdout.digest === "string" &&
     holdout.digest.trim().length > 0
+  );
+}
+
+function hasValidEvidenceIntegrity(
+  data: DashboardData,
+  executionEvidenceComplete: boolean,
+): boolean {
+  const integrity = data.run.integrity;
+  return (
+    integrity?.locked === true &&
+    integrity.verified === true &&
+    data.cases.length > 0 &&
+    executionEvidenceComplete &&
+    data.cases.every((item) =>
+      item.arms.every(
+        (arm) =>
+          (arm.binding_errors?.length ?? 0) === 0 &&
+          (arm.executions ?? []).every(
+            (execution) =>
+              execution.binding_error_count === 0 &&
+              execution.dispatch?.valid === true &&
+              execution.trace?.valid === true,
+          ),
+      ),
+    )
   );
 }
 
@@ -106,6 +151,18 @@ export function buildReviewViewModel(data: DashboardData): ReviewViewModel {
     );
   const measurementStatus = data.run.measurement?.status ?? "unverified";
   const measurementValid = measurementStatus === "valid";
+  const evidenceIntegrityValid = hasValidEvidenceIntegrity(
+    data,
+    executionStatus === "complete" && executionEvidenceVerified,
+  );
+  const candidateStatus =
+    !evidenceIntegrityValid || !measurementValid
+      ? "not_judged"
+      : data.action_center.acceptance.accepted === true
+        ? "accepted"
+        : data.action_center.acceptance.accepted === false
+          ? "rejected"
+          : "pending";
   const evidenceIncomplete =
     executionStatus !== "complete" ||
     !executionEvidenceVerified ||
@@ -161,6 +218,16 @@ export function buildReviewViewModel(data: DashboardData): ReviewViewModel {
     measurement: {
       status: measurementStatus,
       tone: measurementValid ? "good" : "warn",
+    },
+    validity: {
+      evidence: {
+        status: evidenceIntegrityValid ? "valid" : "invalid",
+        tone: evidenceIntegrityValid ? "good" : "bad",
+      },
+      candidate: {
+        status: candidateStatus,
+        tone: candidateToneByStatus[candidateStatus],
+      },
     },
   };
 }

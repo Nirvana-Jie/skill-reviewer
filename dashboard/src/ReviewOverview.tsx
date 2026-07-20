@@ -9,7 +9,6 @@ import {
   X,
 } from "lucide-react";
 
-import { nextActionMessageKey } from "./ActionCenter";
 import {
   describeAssertionDecision,
   describeDashboardCase,
@@ -17,7 +16,7 @@ import {
 } from "./evidence-semantics";
 import { buildReviewViewModel } from "./review-view-model";
 import type {
-  ActionAttributionId,
+  DecisionAttributionId,
   DashboardData,
   SpineNode,
 } from "./types";
@@ -27,7 +26,7 @@ import {
   type MessageKey,
 } from "./ui-preferences";
 
-const attributionKeys: Record<ActionAttributionId, MessageKey> = {
+const attributionKeys: Record<DecisionAttributionId, MessageKey> = {
   skill: "attribution_skill",
   eval: "attribution_eval",
   execution_environment: "attribution_execution_environment",
@@ -35,13 +34,34 @@ const attributionKeys: Record<ActionAttributionId, MessageKey> = {
   human: "attribution_human",
 };
 
-const attributionActionKeys: Record<ActionAttributionId, MessageKey> = {
+const attributionActionKeys: Record<DecisionAttributionId, MessageKey> = {
   skill: "issueAction_skill",
   eval: "issueAction_eval",
   execution_environment: "issueAction_execution_environment",
   evidence: "issueAction_evidence",
   human: "issueAction_human",
 };
+
+const candidateMessageKeys = {
+  accepted: "candidateAccepted",
+  rejected: "candidateRejected",
+  pending: "candidatePending",
+  not_judged: "candidateNotJudged",
+} as const satisfies Record<string, MessageKey>;
+
+function nextActionMessageKey(nextAction: string): MessageKey | null {
+  if (nextAction === "propose_candidate") return "action_generate_candidate";
+  if (
+    nextAction === "run_authorized_selection" ||
+    nextAction === "run_authorized_audit"
+  ) return "action_rerun_execution";
+  if (nextAction === "prepare_audit") return "action_prepare_audit";
+  if (nextAction === "propose_eval_change") return "action_propose_eval_change";
+  if (nextAction === "request_user_release") return "action_request_release_confirmation";
+  if (nextAction === "stop") return "nextActionStop";
+  if (nextAction === "review_evidence") return "nextActionReviewEvidence";
+  return null;
+}
 
 function nodeMap(data: DashboardData): Map<string, SpineNode> {
   return new Map(data.spine.map((node) => [node.id, node]));
@@ -53,14 +73,35 @@ function DecisionIcon({ tone }: { tone: "good" | "bad" | "warn" | "neutral" }) {
   return <CircleAlert size={17} />;
 }
 
+function formatObjectiveDelta(locale: "en" | "zh-CN", value: number | null) {
+  if (value === null) return "—";
+  const formatted = new Intl.NumberFormat(locale, {
+    maximumFractionDigits: 3,
+    signDisplay: "always",
+  }).format(value);
+  return formatted === "-0" ? "+0" : formatted;
+}
+
 function reviewDecisionCopy(
   locale: "en" | "zh-CN",
   data: DashboardData,
   releaseReady: boolean,
+  evidenceIntegrityValid: boolean,
 ): { title: string; detail: string } {
   const decision = data.review.decision;
   const measurementStatus = data.run.measurement?.status ?? "unverified";
-  if (measurementStatus === "invalid" || measurementStatus === "unverified") {
+  if (!evidenceIntegrityValid) {
+    return locale === "zh-CN"
+      ? {
+          title: "证据完整性失败，暂不评价 Skill",
+          detail: "运行绑定、派发回执或 Trace 尚未全部验证；先修复证据链，不能把当前结果归因到 Skill。",
+        }
+      : {
+          title: "Evidence integrity failed — Skill not judged",
+          detail: "Run bindings, dispatch receipts, or traces are not fully verified. Repair the evidence chain before attributing this result to the Skill.",
+        };
+  }
+  if (measurementStatus !== "valid") {
     return locale === "zh-CN"
       ? {
           title: "测量不可用，暂不评价 Skill",
@@ -122,11 +163,11 @@ function reviewDecisionCopy(
     return locale === "zh-CN"
       ? {
           title: "候选暂不可接受",
-          detail: `${failedCount} 项候选接受条件未满足；请先核对硬门禁、Pareto 不退化与实质提升。`,
+          detail: `${failedCount} 项候选接受条件未满足；请先核对硬门禁、目标不退化与实质提升。`,
         }
       : {
           title: "Candidate is not yet acceptable",
-          detail: `${failedCount} candidate acceptance criteria failed. Review hard gates, Pareto admissibility, and material improvement.`,
+          detail: `${failedCount} candidate acceptance criteria failed. Review hard gates, objective non-regression, and material improvement.`,
         };
   }
   if (decision.reason === "audit_required") {
@@ -156,13 +197,11 @@ export function ReviewOverview({
   onOpenEvidence,
   onOpenDiff,
   onOpenTrace,
-  onOpenActionCenter,
 }: {
   data: DashboardData;
   onOpenEvidence: (node: SpineNode) => void;
   onOpenDiff: () => void;
   onOpenTrace: () => void;
-  onOpenActionCenter: () => void;
 }) {
   const { locale, t } = useUiPreferences();
   const nodesById = nodeMap(data);
@@ -172,6 +211,7 @@ export function ReviewOverview({
     locale,
     data,
     decisionTone === "good",
+    viewModel.validity.evidence.status === "valid",
   );
   const nextActionKey = nextActionMessageKey(data.review.next_action);
   const automaticContinuation =
@@ -202,6 +242,16 @@ export function ReviewOverview({
         : viewModel.measurement.status === "pending"
           ? "measurementPending"
           : "measurementUnverified";
+  const evidenceIntegrityKey: MessageKey =
+    viewModel.validity.evidence.status === "valid"
+      ? "evidenceIntegrityValid"
+      : "evidenceIntegrityInvalid";
+  const measurementTone =
+    viewModel.measurement.status === "invalid"
+      ? "bad"
+      : viewModel.measurement.tone;
+  const candidateKey = candidateMessageKeys[viewModel.validity.candidate.status];
+  const objectiveEvidence = data.action_center.acceptance.objectives ?? [];
 
   return (
     <div className="review-overview">
@@ -213,61 +263,163 @@ export function ReviewOverview({
           <span className="pane-kicker">{t("reviewOverview")}</span>
           <h2 id="review-decision-title">{decision.title}</h2>
           <p>{decision.detail}</p>
-        </div>
-        <div className="review-decision-counts" aria-label={t("decisionCoverage")}>
-          <div>
-            <strong>
-              {configuredRatio(
-                data.summary.hard_gates_passed,
-                data.summary.hard_gates_total,
-              )}
-            </strong>
-            <span>{t("hardGates")}</span>
-          </div>
-          <div>
-            <strong>
-              {configuredRatio(
-                data.summary.candidate_passed,
-                data.summary.case_count,
-              )}
-            </strong>
-            <span>{t("casesPassed")}</span>
+          <div className="review-next-state-inline">
+            <Bot size={13} aria-hidden="true" />
+            <span>{t("recommendedNextStep")}</span>
+            <strong>{t(nextActionKey ?? "nextActionReviewEvidence")}</strong>
           </div>
         </div>
+        {viewModel.validity.candidate.status !== "not_judged" && (
+          <div className="review-decision-counts" aria-label={t("decisionCoverage")}>
+            <>
+              <div>
+                <strong>
+                  {configuredRatio(
+                    data.summary.hard_gates_passed,
+                    data.summary.hard_gates_total,
+                  )}
+                </strong>
+                <span>{t("hardGates")}</span>
+              </div>
+              <div>
+                <strong>
+                  {configuredRatio(
+                    data.summary.candidate_passed,
+                    data.summary.case_count,
+                  )}
+                </strong>
+                <span>{t("casesPassed")}</span>
+              </div>
+            </>
+          </div>
+        )}
       </section>
 
-      <section
-        className={`review-measurement-status tone-${viewModel.measurement.tone}`}
-        aria-label={t("measurementValidity")}
-      >
-        <ShieldCheck size={18} aria-hidden="true" />
-        <div>
-          <span>{t("measurementValidity")}</span>
-          <strong>{t(measurementKey)}</strong>
-          <p>{t("measurementValidityDescription")}</p>
+      <section className="review-validity-chain" aria-label={t("decisionValidity")}>
+        <div className="review-validity-intro">
+          <strong>{t("decisionValidity")}</strong>
+          <p>{t("decisionValidityDescription")}</p>
         </div>
+        <ol>
+          <li className={`tone-${viewModel.validity.evidence.tone}`}>
+            <span className="review-validity-step" aria-hidden="true">1</span>
+            <span>
+              <small>{t("evidenceIntegrity")}</small>
+              <strong>{t(evidenceIntegrityKey)}</strong>
+            </span>
+            <DecisionIcon tone={viewModel.validity.evidence.tone} />
+          </li>
+          <li className={`tone-${measurementTone}`}>
+            <span className="review-validity-step" aria-hidden="true">2</span>
+            <span>
+              <small>{t("measurementValidity")}</small>
+              <strong>{t(measurementKey)}</strong>
+            </span>
+            <DecisionIcon tone={measurementTone} />
+          </li>
+          <li className={`tone-${viewModel.validity.candidate.tone}`}>
+            <span className="review-validity-step" aria-hidden="true">3</span>
+            <span>
+              <small>{t("candidateQuality")}</small>
+              <strong>{t(candidateKey)}</strong>
+            </span>
+            <DecisionIcon tone={viewModel.validity.candidate.tone} />
+          </li>
+        </ol>
       </section>
+
+      {objectiveEvidence.length > 0 && (
+        <section
+          className="review-objective-evidence"
+          aria-labelledby="review-objective-evidence-title"
+        >
+          <header>
+            <div>
+              <span>{t("objectiveEvidence")}</span>
+              <h3 id="review-objective-evidence-title">
+                {t("objectiveEvidenceTitle")}
+              </h3>
+            </div>
+            <p>{t("objectiveEvidenceDescription")}</p>
+          </header>
+          <div className="review-objective-list">
+            {objectiveEvidence.map((objective) => {
+              const evalCase = data.cases.find(
+                (candidate) => candidate.id === objective.case_id,
+              );
+              const caseTitle = evalCase
+                ? describeDashboardCase(locale, evalCase).title
+                : objective.case_id;
+              const tone = !objective.non_regressed
+                ? "bad"
+                : objective.materially_improved
+                  ? "good"
+                  : "warn";
+              const statusKey: MessageKey = !objective.non_regressed
+                ? "objectiveRegressionObserved"
+                : objective.materially_improved
+                  ? "objectiveMaterialEveryRepeat"
+                  : "objectiveNonRegressedOnly";
+              return (
+                <article
+                  className={`review-objective-row tone-${tone}`}
+                  key={`${objective.case_id}:${objective.id}`}
+                >
+                  <div className="review-objective-identity">
+                    <span>
+                      <strong>{caseTitle}</strong>
+                      <code>{objective.metric}</code>
+                    </span>
+                    <em>{t(statusKey)}</em>
+                  </div>
+                  <dl>
+                    <div>
+                      <dt>{t("objectiveMeanDelta")}</dt>
+                      <dd>{formatObjectiveDelta(locale, objective.delta)}</dd>
+                    </div>
+                    <div>
+                      <dt>{t("objectivePairedDeltas")}</dt>
+                      <dd>
+                        <code>
+                          {objective.paired_deltas
+                            .map((value) => formatObjectiveDelta(locale, value))
+                            .join(" · ")}
+                        </code>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>{t("objectiveGuardrails")}</dt>
+                      <dd>
+                        {t("objectiveGuardrailValues", {
+                          tolerance: formatObjectiveDelta(
+                            locale,
+                            -objective.non_regression_tolerance,
+                          ),
+                          material: formatObjectiveDelta(
+                            locale,
+                            objective.min_material_delta,
+                          ),
+                        })}
+                      </dd>
+                    </div>
+                  </dl>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       <section
         className="decision-evidence-spine"
         aria-label={t("decisionEvidence")}
       >
-        <div className={`decision-summary tone-${decisionTone}`}>
-          <DecisionIcon tone={decisionTone} />
-          <span>
-            <small>{t("releaseState")}</small>
-            <strong>{decision.title}</strong>
-          </span>
-        </div>
         <button
           type="button"
           className={primaryBlocker ? "tone-bad" : noBlockersReady ? "tone-good" : "tone-warn"}
           aria-label={t("reviewPrimaryRiskEvidence")}
-          onClick={() =>
-            primaryRiskEvidence
-              ? onOpenEvidence(primaryRiskEvidence)
-              : onOpenActionCenter()
-          }
+          disabled={!primaryRiskEvidence}
+          onClick={() => primaryRiskEvidence && onOpenEvidence(primaryRiskEvidence)}
         >
           <CircleAlert size={17} aria-hidden="true" />
           <span>
@@ -553,25 +705,6 @@ export function ReviewOverview({
               </div>
             </div>
           )}
-        </section>
-
-        <section className="review-next-action review-next-action-card">
-          <div className="review-rail-label">
-            <Bot size={14} aria-hidden="true" />
-            {t("recommendedNextStep")}
-          </div>
-          <strong>{t(nextActionKey ?? "nextActionReviewEvidence")}</strong>
-          <p>
-            {t(
-              automaticContinuation
-                ? "automaticLeadAgentOwnerDescription"
-                : "leadAgentOwnerDescription",
-            )}
-          </p>
-          <button type="button" onClick={onOpenActionCenter}>
-            {t("openActionCenter")}
-            <ChevronRight size={14} aria-hidden="true" />
-          </button>
         </section>
       </div>
     </div>

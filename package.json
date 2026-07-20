@@ -12,7 +12,8 @@
     "typecheck": "tsc -p dashboard/tsconfig.json --noEmit",
     "dashboard:dev": "vite --config dashboard/vite.config.ts",
     "dashboard:build": "pnpm typecheck && vite build --config dashboard/vite.config.ts",
-    "dashboard:start": "python3 skills/skill-reviewer/scripts/start_skill_dashboard.py"
+    "dashboard:start": "node skills/skill-reviewer/scripts/start_skill_dashboard.mjs",
+    "eval:run": "node skills/skill-reviewer/scripts/run_agent_eval.mjs"
   },
   "dependencies": {
     "@pierre/diffs": "1.2.12",

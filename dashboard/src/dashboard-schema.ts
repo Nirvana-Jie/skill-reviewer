@@ -34,6 +34,9 @@ const forbiddenTraceDetailKeys = new Set([
 
 interface RunValidationContext {
   runId: string;
+  profileAdapterId?: string;
+  profileSourceAgent?: string;
+  profileRegistryEntryDigest?: string;
   profileTarget?: string;
   profileHarness?: string;
   profileDispatchObservation?: "host_dispatch" | "process_spawn" | "external_harness";
@@ -364,6 +367,36 @@ function validateRun(value: unknown, path: string): void {
       run.execution_profile,
       `${path}.execution_profile`,
     );
+    validateOptionalNullableString(
+      profile,
+      "adapter_id",
+      `${path}.execution_profile`,
+    );
+    if (profile.adapter_binding !== undefined) {
+      const binding = requireRecord(
+        profile.adapter_binding,
+        `${path}.execution_profile.adapter_binding`,
+      );
+      for (const key of [
+        "source_agent",
+        "source_format",
+        "source_contract_version",
+        "contract_stability",
+        "evidence_authority",
+        "implementation_maturity",
+        "executable_version",
+        "registry_entry_digest",
+      ]) {
+        requireString(
+          binding[key],
+          `${path}.execution_profile.adapter_binding.${key}`,
+        );
+      }
+      requireStringArray(
+        binding.official_sources,
+        `${path}.execution_profile.adapter_binding.official_sources`,
+      );
+    }
     for (const key of ["target", "harness", "isolation", "digest"]) {
       validateOptionalString(profile, key, `${path}.execution_profile`);
     }
@@ -530,10 +563,6 @@ function validateEvolution(value: unknown, path: string): void {
         lineage.continuity_epoch,
         `${itemPath}.continuity_epoch`,
       );
-      requireStringArray(
-        lineage.training_trace_ids,
-        `${itemPath}.training_trace_ids`,
-      );
     },
   );
   requireArrayOf(
@@ -552,13 +581,13 @@ function validateEvolution(value: unknown, path: string): void {
   );
 }
 
-function validateActionCenter(value: unknown, path: string): void {
-  const actionCenter = requireRecord(value, path);
-  requireString(actionCenter.next_action, `${path}.next_action`);
-  requireLiteral(actionCenter.owner, `${path}.owner`, "lead_agent");
+function validateDecisionSupport(value: unknown, path: string): void {
+  const decisionSupport = requireRecord(value, path);
+  requireString(decisionSupport.next_action, `${path}.next_action`);
+  requireLiteral(decisionSupport.owner, `${path}.owner`, "lead_agent");
 
   const continuation = requireRecord(
-    actionCenter.continuation,
+    decisionSupport.continuation,
     `${path}.continuation`,
   );
   requireOneOf(continuation.mode, `${path}.continuation.mode`, [
@@ -579,7 +608,7 @@ function validateActionCenter(value: unknown, path: string): void {
   ] as const);
 
   const acceptance = requireRecord(
-    actionCenter.acceptance,
+    decisionSupport.acceptance,
     `${path}.acceptance`,
   );
   requireString(acceptance.status, `${path}.acceptance.status`);
@@ -588,6 +617,54 @@ function validateActionCenter(value: unknown, path: string): void {
     acceptance.decision_run_id,
     `${path}.acceptance.decision_run_id`,
   );
+  if (acceptance.objectives !== undefined) {
+    requireArrayOf(
+      acceptance.objectives,
+      `${path}.acceptance.objectives`,
+      (item, itemPath) => {
+        const objective = requireRecord(item, itemPath);
+        requireString(objective.case_id, `${itemPath}.case_id`);
+        requireString(objective.id, `${itemPath}.id`);
+        requireString(objective.metric, `${itemPath}.metric`);
+        requireOneOf(objective.direction, `${itemPath}.direction`, [
+          "maximize",
+          "minimize",
+        ] as const);
+        requireBoolean(objective.primary, `${itemPath}.primary`);
+        if (objective.delta !== null) {
+          requireFiniteNumber(objective.delta, `${itemPath}.delta`);
+        }
+        const pairedDeltas = requireArrayOf(
+          objective.paired_deltas,
+          `${itemPath}.paired_deltas`,
+          requireFiniteNumber,
+        );
+        const repeatCount = requireNonNegativeInteger(
+          objective.repeat_count,
+          `${itemPath}.repeat_count`,
+        );
+        if (pairedDeltas.length !== repeatCount) {
+          throw new DashboardCompatibilityError(
+            `${itemPath}.paired_deltas`,
+            "must contain one delta for every paired repeat",
+          );
+        }
+        requireNonNegativeNumber(
+          objective.non_regression_tolerance,
+          `${itemPath}.non_regression_tolerance`,
+        );
+        requireNonNegativeNumber(
+          objective.min_material_delta,
+          `${itemPath}.min_material_delta`,
+        );
+        requireBoolean(objective.non_regressed, `${itemPath}.non_regressed`);
+        requireBoolean(
+          objective.materially_improved,
+          `${itemPath}.materially_improved`,
+        );
+      },
+    );
+  }
   const acceptanceCriteria = requireArray(
     acceptance.criteria,
     `${path}.acceptance.criteria`,
@@ -635,7 +712,7 @@ function validateActionCenter(value: unknown, path: string): void {
   }
 
   const attribution = requireRecord(
-    actionCenter.attribution,
+    decisionSupport.attribution,
     `${path}.attribution`,
   );
   if (attribution.primary !== null) {
@@ -658,61 +735,6 @@ function validateActionCenter(value: unknown, path: string): void {
     },
   );
 
-  requireArrayOf(actionCenter.actions, `${path}.actions`, (item, itemPath) => {
-    const action = requireRecord(item, itemPath);
-    requireOneOf(action.id, `${itemPath}.id`, [
-      "generate_candidate",
-      "prepare_audit",
-      "rerun_execution",
-      "propose_eval_change",
-      "request_release_confirmation",
-    ] as const);
-    requireBoolean(action.available, `${itemPath}.available`);
-    requireBoolean(action.recommended, `${itemPath}.recommended`);
-    requireLiteral(action.owner, `${itemPath}.owner`, "lead_agent");
-    requireOneOf(action.execution_mode, `${itemPath}.execution_mode`, [
-      "automatic",
-      "request",
-    ] as const);
-    requireBoolean(action.requestable, `${itemPath}.requestable`);
-    requireBoolean(
-      action.human_confirmation_required,
-      `${itemPath}.human_confirmation_required`,
-    );
-    requireStringArray(action.evidence_ids, `${itemPath}.evidence_ids`);
-  });
-
-  const gateway = requireRecord(
-    actionCenter.task_gateway,
-    `${path}.task_gateway`,
-  );
-  requireString(gateway.request_endpoint, `${path}.task_gateway.request_endpoint`);
-  requireString(gateway.audit_endpoint, `${path}.task_gateway.audit_endpoint`);
-  requireLiteral(
-    gateway.evidence_mutation,
-    `${path}.task_gateway.evidence_mutation`,
-    false,
-  );
-  requireLiteral(
-    gateway.eval_mutation,
-    `${path}.task_gateway.eval_mutation`,
-    false,
-  );
-  requireLiteral(
-    gateway.handoff_mode,
-    `${path}.task_gateway.handoff_mode`,
-    "durable_local_ledger",
-  );
-  requireLiteral(
-    gateway.can_wake_agent_session,
-    `${path}.task_gateway.can_wake_agent_session`,
-    false,
-  );
-  requireLiteral(
-    gateway.persists_after_agent_session_end,
-    `${path}.task_gateway.persists_after_agent_session_end`,
-    true,
-  );
 }
 
 function validateReview(value: unknown, path: string): void {
@@ -867,12 +889,7 @@ function validateDispatch(
     "process_spawn",
     "external_harness",
   ] as const);
-  const expectedObservation = context.profileDispatchObservation ??
-    (provider === "codex-cli" && harness === "codex-exec-jsonl"
-      ? "process_spawn"
-      : provider === "native-agent" && harness === "lead-agent-dispatch"
-        ? "host_dispatch"
-        : null);
+  const expectedObservation = context.profileDispatchObservation ?? null;
   if (expectedObservation !== null && observation !== expectedObservation) {
     throw new DashboardCompatibilityError(
       `${path}.observation`,
@@ -895,6 +912,19 @@ function validateSourceTrace(
       "adapter",
       "format",
       "source_stream_digest",
+      "source_agent",
+      "registry_entry_digest",
+      "runtime_binding_digest",
+      "agent_version",
+      "executable_digest",
+      "argv_digest",
+      "parser_id",
+      "parser_version",
+      "parser_digest",
+      "adapter_maturity",
+      "source_contract_version",
+      "contract_stability",
+      "evidence_authority",
     ]) {
       if (source[key] !== undefined) {
         requireNullableString(source[key], `${path}.${key}`);
@@ -911,6 +941,9 @@ function validateSourceTrace(
         `${path}.redaction`,
         "private-reasoning-fields-removed",
       );
+    }
+    if (source.contract_urls !== undefined && source.contract_urls !== null) {
+      requireStringArray(source.contract_urls, `${path}.contract_urls`);
     }
     return false;
   }
@@ -932,10 +965,13 @@ function validateSourceTrace(
       "must match run.execution_profile.trace.source.artifact",
     );
   }
-  if (context.profileTarget && source.adapter !== context.profileTarget) {
+  if (
+    context.profileAdapterId &&
+    source.adapter !== context.profileAdapterId
+  ) {
     throw new DashboardCompatibilityError(
       `${path}.adapter`,
-      "must match run.execution_profile.target",
+      "must match run.execution_profile.adapter_id",
     );
   }
   if (
@@ -945,6 +981,24 @@ function validateSourceTrace(
     throw new DashboardCompatibilityError(
       `${path}.format`,
       "must match run.execution_profile.trace.source.format",
+    );
+  }
+  if (
+    context.profileSourceAgent &&
+    source.source_agent !== context.profileSourceAgent
+  ) {
+    throw new DashboardCompatibilityError(
+      `${path}.source_agent`,
+      "must match run.execution_profile.adapter_binding.source_agent",
+    );
+  }
+  if (
+    context.profileRegistryEntryDigest &&
+    source.registry_entry_digest !== context.profileRegistryEntryDigest
+  ) {
+    throw new DashboardCompatibilityError(
+      `${path}.registry_entry_digest`,
+      "must match run.execution_profile.adapter_binding.registry_entry_digest",
     );
   }
   requireNonNegativeInteger(
@@ -966,6 +1020,35 @@ function validateSourceTrace(
     `${path}.redaction`,
     "private-reasoning-fields-removed",
   );
+  for (const key of [
+    "source_agent",
+    "agent_version",
+    "parser_id",
+    "parser_version",
+    "adapter_maturity",
+    "source_contract_version",
+    "contract_stability",
+    "evidence_authority",
+  ]) {
+    if (source[key] !== undefined) requireString(source[key], `${path}.${key}`);
+  }
+  for (const key of [
+    "registry_entry_digest",
+    "runtime_binding_digest",
+    "executable_digest",
+    "argv_digest",
+    "parser_digest",
+  ]) {
+    if (source[key] !== undefined) {
+      const digest = requireString(source[key], `${path}.${key}`);
+      if (!/^[a-f0-9]{64}$/i.test(digest)) {
+        throw new DashboardCompatibilityError(`${path}.${key}`, "expected a SHA-256 digest");
+      }
+    }
+  }
+  if (source.contract_urls !== undefined) {
+    requireStringArray(source.contract_urls, `${path}.contract_urls`);
+  }
   return true;
 }
 
@@ -1264,7 +1347,7 @@ function validateExecution(
     ) {
       throw new DashboardCompatibilityError(
         `${path}.source_trace`,
-        "a completed provider-stream trace requires a valid bound source trace",
+        "a completed source-stream trace requires a valid bound source trace",
       );
     }
   }
@@ -1896,18 +1979,18 @@ function migrateV2Projection(
   const evolution = isRecord(source.evolution) ? source.evolution : {};
   const review = isRecord(source.review) ? source.review : null;
   const reviewDecision = review && isRecord(review.decision) ? review.decision : null;
-  const actionCenter = isRecord(source.action_center) ? source.action_center : null;
+  const decisionSupport = isRecord(source.action_center) ? source.action_center : null;
   const continuation =
-    actionCenter && isRecord(actionCenter.continuation)
-      ? actionCenter.continuation
+    decisionSupport && isRecord(decisionSupport.continuation)
+      ? decisionSupport.continuation
       : null;
   const acceptance =
-    actionCenter && isRecord(actionCenter.acceptance)
-      ? actionCenter.acceptance
+    decisionSupport && isRecord(decisionSupport.acceptance)
+      ? decisionSupport.acceptance
       : null;
   const attribution =
-    actionCenter && isRecord(actionCenter.attribution)
-      ? actionCenter.attribution
+    decisionSupport && isRecord(decisionSupport.attribution)
+      ? decisionSupport.attribution
       : null;
   return {
     ...migratedSource,
@@ -1943,14 +2026,14 @@ function migrateV2Projection(
             next_action: "review_evidence",
           },
     action_center:
-      actionCenter === null
+      decisionSupport === null
         ? source.action_center
         : {
-            ...actionCenter,
+            ...decisionSupport,
             next_action: "review_evidence",
             continuation:
               continuation === null
-                ? actionCenter.continuation
+                ? decisionSupport.continuation
                 : {
                     ...continuation,
                     mode: "human_required",
@@ -1959,7 +2042,7 @@ function migrateV2Projection(
                   },
             acceptance:
               acceptance === null
-                ? actionCenter.acceptance
+                ? decisionSupport.acceptance
                 : {
                     ...acceptance,
                     status: "measurement-unverified",
@@ -1972,7 +2055,7 @@ function migrateV2Projection(
                   },
             attribution:
               attribution === null
-                ? actionCenter.attribution
+                ? decisionSupport.attribution
                 : {
                     ...attribution,
                     primary: null,
@@ -1984,13 +2067,6 @@ function migrateV2Projection(
                         )
                       : attribution.items,
                   },
-            actions: Array.isArray(actionCenter.actions)
-              ? actionCenter.actions.map((value) =>
-                  isRecord(value)
-                    ? { ...value, available: false, recommended: false }
-                    : value,
-                )
-              : actionCenter.actions,
           },
     cases,
   };
@@ -2036,6 +2112,18 @@ export function validateAndMigrateDashboardData(input: unknown): DashboardData {
       : requireRecord(run.execution_profile, "run.execution_profile");
   const runContext: RunValidationContext = {
     runId: requireString(run.id, "run.id"),
+    profileAdapterId:
+      typeof profile?.adapter_id === "string" ? profile.adapter_id : undefined,
+    profileSourceAgent:
+      isRecord(profile?.adapter_binding) &&
+      typeof profile.adapter_binding.source_agent === "string"
+        ? profile.adapter_binding.source_agent
+        : undefined,
+    profileRegistryEntryDigest:
+      isRecord(profile?.adapter_binding) &&
+      typeof profile.adapter_binding.registry_entry_digest === "string"
+        ? profile.adapter_binding.registry_entry_digest
+        : undefined,
     profileTarget:
       typeof profile?.target === "string" ? profile.target : undefined,
     profileHarness:
@@ -2067,8 +2155,8 @@ export function validateAndMigrateDashboardData(input: unknown): DashboardData {
   validateSummary(summary, "summary");
   const evolution = requireRecord(root.evolution, "evolution");
   validateEvolution(evolution, "evolution");
-  const actionCenter = requireRecord(root.action_center, "action_center");
-  validateActionCenter(actionCenter, "action_center");
+  const decisionSupport = requireRecord(root.action_center, "action_center");
+  validateDecisionSupport(decisionSupport, "action_center");
   const review = requireRecord(root.review, "review");
   validateReview(review, "review");
   const cases = requireArray(root.cases, "cases");

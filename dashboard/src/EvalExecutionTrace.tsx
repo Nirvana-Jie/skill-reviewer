@@ -682,97 +682,6 @@ export function EvalExecutionTraceView({
           <code>{trace.case.id}</code>
         </header>
 
-        <details className="trace-technical-context">
-          <summary>
-            <Fingerprint size={14} aria-hidden="true" />
-            {t("traceTechnicalContext")}
-          </summary>
-          <div className="observable-boundary" role="note">
-            <Eye size={15} aria-hidden="true" />
-            <div>
-              <strong>{t("observableEvidenceBoundary")}</strong>
-              <p>{t("observableEvidenceBoundaryDescription")}</p>
-            </div>
-          </div>
-
-        <section className="trace-responsibility" aria-labelledby="trace-responsibility-title">
-          <header>
-            <Route size={14} aria-hidden="true" />
-            <h3 id="trace-responsibility-title">{t("traceResponsibilityTitle")}</h3>
-          </header>
-          <div className="trace-responsibility-flow">
-            <div className="trace-agent-role is-dispatcher">
-              <span className="trace-role-icon"><Route size={15} aria-hidden="true" /></span>
-              <span>
-                <small>{t("leadAgentRole")}</small>
-                <strong>{t("leadDispatchesWorker")}</strong>
-                <p>{t("leadAgentTraceBoundary")}</p>
-              </span>
-            </div>
-            <ArrowRight className="trace-role-arrow" size={17} aria-hidden="true" />
-            <div className="trace-agent-role is-executor">
-              <span className="trace-role-icon"><Bot size={15} aria-hidden="true" /></span>
-              <span>
-                <small>{t("evalWorkerRole")}</small>
-                <strong>{executorLabel}</strong>
-                <p>{t(executor.dispatchBound ? "evalWorkerTraceBoundary" : "declaredExecutorBoundary")}</p>
-              </span>
-              <code>{executor.target ?? t("notRecorded")}</code>
-            </div>
-          </div>
-          <div className={`nested-agent-boundary ${executor.nestedAgentEvents ? "is-captured" : "is-unknown"}`}>
-            <TraceStateIcon tone={executor.nestedAgentEvents ? "good" : "warn"} size={13} />
-            <span>
-              <strong>{t(executor.nestedAgentEvents ? "nestedAgentTraceCaptured" : "nestedAgentTraceNotCaptured")}</strong>
-              <small>{t("nestedAgentTraceBoundary")}</small>
-            </span>
-          </div>
-        </section>
-
-          <div className="trace-binding-strip" aria-label={t("lockedEvalDefinition")}>
-            <div><Fingerprint size={14} /><span><small>{t("manifestDigest")}</small><strong>{shortDigest(manifest?.digest)}</strong></span></div>
-            <div><LockKeyhole size={14} /><span><small>{t("planDigest")}</small><strong>{shortDigest(planDigest)}</strong></span></div>
-            <div><Bot size={14} /><span><small>{t("harness")}</small><strong>{executionProfile?.harness ? localizeValue(locale, executionProfile.harness) : t("notRecorded")}</strong></span></div>
-            <div><Route size={14} /><span><small>{t("dispatchReceipt")}</small><strong>{selectedExecution?.dispatch?.valid ? shortDigest(selectedExecution.dispatch.digest) : t("notRecorded")}</strong></span></div>
-            {selectedExecution?.trace?.source_trace_required === true && (
-              <div><FileOutput size={14} /><span><small>{t("sourceTrace")}</small><strong>{selectedExecution.source_trace?.valid ? `${localizeValue(locale, selectedExecution.source_trace.adapter)} · ${shortDigest(selectedExecution.source_trace.digest)}` : t("notRecorded")}</strong></span></div>
-            )}
-          </div>
-
-          {!executor.dispatchBound && (
-            <div className="observable-boundary" role="note">
-              <TriangleAlert size={15} aria-hidden="true" />
-              <div>
-                <strong>{t("dispatchReceiptMissing")}</strong>
-                <p>{t("dispatchReceiptMissingDescription")}</p>
-              </div>
-            </div>
-          )}
-
-        {executionProfile?.isolation === "local-unattested" && (
-          <div className="observable-boundary is-local-unattested" role="note">
-            <TriangleAlert size={15} aria-hidden="true" />
-            <div>
-              <strong>{t("localUnattestedTrace")}</strong>
-              <p>{t("localUnattestedTraceDescription")}</p>
-            </div>
-          </div>
-        )}
-        </details>
-
-        <div className="timeline-section-heading">
-          <span>
-            <Route size={15} aria-hidden="true" />
-            <strong>{t("eventTimeline")}</strong>
-          </span>
-          <p>{t("eventTimelineDescription")}</p>
-        </div>
-        <TraceTimeline
-          execution={selectedExecution}
-          selectedEventId={selectedTraceEventId}
-          onSelectEvent={setSelectedTraceEventId}
-        />
-
         <div className="arm-comparison-heading">
           <span>
             <GitCompareArrows size={15} aria-hidden="true" />
@@ -861,6 +770,104 @@ export function EvalExecutionTraceView({
             </tbody>
           </table>
         </div>
+
+        <details className="trace-technical-context">
+          <summary>
+            <Fingerprint size={14} aria-hidden="true" />
+            {t("traceTechnicalContext")}
+          </summary>
+          <div className="observable-boundary" role="note">
+            <Eye size={15} aria-hidden="true" />
+            <div>
+              <strong>{t("observableEvidenceBoundary")}</strong>
+              <p>{t("observableEvidenceBoundaryDescription")}</p>
+            </div>
+          </div>
+
+        <section className="trace-responsibility" aria-labelledby="trace-responsibility-title">
+          <header>
+            <Route size={14} aria-hidden="true" />
+            <h3 id="trace-responsibility-title">{t("traceResponsibilityTitle")}</h3>
+          </header>
+          <div className="trace-responsibility-flow">
+            <div className="trace-agent-role is-dispatcher">
+              <span className="trace-role-icon"><Route size={15} aria-hidden="true" /></span>
+              <span>
+                <small>{t("leadAgentRole")}</small>
+                <strong>{t("leadDispatchesWorker")}</strong>
+                <p>{t("leadAgentTraceBoundary")}</p>
+              </span>
+            </div>
+            <ArrowRight className="trace-role-arrow" size={17} aria-hidden="true" />
+            <div className="trace-agent-role is-executor">
+              <span className="trace-role-icon"><Bot size={15} aria-hidden="true" /></span>
+              <span>
+                <small>{t("evalWorkerRole")}</small>
+                <strong>{executorLabel}</strong>
+                <p>{t(executor.dispatchBound ? "evalWorkerTraceBoundary" : "declaredExecutorBoundary")}</p>
+              </span>
+              <code>{executor.target ?? t("notRecorded")}</code>
+            </div>
+          </div>
+          <div className={`nested-agent-boundary ${executor.nestedAgentEvents ? "is-captured" : "is-unknown"}`}>
+            <TraceStateIcon tone={executor.nestedAgentEvents ? "good" : "warn"} size={13} />
+            <span>
+              <strong>{t(executor.nestedAgentEvents ? "nestedAgentTraceCaptured" : "nestedAgentTraceNotCaptured")}</strong>
+              <small>{t("nestedAgentTraceBoundary")}</small>
+            </span>
+          </div>
+        </section>
+
+          <div className="trace-binding-strip" aria-label={t("lockedEvalDefinition")}>
+            <div><Fingerprint size={14} /><span><small>{t("manifestDigest")}</small><strong>{shortDigest(manifest?.digest)}</strong></span></div>
+            <div><LockKeyhole size={14} /><span><small>{t("planDigest")}</small><strong>{shortDigest(planDigest)}</strong></span></div>
+            <div><Bot size={14} /><span><small>{t("harness")}</small><strong>{executionProfile?.harness ? localizeValue(locale, executionProfile.harness) : t("notRecorded")}</strong></span></div>
+            <div><Route size={14} /><span><small>{t("dispatchReceipt")}</small><strong>{selectedExecution?.dispatch?.valid ? shortDigest(selectedExecution.dispatch.digest) : t("notRecorded")}</strong></span></div>
+            {selectedExecution?.trace?.source_trace_required === true && (
+              <div><FileOutput size={14} /><span><small>{t("sourceTrace")}</small><strong>{selectedExecution.source_trace?.valid ? `${localizeValue(locale, selectedExecution.source_trace.adapter)} · ${shortDigest(selectedExecution.source_trace.digest)}` : t("notRecorded")}</strong></span></div>
+            )}
+            {selectedExecution?.source_trace?.valid === true && (
+              <div><Bot size={14} /><span><small>{t("sourceAgent")}</small><strong>{selectedExecution.source_trace.source_agent ?? selectedExecution.source_trace.adapter} · {selectedExecution.source_trace.adapter_maturity ?? t("notRecorded")}</strong></span></div>
+            )}
+            {selectedExecution?.source_trace?.valid === true && (
+              <div><Fingerprint size={14} /><span><small>{t("adapterProvenance")}</small><strong>{selectedExecution.source_trace.parser_id ? `${selectedExecution.source_trace.parser_id}@${selectedExecution.source_trace.parser_version ?? "?"} · ${shortDigest(selectedExecution.source_trace.parser_digest)} · run ${shortDigest(selectedExecution.source_trace.runtime_binding_digest)}` : shortDigest(selectedExecution.source_trace.registry_entry_digest)}</strong></span></div>
+            )}
+          </div>
+
+          {!executor.dispatchBound && (
+            <div className="observable-boundary" role="note">
+              <TriangleAlert size={15} aria-hidden="true" />
+              <div>
+                <strong>{t("dispatchReceiptMissing")}</strong>
+                <p>{t("dispatchReceiptMissingDescription")}</p>
+              </div>
+            </div>
+          )}
+
+        {executionProfile?.isolation === "local-unattested" && (
+          <div className="observable-boundary is-local-unattested" role="note">
+            <TriangleAlert size={15} aria-hidden="true" />
+            <div>
+              <strong>{t("localUnattestedTrace")}</strong>
+              <p>{t("localUnattestedTraceDescription")}</p>
+            </div>
+          </div>
+        )}
+        </details>
+
+        <div className="timeline-section-heading">
+          <span>
+            <Route size={15} aria-hidden="true" />
+            <strong>{t("eventTimeline")}</strong>
+          </span>
+          <p>{t("eventTimelineDescription")}</p>
+        </div>
+        <TraceTimeline
+          execution={selectedExecution}
+          selectedEventId={selectedTraceEventId}
+          onSelectEvent={setSelectedTraceEventId}
+        />
+
 
       </section>
 

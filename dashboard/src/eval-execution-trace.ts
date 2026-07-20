@@ -183,6 +183,30 @@ function median(values: number[]): number {
     : sorted[middle]!;
 }
 
+const MIN_SLOW_EXECUTION_THRESHOLD_MS = 5_000;
+const MAD_TO_STANDARD_DEVIATION = 1.4826;
+const SLOW_EXECUTION_ROBUST_Z = 3;
+
+function slowExecutionThreshold(durations: number[]): number {
+  const center = median(durations);
+  const medianAbsoluteDeviation = median(
+    durations.map((duration) => Math.abs(duration - center)),
+  );
+
+  // A median/MAD fence is resistant to one genuinely slow execution moving its
+  // own threshold. When every retained duration is identical (including a
+  // single sample), there is no observed dispersion, so require a 2x slowdown.
+  const relativeThreshold =
+    medianAbsoluteDeviation > 0
+      ? center +
+        SLOW_EXECUTION_ROBUST_Z *
+          MAD_TO_STANDARD_DEVIATION *
+          medianAbsoluteDeviation
+      : center * 2;
+
+  return Math.max(MIN_SLOW_EXECUTION_THRESHOLD_MS, relativeThreshold);
+}
+
 export function buildTraceAttentionSummary(
   trace: EvalExecutionTrace,
 ): TraceAttentionSummary {
@@ -198,16 +222,11 @@ export function buildTraceAttentionSummary(
   const durations = capturedExecutions.map(
     ({ execution }) => execution.trace.duration_ms,
   );
-  // Use a robust relative threshold, capped by an absolute 5 s usability bound.
-  // The 1 s floor prevents tiny fixture variance from being labeled slow.
-  const slowThresholdMs = Math.max(
-    1000,
-    Math.min(5000, median(durations) * 2),
-  );
+  const slowThresholdMs = slowExecutionThreshold(durations);
   const slowExecutions = capturedExecutions
     .flatMap(({ arm, execution }) => {
       const durationMs = execution.trace.duration_ms;
-      return durationMs >= slowThresholdMs
+      return durationMs > slowThresholdMs
         ? [{ arm: arm.id, repeat: execution.repeat, durationMs }]
         : [];
     });

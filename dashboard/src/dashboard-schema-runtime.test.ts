@@ -24,9 +24,9 @@ const runtime = join(
   "skills",
   "skill-reviewer",
   "scripts",
-  "skill_eval_runtime.py",
+  "skill_eval_runtime.mjs",
 );
-const python = process.env.PYTHON ?? "python3";
+const node = process.execPath;
 
 function write(root: string, relative: string, content: string): string {
   const path = join(root, relative);
@@ -48,7 +48,7 @@ function makeWritable(path: string): void {
 }
 
 function runRuntime(args: string[]) {
-  return spawnSync(python, [runtime, ...args], {
+  return spawnSync(node, [runtime, ...args], {
     cwd: repoRoot,
     encoding: "utf8",
   });
@@ -216,12 +216,6 @@ describe("dashboard schema against runtime failure projections", () => {
         acceptance: { status: "measurement-unverified", accepted: null },
         attribution: { primary: null },
       });
-      expect(
-        migrated.action_center.actions.every(
-          (action) => !action.available && !action.recommended,
-        ),
-      ).toBe(true);
-
       const inconsistentCaseMeasurement = structuredClone(data);
       inconsistentCaseMeasurement.cases[0].measurement.status = "invalid";
       inconsistentCaseMeasurement.run.measurement.cases[0].status = "invalid";
@@ -442,6 +436,19 @@ describe("dashboard schema against runtime failure projections", () => {
       ).toThrow(/expected process_spawn/);
 
       const genericProcessAgent = structuredClone(validData);
+      genericProcessAgent.run.execution_profile.adapter_id =
+        "anthropic.claude-code.stream-json";
+      genericProcessAgent.run.execution_profile.adapter_binding = {
+        source_agent: "anthropic.claude-code",
+        source_format: "claude.stream-json",
+        source_contract_version: "cli@2.1.215",
+        contract_stability: "version-pinned",
+        official_sources: ["https://code.claude.com/docs/en/headless"],
+        evidence_authority: "primary",
+        implementation_maturity: "canary-verified",
+        executable_version: "2.1.215",
+        registry_entry_digest: "a".repeat(64),
+      };
       genericProcessAgent.run.execution_profile.target = "claude-code";
       genericProcessAgent.run.execution_profile.harness = "claude-stream-json";
       genericProcessAgent.run.execution_profile.dispatch_observation =
@@ -466,16 +473,25 @@ describe("dashboard schema against runtime failure projections", () => {
         artifact: "agent-source-events.jsonl",
         digest: "f".repeat(64),
         valid: true,
-        adapter: "claude-code",
+        adapter: "anthropic.claude-code.stream-json",
         format: "claude-stream-json-v1",
         source_stream_digest: "e".repeat(64),
         source_event_count: 3,
         retained_event_count: 3,
         redaction: "private-reasoning-fields-removed",
+        source_agent: "anthropic.claude-code",
+        registry_entry_digest: "a".repeat(64),
       };
       expect(() =>
         validateAndMigrateDashboardData(genericProcessAgent),
       ).not.toThrow();
+
+      const wrongSourceAgent = structuredClone(genericProcessAgent);
+      wrongSourceAgent.cases[0].arms[0].executions[0].source_trace.source_agent =
+        "unrelated.agent";
+      expect(() => validateAndMigrateDashboardData(wrongSourceAgent)).toThrow(
+        /must match run\.execution_profile\.adapter_binding\.source_agent/,
+      );
 
       const legacyGenericProcessAgent = structuredClone(genericProcessAgent);
       delete legacyGenericProcessAgent.run.execution_profile.dispatch_observation;
@@ -489,7 +505,7 @@ describe("dashboard schema against runtime failure projections", () => {
         null;
       expect(() =>
         validateAndMigrateDashboardData(completedWithoutRequiredSource),
-      ).toThrow(/completed provider-stream trace requires a valid bound source trace/);
+      ).toThrow(/completed source-stream trace requires a valid bound source trace/);
 
       const failedBeforeSourceCapture = structuredClone(
         completedWithoutRequiredSource,

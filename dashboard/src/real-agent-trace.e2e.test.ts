@@ -37,9 +37,9 @@ const repoRoot = resolve(
 );
 const runtime = join(
   repoRoot,
-  "skills/skill-reviewer/scripts/skill_eval_runtime.py",
+  "skills/skill-reviewer/scripts/skill_eval_runtime.mjs",
 );
-const python = process.env.PYTHON ?? "python3";
+const node = process.execPath;
 const requestedAgents = new Set(
   (process.env.SKILL_REVIEWER_REAL_AGENT_E2E ?? "")
     .split(",")
@@ -54,9 +54,9 @@ interface RealAgentCase {
   harness: string;
   sourceFormat: string;
   executable: string;
-  adapter: string;
+  adapterId: string;
+  runner: string;
   adapterArgs: string[];
-  capabilities: string[];
   samplingMode: string;
 }
 
@@ -67,18 +67,12 @@ const agentCases: RealAgentCase[] = [
     harness: "codex-exec-jsonl",
     sourceFormat: "codex-exec-jsonl-v1",
     executable: process.env.CODEX_BIN ?? "codex",
-    adapter: join(
+    adapterId: "openai.codex-cli.exec-jsonl",
+    runner: join(
       repoRoot,
-      "skills/skill-reviewer/scripts/run_codex_eval_executor.py",
+      "skills/skill-reviewer/scripts/run_agent_eval.mjs",
     ),
     adapterArgs: [],
-    capabilities: [
-      "filesystem-read",
-      "filesystem-write",
-      "shell",
-      "jsonl-agent-events",
-      "source-event-stream",
-    ],
     samplingMode: "codex-default",
   },
   {
@@ -87,12 +81,12 @@ const agentCases: RealAgentCase[] = [
     harness: "claude-stream-json",
     sourceFormat: "claude-stream-json-v1",
     executable: process.env.CLAUDE_BIN ?? "claude",
-    adapter: join(
+    adapterId: "anthropic.claude-code.stream-json",
+    runner: join(
       repoRoot,
-      "skills/skill-reviewer/scripts/run_claude_eval_executor.py",
+      "skills/skill-reviewer/scripts/run_agent_eval.mjs",
     ),
-    adapterArgs: ["--max-budget-usd", "0.25"],
-    capabilities: ["filesystem-read", "source-event-stream"],
+    adapterArgs: ["--cost-limit-usd", "0.25"],
     samplingMode: "claude-default",
   },
 ];
@@ -199,23 +193,13 @@ function createRun(agent: RealAgentCase, root: string) {
     root,
     "execution-profile.json",
     JSON.stringify({
-      target: agent.target,
-      harness: agent.harness,
-      dispatch_observation: "process_spawn",
-      trace: {
-        capture_source: "provider_stream",
-        source: {
-          artifact: "agent-source-events.jsonl",
-          format: agent.sourceFormat,
-        },
-      },
-      capabilities: agent.capabilities,
+      adapter_id: agent.adapterId,
       isolation: "local-unattested",
       sampling: { mode: agent.samplingMode, paired: true },
     }),
   );
   const workspace = join(root, "run");
-  const compiled = run(python, [
+  const compiled = run(node, [
     runtime,
     "compile",
     "--manifest",
@@ -257,14 +241,15 @@ describe("real Agent Trace adapters", () => {
             "assignments/real-agent-trace/with_skill/repeat-1.json",
           );
           const executed = run(
-            python,
+            node,
             [
-              agent.adapter,
+              agent.runner,
+              "cell",
               "--workspace",
               workspace,
               "--assignment",
               assignment,
-              `--${agent.id}-bin`,
+              "--agent-bin",
               agent.executable,
               "--timeout-seconds",
               "120",
@@ -274,7 +259,7 @@ describe("real Agent Trace adapters", () => {
           );
           expectSuccess(executed, `${agent.id} real Agent execution`);
 
-          const graded = run(python, [
+          const graded = run(node, [
             runtime,
             "grade",
             "--plan",
@@ -283,7 +268,7 @@ describe("real Agent Trace adapters", () => {
             workspace,
           ]);
           expectSuccess(graded, `${agent.id} grade`);
-          const projected = run(python, [
+          const projected = run(node, [
             runtime,
             "project-dashboard",
             "--workspace",
@@ -312,7 +297,7 @@ describe("real Agent Trace adapters", () => {
             },
             source_trace: {
               valid: true,
-              adapter: agent.target,
+              adapter: agent.adapterId,
               format: agent.sourceFormat,
             },
             trace: {

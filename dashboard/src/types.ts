@@ -138,6 +138,20 @@ interface ValidAgentSourceTrace {
   source_event_count: number;
   retained_event_count: number;
   redaction: "private-reasoning-fields-removed";
+  source_agent?: string;
+  registry_entry_digest?: string;
+  runtime_binding_digest?: string;
+  agent_version?: string;
+  executable_digest?: string;
+  argv_digest?: string;
+  parser_id?: string;
+  parser_version?: string;
+  parser_digest?: string;
+  contract_urls?: string[];
+  adapter_maturity?: string;
+  source_contract_version?: string;
+  contract_stability?: string;
+  evidence_authority?: string;
 }
 
 interface InvalidAgentSourceTrace {
@@ -150,6 +164,20 @@ interface InvalidAgentSourceTrace {
   source_event_count?: number | null;
   retained_event_count?: number | null;
   redaction?: "private-reasoning-fields-removed" | null;
+  source_agent?: string | null;
+  registry_entry_digest?: string | null;
+  runtime_binding_digest?: string | null;
+  agent_version?: string | null;
+  executable_digest?: string | null;
+  argv_digest?: string | null;
+  parser_id?: string | null;
+  parser_version?: string | null;
+  parser_digest?: string | null;
+  contract_urls?: string[] | null;
+  adapter_maturity?: string | null;
+  source_contract_version?: string | null;
+  contract_stability?: string | null;
+  evidence_authority?: string | null;
 }
 
 export type AgentSourceTrace = ValidAgentSourceTrace | InvalidAgentSourceTrace;
@@ -261,30 +289,14 @@ export interface DashboardEvidenceContent {
   truncated: boolean;
 }
 
-export type ActionAttributionId =
+export type DecisionAttributionId =
   | "skill"
   | "eval"
   | "execution_environment"
   | "evidence"
   | "human";
 
-export type DashboardActionId =
-  | "generate_candidate"
-  | "prepare_audit"
-  | "rerun_execution"
-  | "propose_eval_change"
-  | "request_release_confirmation";
-
-export interface DashboardAgentHandoff {
-  contract: "skill-reviewer.dashboard-agent-handoff";
-  mode: "durable_local_ledger";
-  agent_session_state: "unbound";
-  can_wake_agent_session: false;
-  persists_after_agent_session_end: true;
-  task_root: string;
-}
-
-export interface DashboardActionCenter {
+export interface DashboardDecisionSupport {
   next_action: string;
   owner: "lead_agent";
   continuation: {
@@ -301,6 +313,20 @@ export interface DashboardActionCenter {
     status: string;
     accepted: boolean | null;
     decision_run_id: string | null;
+    objectives?: Array<{
+      case_id: string;
+      id: string;
+      metric: string;
+      direction: "maximize" | "minimize";
+      primary: boolean;
+      delta: number | null;
+      paired_deltas: number[];
+      repeat_count: number;
+      non_regression_tolerance: number;
+      min_material_delta: number;
+      non_regressed: boolean;
+      materially_improved: boolean;
+    }>;
     criteria: Array<{
       id: "hard_gates" | "pareto" | "material_improvement";
       status: "satisfied" | "failed" | "pending";
@@ -310,65 +336,14 @@ export interface DashboardActionCenter {
     }>;
   };
   attribution: {
-    primary: ActionAttributionId | null;
+    primary: DecisionAttributionId | null;
     items: Array<{
-      id: ActionAttributionId;
+      id: DecisionAttributionId;
       status: "primary" | "contributing" | "clear" | "waiting";
       signals: string[];
       evidence_ids: string[];
     }>;
   };
-  actions: Array<{
-    id: DashboardActionId;
-    available: boolean;
-    recommended: boolean;
-    owner: "lead_agent";
-    execution_mode: "automatic" | "request";
-    requestable: boolean;
-    human_confirmation_required: boolean;
-    evidence_ids: string[];
-  }>;
-  task_gateway: {
-    request_endpoint: string;
-    audit_endpoint: string;
-    evidence_mutation: false;
-    eval_mutation: false;
-    handoff_mode: "durable_local_ledger";
-    can_wake_agent_session: false;
-    persists_after_agent_session_end: true;
-  };
-}
-
-export interface DashboardActionTask {
-  contract: "skill-reviewer.dashboard-action-task";
-  id: string;
-  sequence: number;
-  created_at: string;
-  run_id: string;
-  dashboard_digest: string;
-  expected_next_action: string;
-  action_id: DashboardActionId;
-  owner: "lead_agent";
-  requested_by: "human_reviewer";
-  status: "awaiting_agent";
-  delivery_mode: "durable_local_ledger";
-  agent_session_id: null;
-  human_confirmation_required: boolean;
-  evidence_ids: string[];
-  idempotency_key: string;
-  previous_digest: string | null;
-  digest: string;
-}
-
-export interface DashboardActionTaskLog {
-  contract: "skill-reviewer.dashboard-action-task-log";
-  run_id: string;
-  owner: "lead_agent";
-  evidence_mutation: false;
-  eval_mutation: false;
-  current_dashboard_digest: string;
-  handoff: DashboardAgentHandoff;
-  tasks: DashboardActionTask[];
 }
 
 export interface DashboardReviewOutline {
@@ -398,7 +373,7 @@ export interface DashboardReviewOutline {
     source_evidence_ids: string[];
     criterion_ids: Array<"hard_gates" | "pareto" | "material_improvement">;
     evidence_ids: string[];
-    attribution: ActionAttributionId | null;
+    attribution: DecisionAttributionId | null;
     next_action: string;
   }>;
   safeguards: {
@@ -413,7 +388,7 @@ export interface DashboardReviewOutline {
     artifact_ids: string[];
   }>;
   next_action: string;
-  attribution: ActionAttributionId | null;
+  attribution: DecisionAttributionId | null;
 }
 
 export interface DashboardDiff {
@@ -456,6 +431,18 @@ export interface DashboardData {
     splits: DashboardCase["split"][];
     control_anchor?: "local/trusted" | null;
     execution_profile?: {
+      adapter_id?: string | null;
+      adapter_binding?: {
+        source_agent: string;
+        source_format: string;
+        source_contract_version: string;
+        contract_stability: string;
+        official_sources: string[];
+        evidence_authority: string;
+        implementation_maturity: string;
+        executable_version: string;
+        registry_entry_digest: string;
+      };
       target?: string;
       harness?: string;
       dispatch_observation?: "host_dispatch" | "process_spawn" | "external_harness";
@@ -517,12 +504,11 @@ export interface DashboardData {
       change_digest: string;
       continuity: "continue" | "reset";
       continuity_epoch: number;
-      training_trace_ids: string[];
     }>;
     rejected_candidates: Array<Record<string, unknown>>;
     invalid_experiments?: Array<Record<string, unknown>>;
   };
-  action_center: DashboardActionCenter;
+  action_center: DashboardDecisionSupport;
   review: DashboardReviewOutline;
   cases: DashboardCase[];
   diffs: DashboardDiff[];

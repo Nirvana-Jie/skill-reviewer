@@ -12,7 +12,7 @@ All repository changes must go through a branch and pull request.
 6. Request Codex Cloud review when needed by commenting on the PR:
 
    ```text
-   @codex review for skill-reviewer eval regression risk. Check SKILL.md, references, eval fixtures, snapshot contract, and CI safety. Do not add API keys or model-backed GitHub Actions.
+   @codex review for skill-reviewer eval regression risk. Check SKILL.md, references, the executable Eval Manifest, fixtures, and CI safety. Do not add API keys or model-backed GitHub Actions.
    ```
 
 7. Merge through the GitHub pull request UI.
@@ -25,6 +25,11 @@ request review. The `main` branch is protected in GitHub.
 Run these before opening a pull request:
 
 ```bash
-python3 -m unittest discover -s tests
-python3 skills/skill-reviewer/scripts/validate_local_snapshot.py skills/skill-reviewer/evals/local-skill-review-snapshot.json
+pnpm test
+pnpm typecheck
+pnpm dashboard:build
+node skills/skill-reviewer/scripts/lint_skill_package.mjs \
+  skills/skill-reviewer --format text --fail-on error
+node -e 'JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(require("node:fs").readFileSync(process.argv[1])))' \
+  skills/skill-reviewer/evals/evals.json
 ```

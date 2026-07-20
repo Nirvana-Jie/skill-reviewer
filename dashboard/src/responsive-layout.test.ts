@@ -30,9 +30,11 @@ describe("review overview responsive layout", () => {
     );
   });
 
-  it("keeps the decision rail bounded while the primary review area expands", () => {
+  it("keeps the next state inline instead of restoring a separate decision rail", () => {
+    expect(dashboardStyles).toContain(".review-next-state-inline {");
+    expect(dashboardStyles).not.toContain(".review-next-action {");
     expect(dashboardStyles).toMatch(
-      /@container review-canvas \(min-width: 1600px\)[\s\S]*?\.review-body-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) clamp\(300px, 24%, 480px\);/,
+      /@container review-canvas \(min-width: 1600px\)[\s\S]*?\.review-body-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/,
     );
   });
 

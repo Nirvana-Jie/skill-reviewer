@@ -17,7 +17,7 @@ describe("file explorer symbols", () => {
       fileSymbolDescriptor("references/eval-prompts-template.csv").kind,
     ).toBe("csv");
     expect(
-      fileSymbolDescriptor("scripts/serve_skill_dashboard.py").kind,
+      fileSymbolDescriptor("scripts/check.py").kind,
     ).toBe("python");
     expect(fileSymbolDescriptor("evals/evals.json").kind).toBe("json");
     expect(fileSymbolDescriptor("references/schema.yaml").kind).toBe("yaml");
