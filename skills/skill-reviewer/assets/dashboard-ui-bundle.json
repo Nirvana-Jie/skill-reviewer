@@ -1,6 +1,6 @@
 {
   "contract": "skill-reviewer.dashboard-ui-bundle",
-  "asset_url": "https://github.com/Nirvana-Jie/skill-reviewer/releases/download/dashboard-ui-assets/dashboard-ui-fd342c25abe5ad77dbb11f9b33a97e8513bf3d4b070fd91bbd5ca4079768454f.zip",
+  "asset_url": "https://github.com/Nirvana-Jie/skill-reviewer/releases/download/v0.1.0/dashboard-ui-fd342c25abe5ad77dbb11f9b33a97e8513bf3d4b070fd91bbd5ca4079768454f.zip",
   "archive_sha256": "ccdd2a3798bf7e9d0a523f268afd9342b7c8b964aa1061cd45a59d5e176cef18",
   "tree_sha256": "fd342c25abe5ad77dbb11f9b33a97e8513bf3d4b070fd91bbd5ca4079768454f",
   "entrypoint": "index.html",
