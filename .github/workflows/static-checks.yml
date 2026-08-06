@@ -49,6 +49,9 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Set up Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
@@ -73,6 +76,7 @@ jobs:
 
       - name: Verify ephemeral Dashboard bundle
         run: |
+          release_tag="v$(node -p 'require("./package.json").version')"
           test -f dashboard/dist/index.html
           test -n "$(find dashboard/dist/assets -type f -name '*.js' -print -quit)"
           test -n "$(find dashboard/dist/assets -type f -name '*.css' -print -quit)"
@@ -81,9 +85,19 @@ jobs:
           node skills/skill-reviewer/scripts/dashboard_bundle.mjs package \
             --ui-dir dashboard/dist \
             --output-dir "$RUNNER_TEMP/dashboard-release" \
+            --release-tag "$release_tag" \
             --manifest-output "$RUNNER_TEMP/generated-dashboard-manifest.json"
           cmp skills/skill-reviewer/assets/dashboard-ui-bundle.json \
             "$RUNNER_TEMP/generated-dashboard-manifest.json"
+          if git show-ref --verify --quiet "refs/tags/$release_tag"; then
+            git show "$release_tag:skills/skill-reviewer/assets/dashboard-ui-bundle.json" \
+              > "$RUNNER_TEMP/tagged-dashboard-manifest.json"
+            cmp "$RUNNER_TEMP/tagged-dashboard-manifest.json" \
+              "$RUNNER_TEMP/generated-dashboard-manifest.json" || {
+                echo "Dashboard bundle changed after $release_tag was published; bump package.json version." >&2
+                exit 1
+              }
+          fi
           archive="$(find "$RUNNER_TEMP/dashboard-release" -maxdepth 1 -type f -name 'dashboard-ui-*.zip' -print -quit)"
           node skills/skill-reviewer/scripts/dashboard_bundle.mjs verify \
             --manifest skills/skill-reviewer/assets/dashboard-ui-bundle.json \

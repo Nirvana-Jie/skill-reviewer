@@ -204,6 +204,7 @@ false claim that every normal long-running local Agent execution is anomalous.
 | Artifact ownership | `lib/skill-eval-evidence.mjs` |
 | Semantic grader machine contract | `assets/semantic-grader-contract.md` |
 | Dashboard bundle identity | `assets/dashboard-ui-bundle.json` |
+| Project Release and Dashboard version identity | `package.json` and `publish-dashboard-bundle.yml` |
 | Dashboard presentation validation | `dashboard-schema.ts` and tests |
 
 If the same meaning appears in two prose files, one copy must be removed or
@@ -225,6 +226,11 @@ replaced by a pointer to its authority.
 - Preserve the evidence → measurement → candidate order across Runtime and UI.
 - Treat the Dashboard as evidence compression: a new primary card must replace
   an existing decision step or prove that it reduces decision time.
+- Publish one content-addressed Dashboard archive per project SemVer Release.
+  A published version is immutable from the workflow's perspective: a rerun
+  may verify the same archive but must not append or replace another bundle.
+  Keep the legacy rolling-release URL readable only for installed manifests
+  that already pin it.
 - Keep cross-domain imports public and the `skill_eval_*` dependency graph
   acyclic.
 - Keep the top-level execution CLI and core free of named Agent products. Add a

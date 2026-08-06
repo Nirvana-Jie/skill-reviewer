@@ -35,7 +35,9 @@ export class DashboardBundleError extends Error {
 }
 
 export const BUNDLE_CONTRACT = "skill-reviewer.dashboard-ui-bundle";
-const CANONICAL_RELEASE_BASE = "https://github.com/Nirvana-Jie/skill-reviewer/releases/download/dashboard-ui-assets";
+const CANONICAL_RELEASE_ROOT = "https://github.com/Nirvana-Jie/skill-reviewer/releases/download";
+const LEGACY_RELEASE_TAG = "dashboard-ui-assets";
+const RELEASE_TAG_PATTERN = /^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
 export const DEFAULT_MANIFEST_PATH = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "..",
@@ -81,6 +83,13 @@ function boundedInt(value, label, hardLimit) {
   return value;
 }
 
+function validateReleaseTag(raw, { allowLegacy = false } = {}) {
+  if (typeof raw !== "string" || (!RELEASE_TAG_PATTERN.test(raw) && !(allowLegacy && raw === LEGACY_RELEASE_TAG))) {
+    throw new DashboardBundleError("Dashboard bundle release tag must be a stable semantic version such as v0.1.0");
+  }
+  return raw;
+}
+
 function validateAssetUrl(raw, treeDigest) {
   if (typeof raw !== "string") throw new DashboardBundleError("Dashboard bundle asset_url must be a string");
   let parsed;
@@ -89,19 +98,22 @@ function validateAssetUrl(raw, treeDigest) {
   } catch {
     throw new DashboardBundleError("Dashboard bundle asset_url must be the canonical content-addressed GitHub Release asset");
   }
-  const expectedPath = `/Nirvana-Jie/skill-reviewer/releases/download/dashboard-ui-assets/dashboard-ui-${treeDigest}.zip`;
+  const match = parsed.pathname.match(
+    new RegExp(`^/Nirvana-Jie/skill-reviewer/releases/download/([^/]+)/dashboard-ui-${treeDigest}\\.zip$`),
+  );
   if (
     parsed.protocol !== "https:" ||
     parsed.hostname !== "github.com" ||
     !["", "443"].includes(parsed.port) ||
     parsed.username ||
     parsed.password ||
-    parsed.pathname !== expectedPath ||
+    !match ||
     parsed.search ||
     parsed.hash
   ) {
     throw new DashboardBundleError("Dashboard bundle asset_url must be the canonical content-addressed GitHub Release asset");
   }
+  validateReleaseTag(match[1], { allowLegacy: true });
   return raw;
 }
 
@@ -498,7 +510,8 @@ export function writeManifest(path, manifest) {
   writeFileSync(path, `${JSON.stringify(manifestObject(manifest), null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
 }
 
-export function packageUi(uiDir, outputDir, { maxArchiveBytes, maxUnpackedBytes, maxFiles }) {
+export function packageUi(uiDir, outputDir, { maxArchiveBytes, maxUnpackedBytes, maxFiles, releaseTag }) {
+  const canonicalReleaseTag = validateReleaseTag(releaseTag);
   const files = walkUiFiles(resolve(uiDir), { maxFiles, maxUnpackedBytes });
   const digest = treeDigest(uiDir, { maxFiles, maxUnpackedBytes });
   mkdirSync(outputDir, { recursive: true, mode: 0o700 });
@@ -513,7 +526,7 @@ export function packageUi(uiDir, outputDir, { maxArchiveBytes, maxUnpackedBytes,
     if (existsSync(temporary)) unlinkSync(temporary);
   }
   const manifest = {
-    asset_url: `${CANONICAL_RELEASE_BASE}/${`dashboard-ui-${digest}.zip`}`,
+    asset_url: `${CANONICAL_RELEASE_ROOT}/${canonicalReleaseTag}/${`dashboard-ui-${digest}.zip`}`,
     archive_sha256: sha256File(archive),
     tree_sha256: digest,
     entrypoint: "index.html",
@@ -584,10 +597,12 @@ function parseArgs(argv) {
     else if (token === "--max-archive-bytes") values.maxArchiveBytes = Number(value);
     else if (token === "--max-unpacked-bytes") values.maxUnpackedBytes = Number(value);
     else if (token === "--max-files") values.maxFiles = Number(value);
+    else if (token === "--release-tag") values.releaseTag = value;
     else throw new Error(`unknown option: ${token}`);
   }
   if (!values.outputDir) throw new Error("--output-dir is required");
   if (command === "package" && !values.uiDir) throw new Error("--ui-dir is required");
+  if (command === "package" && !values.releaseTag) throw new Error("--release-tag is required");
   if (command === "verify" && (!values.manifestPath || !values.archive)) throw new Error("--manifest and --archive are required");
   return values;
 }
@@ -595,7 +610,7 @@ function parseArgs(argv) {
 function usage() {
   return [
     "Usage:",
-    "  dashboard_bundle.mjs package --ui-dir PATH --output-dir PATH [--manifest-output PATH]",
+    "  dashboard_bundle.mjs package --ui-dir PATH --output-dir PATH --release-tag vX.Y.Z [--manifest-output PATH]",
     "  dashboard_bundle.mjs verify --manifest PATH --archive PATH --output-dir PATH",
   ].join("\n");
 }
@@ -618,6 +633,7 @@ export async function main(argv = process.argv.slice(2)) {
         maxArchiveBytes: boundedInt(args.maxArchiveBytes ?? 12 * 1024 * 1024, "max_archive_bytes", HARD_MAX_ARCHIVE_BYTES),
         maxUnpackedBytes: boundedInt(args.maxUnpackedBytes ?? 32 * 1024 * 1024, "max_unpacked_bytes", HARD_MAX_UNPACKED_BYTES),
         maxFiles: boundedInt(args.maxFiles ?? 96, "max_files", HARD_MAX_FILES),
+        releaseTag: args.releaseTag,
       };
       const { archive, manifest } = packageUi(args.uiDir, args.outputDir, limits);
       if (args.manifestOutput) writeManifest(args.manifestOutput, manifest);

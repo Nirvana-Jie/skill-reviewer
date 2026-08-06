@@ -16,7 +16,10 @@ import { deflateRawSync } from "node:zlib";
 
 import { describe, expect, it } from "vitest";
 
-import { materializeDashboardUi } from "../skills/skill-reviewer/scripts/dashboard_bundle.mjs";
+import {
+  loadManifest,
+  materializeDashboardUi,
+} from "../skills/skill-reviewer/scripts/dashboard_bundle.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const bundleScript = join(
@@ -135,6 +138,75 @@ function writeManifest(path, archive, treeDigest = "0".repeat(64)) {
 }
 
 describe("temporary Dashboard UI bundle", () => {
+  it("keeps legacy rolling-release manifests readable for installed Skills", () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-dashboard-bundle-"));
+    try {
+      const archive = join(root, "legacy.zip");
+      createFixtureArchive(archive, [{ name: "index.html", content: "<!doctype html>" }]);
+      const manifest = join(root, "legacy-manifest.json");
+      writeManifest(manifest, archive);
+
+      expect(loadManifest(manifest).asset_url).toContain(
+        "/releases/download/dashboard-ui-assets/dashboard-ui-",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("binds a packaged bundle to one explicit semantic-version Release", () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-dashboard-bundle-"));
+    try {
+      const ui = join(root, "ui");
+      write(ui, "index.html", "<!doctype html><title>versioned</title>");
+
+      const result = run([
+        "package",
+        "--ui-dir",
+        ui,
+        "--output-dir",
+        join(root, "output"),
+        "--release-tag",
+        "v0.1.0",
+      ]);
+
+      expectSuccess(result, "versioned package");
+      const report = JSON.parse(result.stdout);
+      expect(report.manifest.asset_url).toBe(
+        "https://github.com/Nirvana-Jie/skill-reviewer/releases/download/" +
+          `v0.1.0/dashboard-ui-${report.manifest.tree_sha256}.zip`,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["dashboard-ui-assets", "latest", "v1", "v1.0", "v01.0.0", "v1.0.0-rc.1", "v1.0.0/extra"])(
+    "rejects non-versioned release tag %s for new bundles",
+    (releaseTag) => {
+      const root = mkdtempSync(join(tmpdir(), "skill-reviewer-dashboard-bundle-"));
+      try {
+        const ui = join(root, "ui");
+        write(ui, "index.html", "<!doctype html><title>invalid tag</title>");
+
+        const result = run([
+          "package",
+          "--ui-dir",
+          ui,
+          "--output-dir",
+          join(root, "output"),
+          "--release-tag",
+          releaseTag,
+        ]);
+
+        expect(result.status).toBe(2);
+        expect(JSON.parse(result.stdout).error).toMatch(/stable semantic version/);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("creates a deterministic content-addressed archive and safely extracts it", () => {
     const root = mkdtempSync(join(tmpdir(), "skill-reviewer-dashboard-bundle-"));
     try {
@@ -152,6 +224,8 @@ describe("temporary Dashboard UI bundle", () => {
         ui,
         "--output-dir",
         firstOutput,
+        "--release-tag",
+        "v0.1.0",
         "--manifest-output",
         firstManifest,
       ]);
@@ -167,6 +241,8 @@ describe("temporary Dashboard UI bundle", () => {
         ui,
         "--output-dir",
         secondOutput,
+        "--release-tag",
+        "v0.1.0",
         "--manifest-output",
         secondManifest,
       ]);
@@ -214,6 +290,8 @@ describe("temporary Dashboard UI bundle", () => {
         ui,
         "--output-dir",
         join(root, "output"),
+        "--release-tag",
+        "v0.1.0",
       ]);
       expect(result.status).toBe(2);
       expect(JSON.parse(result.stdout).error).toMatch(/unexpected file/);
@@ -235,6 +313,8 @@ describe("temporary Dashboard UI bundle", () => {
         ui,
         "--output-dir",
         output,
+        "--release-tag",
+        "v0.1.0",
         "--manifest-output",
         manifest,
       ]);
