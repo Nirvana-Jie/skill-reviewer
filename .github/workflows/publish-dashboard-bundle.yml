@@ -115,7 +115,7 @@ jobs:
           archive="$(find .dashboard-release -maxdepth 1 -type f -name 'dashboard-ui-*.zip' -print -quit)"
           test -n "$archive"
           asset_name="$(basename "$archive")"
-          release_json="$(gh release view "$RELEASE_TAG" --json isDraft,assets 2>/dev/null || true)"
+          release_json="$(gh release view "$RELEASE_TAG" --json isDraft,assets,targetCommitish 2>/dev/null || true)"
           if [ -z "$release_json" ]; then
             gh release create "$RELEASE_TAG" \
               --target "$GITHUB_SHA" \
@@ -123,18 +123,43 @@ jobs:
               --notes "Evidence-backed Skill review with one content-addressed Dashboard bundle. The bundle contains no evaluation evidence." \
               --generate-notes \
               --draft
-            release_json="$(gh release view "$RELEASE_TAG" --json isDraft,assets)"
-          fi
-
-          tag_commit="$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)"
-          if [ "$tag_commit" != "$GITHUB_SHA" ]; then
-            echo "$RELEASE_TAG points to $tag_commit instead of $GITHUB_SHA" >&2
-            exit 1
+            release_json="$(gh release view "$RELEASE_TAG" --json isDraft,assets,targetCommitish)"
           fi
 
           asset_count="$(jq '.assets | length' <<<"$release_json")"
           existing="$(jq -r --arg name "$asset_name" '.assets[] | select(.name == $name) | .name' <<<"$release_json")"
           is_draft="$(jq -r '.isDraft' <<<"$release_json")"
+          release_target="$(jq -r '.targetCommitish' <<<"$release_json")"
+
+          # A Draft Release has no Git tag yet. Validate its target directly,
+          # then validate the tag against that same target after publication.
+          verify_published_tag() {
+            tag_commit="$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)"
+            target_commit="$(gh api "repos/$GH_REPO/commits/$release_target" --jq .sha)"
+            if [ "$tag_commit" != "$target_commit" ]; then
+              echo "$RELEASE_TAG points to $tag_commit instead of Release target $target_commit" >&2
+              exit 1
+            fi
+          }
+
+          if [ "$is_draft" = "true" ]; then
+            if [ "$release_target" != "$GITHUB_SHA" ]; then
+              if [ "$asset_count" -ne 0 ]; then
+                echo "$RELEASE_TAG is a partial Draft for $release_target; refusing to retarget uploaded assets" >&2
+                exit 1
+              fi
+              gh release edit "$RELEASE_TAG" --target "$GITHUB_SHA" --draft
+              release_json="$(gh release view "$RELEASE_TAG" --json isDraft,assets,targetCommitish)"
+              release_target="$(jq -r '.targetCommitish' <<<"$release_json")"
+              if [ "$release_target" != "$GITHUB_SHA" ]; then
+                echo "$RELEASE_TAG Draft target is $release_target instead of $GITHUB_SHA" >&2
+                exit 1
+              fi
+            fi
+          else
+            verify_published_tag
+          fi
+
           if [ -z "$existing" ]; then
             if [ "$is_draft" != "true" ] || [ "$asset_count" -ne 0 ]; then
               echo "$RELEASE_TAG already exists and cannot accept a different Dashboard bundle" >&2
@@ -154,4 +179,5 @@ jobs:
 
           if [ "$is_draft" = "true" ]; then
             gh release edit "$RELEASE_TAG" --draft=false --latest
+            verify_published_tag
           fi
