@@ -131,15 +131,33 @@ jobs:
           is_draft="$(jq -r '.isDraft' <<<"$release_json")"
           release_target="$(jq -r '.targetCommitish' <<<"$release_json")"
 
-          # A Draft Release has no Git tag yet. Validate its target directly,
-          # then validate the tag against that same target after publication.
-          verify_published_tag() {
+          verify_tag_target() {
             tag_commit="$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)"
             target_commit="$(gh api "repos/$GH_REPO/commits/$release_target" --jq .sha)"
             if [ "$tag_commit" != "$target_commit" ]; then
               echo "$RELEASE_TAG points to $tag_commit instead of Release target $target_commit" >&2
               exit 1
             fi
+          }
+
+          # Draft Releases do not create their tag until publication. Create
+          # the expected tag explicitly, or reject a conflicting pre-existing
+          # tag, before making the Release public.
+          prepare_tag_for_publication() {
+            tag_refs="$(gh api "repos/$GH_REPO/git/matching-refs/tags/$RELEASE_TAG")"
+            exact_tag_count="$(jq --arg ref "refs/tags/$RELEASE_TAG" \
+              '[.[] | select(.ref == $ref)] | length' <<<"$tag_refs")"
+            if [ "$exact_tag_count" -eq 0 ]; then
+              target_commit="$(gh api "repos/$GH_REPO/commits/$release_target" --jq .sha)"
+              gh api --method POST "repos/$GH_REPO/git/refs" \
+                -f ref="refs/tags/$RELEASE_TAG" \
+                -f sha="$target_commit" \
+                >/dev/null
+            elif [ "$exact_tag_count" -ne 1 ]; then
+              echo "$RELEASE_TAG resolved to $exact_tag_count exact Git refs" >&2
+              exit 1
+            fi
+            verify_tag_target
           }
 
           if [ "$is_draft" = "true" ]; then
@@ -157,7 +175,7 @@ jobs:
               fi
             fi
           else
-            verify_published_tag
+            verify_tag_target
           fi
 
           if [ -z "$existing" ]; then
@@ -178,6 +196,7 @@ jobs:
           cmp "$archive" "existing-asset/$asset_name"
 
           if [ "$is_draft" = "true" ]; then
-            gh release edit "$RELEASE_TAG" --draft=false --latest
-            verify_published_tag
+            prepare_tag_for_publication
+            gh release edit "$RELEASE_TAG" --draft=false --latest --verify-tag
+            verify_tag_target
           fi
