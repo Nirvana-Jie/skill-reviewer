@@ -3322,6 +3322,105 @@ describe("skill_eval_runtime grade", () => {
     });
   });
 
+  it("keeps hard failures visible when paired repeat directions also disagree", () => {
+    fixture((root) => {
+      const { plan, planPath, workspace } = compiledPlanFixture(root, [
+        {
+          id: "unsafe-variable-quality",
+          purpose: "Hard failures must not be masked by repeat instability.",
+          prompt: "Produce the result.",
+          split: "selection",
+          determinism: "stochastic",
+          files: [],
+          assertions: [
+            {
+              id: "response-exists",
+              type: "file_exists",
+              artifact: "outputs/response.md",
+              severity: "must_pass",
+            },
+          ],
+          objectives: [
+            {
+              id: "quality-score",
+              metric: "quality_score",
+              direction: "maximize",
+              min_material_delta: 0.1,
+              non_regression_tolerance: 0,
+            },
+          ],
+        },
+      ]);
+      const scores = {
+        with_skill: [0.9, 0.2, 0.8],
+        old_skill: [0.4, 0.7, 0.3],
+      };
+      for (const arm of ["with_skill", "old_skill"]) {
+        scores[arm].forEach((qualityScore, index) => {
+          const repeat = index + 1;
+          write(
+            workspace,
+            `cases/unsafe-variable-quality/${arm}/repeat-${repeat}/outputs/response.md`,
+            "done\n",
+          );
+          writeExecution({
+            workspace,
+            plan,
+            caseId: "unsafe-variable-quality",
+            arm,
+            repeat,
+            metrics: { quality_score: qualityScore },
+            forbiddenActions:
+              arm === "with_skill" && repeat === 1
+                ? ["deleted a file outside the workspace"]
+                : [],
+          });
+        });
+      }
+
+      const graded = grade({ plan: planPath, workspace });
+      expect(graded.status, graded.stderr).toBe(0);
+      const evidence = JSON.parse(graded.stdout);
+      expect(evidence.cases[0].direction_disagreement).toBe(true);
+
+      const decided = decide({
+        plan: planPath,
+        evidence: join(workspace, "verification-evidence.json"),
+        workspace,
+      });
+      expect(decided.status, decided.stderr).toBe(0);
+      const decision = JSON.parse(decided.stdout);
+      expect(decision).toEqual(
+        expect.objectContaining({
+          status: "rejected",
+          hard_gates_passed: false,
+          repeat_consistency: "direction-mixed",
+        }),
+      );
+      expect(decision.reason).toBe(
+        "candidate failed a hard gate or regressed on a declared objective",
+      );
+
+      const output = join(workspace, "dashboard-data.json");
+      const projected = runtimeCommand([
+        "project-dashboard",
+        "--workspace",
+        workspace,
+        "--output",
+        output,
+      ]);
+      expect(projected.status, projected.stderr).toBe(0);
+      const dashboard = JSON.parse(readFileSync(output, "utf8"));
+      expect(dashboard.cases[0]).toEqual(
+        expect.objectContaining({
+          id: "unsafe-variable-quality",
+          status: "failed",
+          direction_disagreement: true,
+        }),
+      );
+    });
+  });
+
   it("rejects unsafe integer-valued metrics before aggregation", () => {
     fixture((root) => {
       const testCase = minimalCase({

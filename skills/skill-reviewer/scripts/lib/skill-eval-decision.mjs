@@ -309,7 +309,9 @@ function computeDecisionCore({ plan, evidence, iteration, phase }) {
     inconclusive: "retained evidence cannot support an acceptance decision",
     invalid: "the oracle is invalid, so this experiment cannot judge candidate quality",
   };
-  if (status === "rejected" && !objectiveNonRegression && directionMixed) {
+  // Only when the objective gate is the sole rejection cause: a failed hard
+  // or safety gate must stay visible in the journaled reason.
+  if (status === "rejected" && hardGatesPassed && !objectiveNonRegression && directionMixed) {
     reasons.rejected = "candidate regressed in at least one paired repeat while paired repeat effects varied in direction; repeat consistency is insufficient at the declared repeat budget";
   }
   return {

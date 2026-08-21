@@ -971,13 +971,18 @@ export function projectDashboard({ workspace, output, statePath = null }) {
         ? "measurement-invalid"
         : "measurement-unverified";
     } else if (valueAt(candidate, "complete") !== true) caseStatus = "incomplete";
-    else if (valueAt(result, "direction_disagreement") === true) caseStatus = "disagreement";
     else if (
+      // Hard failures keep precedence: a failed required assertion, unsafe
+      // candidate behavior, missing objective metrics, or a blocked paired
+      // arm must never be masked by the softer repeat-instability label.
       valueAt(candidate, "passed") !== true
-      || valueAt(result, "regressed") === true
+      || hasRuntimeValue(valueAt(candidate, "forbidden_actions"))
+      || hasRuntimeValue(valueAt(candidate, "side_effects"))
       || hasRuntimeValue(valueAt(result, "missing_objective_metrics"))
       || pairedBlocked
     ) caseStatus = "failed";
+    else if (valueAt(result, "direction_disagreement") === true) caseStatus = "disagreement";
+    else if (valueAt(result, "regressed") === true) caseStatus = "failed";
     else caseStatus = "passed";
     const caseNodeId = `case:${caseId}`;
     spine.push({
