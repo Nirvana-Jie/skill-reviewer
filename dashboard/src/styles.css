@@ -524,6 +524,13 @@ kbd {
   text-transform: capitalize;
 }
 
+.chip-kicker {
+  color: var(--faint);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
 .live-dot {
   width: 6px;
   height: 6px;
@@ -1668,7 +1675,31 @@ body.is-resizing-pane * {
   font-weight: 700;
 }
 
-.review-validity-chain li > span:nth-child(2) {
+.review-validity-open {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.review-validity-open:disabled {
+  cursor: default;
+}
+
+.review-validity-open:focus-visible {
+  border-radius: 6px;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.review-validity-open > span {
   min-width: 0;
 }
 
@@ -1840,6 +1871,26 @@ body.is-resizing-pane * {
   padding: 13px 15px;
   border-left: 3px solid var(--objective-tone);
   border-right: 1px solid var(--line);
+}
+
+button.review-objective-identity {
+  border-top: 0;
+  border-bottom: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+button.review-objective-identity:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.review-objective-repeats {
+  color: var(--faint);
+  font-size: 11px;
 }
 
 .review-objective-identity > span,
@@ -2057,6 +2108,40 @@ body.is-resizing-pane * {
 
 .review-blocker-card + .review-blocker-card {
   margin-top: 12px;
+}
+
+.review-blocker-rest {
+  margin-top: 12px;
+}
+
+.review-blocker-rest > summary {
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.review-blocker-rest[open] > summary {
+  margin-bottom: 8px;
+}
+
+.review-blocker-rest .review-blocker-card + .review-blocker-card {
+  margin-top: 12px;
+}
+
+.review-blocker-primary-tag {
+  display: inline-block;
+  margin-bottom: 4px;
+  padding: 1px 7px;
+  border: 1px solid var(--warning);
+  border-radius: 999px;
+  color: var(--warning);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .review-blocker-card > header {

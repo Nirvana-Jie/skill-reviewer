@@ -192,10 +192,15 @@ export function assessRuntimeMeasurement({ oracle, sampling, directionDisagreeme
     status,
     oracle,
     sampling: {
+      // Reflects the validated sampling declaration; runtime pairing failures
+      // surface as evidence completeness, not as sampling invalidity.
       status: "valid",
       repeats: sampling.repeats,
       pairing: sampling.pairing,
       source: sampling.source,
+      // Rationale marker: repeats are a predeclared replicate budget, not a
+      // statistical sufficiency claim.
+      basis: "predeclared-replicate-budget",
       direction_disagreement: directionDisagreement,
     },
     reasons: [...new Set(reasons.map(String))].sort(),

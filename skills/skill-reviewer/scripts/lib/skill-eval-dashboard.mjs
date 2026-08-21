@@ -302,26 +302,40 @@ function dashboardDecisionSupport({ state, decisions, caseRows }) {
     status: decisionStatus,
     accepted: plainObject(selectionDecision) ? valueAt(selectionDecision, "accepted") : null,
     decision_run_id: plainObject(selectionDecision) ? valueAt(selectionDecision, "run_id") : null,
-    objectives: objectives.map((objective) => ({
-      case_id: compatibilityScalarString(valueAt(objective, "case_id")),
-      id: compatibilityScalarString(valueAt(objective, "id")),
-      metric: compatibilityScalarString(valueAt(objective, "metric")),
-      direction: valueAt(objective, "direction") === "minimize" ? "minimize" : "maximize",
-      primary: valueAt(objective, "primary") !== false,
-      delta: finiteNumberOrNull(valueAt(objective, "delta")),
-      paired_deltas: (valueAt(objective, "paired_deltas", []) ?? [])
+    objectives: objectives.map((objective) => {
+      const pairedDeltas = (valueAt(objective, "paired_deltas", []) ?? [])
         .map(finiteNumberOrNull)
-        .filter((value) => value !== null),
-      repeat_count: Number.isInteger(valueAt(objective, "repeat_count"))
-        ? valueAt(objective, "repeat_count")
-        : 0,
-      non_regression_tolerance: finiteNumberOrNull(
-        valueAt(objective, "non_regression_tolerance"),
-      ) ?? 0,
-      min_material_delta: finiteNumberOrNull(valueAt(objective, "min_material_delta")) ?? 0,
-      non_regressed: valueAt(objective, "non_regressed") === true,
-      materially_improved: valueAt(objective, "materially_improved") === true,
-    })),
+        .filter((value) => value !== null);
+      return {
+        case_id: compatibilityScalarString(valueAt(objective, "case_id")),
+        id: compatibilityScalarString(valueAt(objective, "id")),
+        metric: compatibilityScalarString(valueAt(objective, "metric")),
+        direction: valueAt(objective, "direction") === "minimize" ? "minimize" : "maximize",
+        primary: valueAt(objective, "primary") !== false,
+        candidate: finiteNumberOrNull(valueAt(objective, "candidate")),
+        baseline: finiteNumberOrNull(valueAt(objective, "baseline")),
+        delta: finiteNumberOrNull(valueAt(objective, "delta")),
+        paired_deltas: pairedDeltas,
+        delta_min: pairedDeltas.length > 0 ? Math.min(...pairedDeltas) : null,
+        delta_max: pairedDeltas.length > 0 ? Math.max(...pairedDeltas) : null,
+        repeat_count: Number.isInteger(valueAt(objective, "repeat_count"))
+          ? valueAt(objective, "repeat_count")
+          : 0,
+        aggregation_policy: compatibilityScalarString(
+          valueAt(objective, "aggregation_policy", "all_paired_repeats"),
+        ),
+        regression_repeats: (valueAt(objective, "regression_repeats", []) ?? [])
+          .filter((value) => Number.isInteger(value)),
+        material_improvement_repeats: (valueAt(objective, "material_improvement_repeats", []) ?? [])
+          .filter((value) => Number.isInteger(value)),
+        non_regression_tolerance: finiteNumberOrNull(
+          valueAt(objective, "non_regression_tolerance"),
+        ) ?? 0,
+        min_material_delta: finiteNumberOrNull(valueAt(objective, "min_material_delta")) ?? 0,
+        non_regressed: valueAt(objective, "non_regressed") === true,
+        materially_improved: valueAt(objective, "materially_improved") === true,
+      };
+    }),
     criteria: [
       {
         id: "hard_gates",
@@ -934,6 +948,7 @@ export function projectDashboard({ workspace, output, statePath = null }) {
           sampling: {
             ...valueAt(plannedCase, "sampling", {}),
             status: "pending",
+            basis: "predeclared-replicate-budget",
             direction_disagreement: false,
           },
           reasons: [],
@@ -951,12 +966,15 @@ export function projectDashboard({ workspace, output, statePath = null }) {
       });
     let caseStatus;
     if (!plainObject(candidate)) caseStatus = "pending";
-    else if (valueAt(caseMeasurement, "status") !== "valid") caseStatus = "measurement-invalid";
-    else if (valueAt(candidate, "complete") !== true) caseStatus = "incomplete";
+    else if (valueAt(caseMeasurement, "status") !== "valid") {
+      caseStatus = valueAt(caseMeasurement, "status") === "invalid"
+        ? "measurement-invalid"
+        : "measurement-unverified";
+    } else if (valueAt(candidate, "complete") !== true) caseStatus = "incomplete";
+    else if (valueAt(result, "direction_disagreement") === true) caseStatus = "disagreement";
     else if (
       valueAt(candidate, "passed") !== true
       || valueAt(result, "regressed") === true
-      || valueAt(result, "direction_disagreement") === true
       || hasRuntimeValue(valueAt(result, "missing_objective_metrics"))
       || pairedBlocked
     ) caseStatus = "failed";
@@ -1321,6 +1339,7 @@ export function projectDashboard({ workspace, output, statePath = null }) {
       "change",
       "change_digest",
       "continuity",
+      "continuity_reason",
       "continuity_epoch",
     ].map((key) => [key, valueAt(record, key)])));
   const rawActiveQuery = valueAt(state, "authorized_query");
@@ -1339,7 +1358,7 @@ export function projectDashboard({ workspace, output, statePath = null }) {
   const summary = {
     case_count: caseRows.length,
     candidate_passed: caseRows.filter((row) => row.status === "passed").length,
-    candidate_failed: caseRows.filter((row) => new Set(["failed", "incomplete"]).has(row.status)).length,
+    candidate_failed: caseRows.filter((row) => new Set(["failed", "incomplete", "disagreement"]).has(row.status)).length,
     hard_gates_passed: hardGates.filter(
       (gate) => plainObject(gate) && valueAt(gate, "passed") === true,
     ).length,
@@ -1369,6 +1388,7 @@ export function projectDashboard({ workspace, output, statePath = null }) {
       sampling: {
         ...valueAt(plannedCase, "sampling", {}),
         status: "pending",
+        basis: "predeclared-replicate-budget",
         direction_disagreement: false,
       },
       reasons: [],

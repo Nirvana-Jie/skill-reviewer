@@ -12,6 +12,9 @@ retained outputs instead of reproducing schemas in prose.
 ## 1. Preflight
 
 1. Validate `evals/evals.json` and stop before dispatch on any structural error.
+   The three-repeat stochastic sampling floor and the three-round evolution cap
+   are predeclared minimum-replicate / cost budgets pinned by the runtime
+   contract, not statistical sufficiency claims.
 2. Freeze the candidate. Freeze the accepted old Skill when an improvement or
    regression claim is requested.
 3. Choose one stage: bounded `development` diagnosis, complete `selection`, or
@@ -81,17 +84,22 @@ in the same paired batch when capacity permits.
 
 Apply the validity chain in order:
 
-1. **Evidence:** identity, locks, receipts, Trace, artifacts, and digests bind.
+1. **Evidence:** identity, locks, receipts, Trace, artifacts, digests, and
+   paired execution identities and bindings all bind.
 2. **Measurement:** required text predicates pass positive and negative
-   calibration, and paired execution identities and bindings are valid.
+   calibration.
 3. **Candidate:** required assertions pass, forbidden effects are absent,
    objectives do not regress, and any required primary delta is material.
 
-An invalid Oracle or broken pairing/binding quarantines the experiment and
-routes to Eval repair. Mixed repeat effects are candidate variability, not an
+An invalid Oracle quarantines the experiment and routes to Eval repair without
+consuming an evolution candidate round. Broken pairing/binding or missing
+paired metrics instead yield incomplete evidence and an `inconclusive`
+selection decision; that decision does consume the candidate round and is
+journaled in the rejected-candidate history under its distinct `inconclusive`
+status. Mixed repeat effects are candidate variability, not an
 invalid instrument: retain them as a limitation and let the predeclared
 all-repeat objective gates reject or retain the candidate. Invalid measurement
-does not reject the Skill or consume an evolution candidate round.
+does not reject the Skill.
 
 Calibration examples must exercise the boundary the predicate claims. For a
 section-scoped negative assertion, the passing example includes the forbidden

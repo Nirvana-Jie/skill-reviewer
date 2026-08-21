@@ -2913,7 +2913,7 @@ describe("skill_eval_runtime grade", () => {
     });
   });
 
-  it("evaluates typed deterministic assertions and treats swapped semantic disagreement as inconclusive", () => {
+  it("evaluates typed deterministic assertions and records swapped semantic disagreement as an advisory limitation", () => {
     fixture((root) => {
       const { plan, planPath, workspace } = compiledPlanFixture(root, [
         {
@@ -3271,6 +3271,7 @@ describe("skill_eval_runtime grade", () => {
         expect.objectContaining({
           status: "rejected",
           measurement_validity: "valid",
+          repeat_consistency: "direction-mixed",
           objectives: [
             expect.objectContaining({
               regression_repeats: [2],
@@ -3279,10 +3280,45 @@ describe("skill_eval_runtime grade", () => {
           ],
         }),
       );
+      expect(parsedDecision.reason).toContain(
+        "repeat consistency is insufficient at the declared repeat budget",
+      );
       expect(parsedDecision.objectives[0].paired_deltas).toHaveLength(3);
       expect(parsedDecision.objectives[0].paired_deltas[0]).toBeCloseTo(0.5);
       expect(parsedDecision.objectives[0].paired_deltas[1]).toBeCloseTo(-0.5);
       expect(parsedDecision.objectives[0].paired_deltas[2]).toBeCloseTo(0.5);
+
+      const output = join(workspace, "dashboard-data.json");
+      const projected = runtimeCommand([
+        "project-dashboard",
+        "--workspace",
+        workspace,
+        "--output",
+        output,
+      ]);
+      expect(projected.status, projected.stderr).toBe(0);
+      const dashboard = JSON.parse(readFileSync(output, "utf8"));
+      expect(dashboard.cases[0]).toEqual(
+        expect.objectContaining({
+          id: "variable-quality",
+          status: "disagreement",
+          direction_disagreement: true,
+        }),
+      );
+      expect(dashboard.summary.candidate_failed).toBe(1);
+      const projectedObjective = dashboard.action_center.acceptance.objectives[0];
+      expect(projectedObjective).toEqual(
+        expect.objectContaining({
+          aggregation_policy: "all_paired_repeats",
+          regression_repeats: [2],
+          material_improvement_repeats: [1, 3],
+          repeat_count: 3,
+        }),
+      );
+      expect(projectedObjective.candidate).toBeCloseTo(0.633333);
+      expect(projectedObjective.baseline).toBeCloseTo(0.466667);
+      expect(projectedObjective.delta_min).toBeCloseTo(-0.5);
+      expect(projectedObjective.delta_max).toBeCloseTo(0.5);
     });
   });
 

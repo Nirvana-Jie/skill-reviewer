@@ -8,11 +8,13 @@ import {
   ShieldCheck,
   X,
 } from "lucide-react";
+import type { ReactNode } from "react";
 
 import {
   describeAssertionDecision,
   describeDashboardCase,
   describeEvidenceNode,
+  describeReviewStatus,
 } from "./evidence-semantics";
 import { buildReviewViewModel } from "./review-view-model";
 import type {
@@ -73,6 +75,26 @@ function DecisionIcon({ tone }: { tone: "good" | "bad" | "warn" | "neutral" }) {
   return <CircleAlert size={17} />;
 }
 
+// The first blocker renders expanded as the primary blocker; the rest stay
+// collapsed so they do not compete with the verdict for first-screen attention.
+function BlockerContainer({
+  collapsed,
+  summary,
+  children,
+}: {
+  collapsed: boolean;
+  summary: string;
+  children: ReactNode;
+}) {
+  if (!collapsed) return <>{children}</>;
+  return (
+    <details className="review-blocker-rest">
+      <summary>{summary}</summary>
+      {children}
+    </details>
+  );
+}
+
 function formatObjectiveDelta(locale: "en" | "zh-CN", value: number | null) {
   if (value === null) return "—";
   const formatted = new Intl.NumberFormat(locale, {
@@ -80,6 +102,11 @@ function formatObjectiveDelta(locale: "en" | "zh-CN", value: number | null) {
     signDisplay: "always",
   }).format(value);
   return formatted === "-0" ? "+0" : formatted;
+}
+
+function formatObjectiveValue(locale: "en" | "zh-CN", value: number | null | undefined) {
+  if (typeof value !== "number") return "—";
+  return new Intl.NumberFormat(locale, { maximumFractionDigits: 3 }).format(value);
 }
 
 function reviewDecisionCopy(
@@ -252,6 +279,53 @@ export function ReviewOverview({
       : viewModel.measurement.tone;
   const candidateKey = candidateMessageKeys[viewModel.validity.candidate.status];
   const objectiveEvidence = data.action_center.acceptance.objectives ?? [];
+  const runNode =
+    nodesById.get(`run:${data.run.id}`) ??
+    data.spine.find((node) => node.kind === "run");
+  const invalidMeasurementCase = data.cases.find(
+    (item) => item.measurement && item.measurement.status !== "valid",
+  );
+  const measurementEvidenceTarget =
+    nodesById.get("gate:measurement:valid") ??
+    (invalidMeasurementCase
+      ? nodesById.get(`case:${invalidMeasurementCase.id}`)
+      : undefined) ??
+    runNode;
+  const iterationNodes = data.spine.filter((node) => node.kind === "iteration");
+  const decisionRunId = data.action_center.acceptance.decision_run_id;
+  const candidateEvidenceTarget =
+    (decisionRunId
+      ? iterationNodes.find((node) =>
+          node.id.startsWith(`iteration:${decisionRunId}:`),
+        )
+      : undefined) ??
+    iterationNodes.at(-1) ??
+    runNode;
+  const validitySteps: Array<{
+    key: MessageKey;
+    labelKey: MessageKey;
+    tone: "good" | "bad" | "warn" | "neutral";
+    target: SpineNode | undefined;
+  }> = [
+    {
+      key: evidenceIntegrityKey,
+      labelKey: "evidenceIntegrity",
+      tone: viewModel.validity.evidence.tone,
+      target: runNode,
+    },
+    {
+      key: measurementKey,
+      labelKey: "measurementValidity",
+      tone: measurementTone,
+      target: measurementEvidenceTarget,
+    },
+    {
+      key: candidateKey,
+      labelKey: "candidateQuality",
+      tone: viewModel.validity.candidate.tone,
+      target: candidateEvidenceTarget,
+    },
+  ];
 
   return (
     <div className="review-overview">
@@ -301,30 +375,26 @@ export function ReviewOverview({
           <p>{t("decisionValidityDescription")}</p>
         </div>
         <ol>
-          <li className={`tone-${viewModel.validity.evidence.tone}`}>
-            <span className="review-validity-step" aria-hidden="true">1</span>
-            <span>
-              <small>{t("evidenceIntegrity")}</small>
-              <strong>{t(evidenceIntegrityKey)}</strong>
-            </span>
-            <DecisionIcon tone={viewModel.validity.evidence.tone} />
-          </li>
-          <li className={`tone-${measurementTone}`}>
-            <span className="review-validity-step" aria-hidden="true">2</span>
-            <span>
-              <small>{t("measurementValidity")}</small>
-              <strong>{t(measurementKey)}</strong>
-            </span>
-            <DecisionIcon tone={measurementTone} />
-          </li>
-          <li className={`tone-${viewModel.validity.candidate.tone}`}>
-            <span className="review-validity-step" aria-hidden="true">3</span>
-            <span>
-              <small>{t("candidateQuality")}</small>
-              <strong>{t(candidateKey)}</strong>
-            </span>
-            <DecisionIcon tone={viewModel.validity.candidate.tone} />
-          </li>
+          {validitySteps.map((step, index) => (
+            <li className={`tone-${step.tone}`} key={step.labelKey}>
+              <span className="review-validity-step" aria-hidden="true">{index + 1}</span>
+              <button
+                type="button"
+                className="review-validity-open"
+                aria-label={t("openValidityStepEvidence", {
+                  step: t(step.labelKey),
+                })}
+                disabled={!step.target}
+                onClick={() => step.target && onOpenEvidence(step.target)}
+              >
+                <span>
+                  <small>{t(step.labelKey)}</small>
+                  <strong>{t(step.key)}</strong>
+                </span>
+              </button>
+              <DecisionIcon tone={step.tone} />
+            </li>
+          ))}
         </ol>
       </section>
 
@@ -360,19 +430,50 @@ export function ReviewOverview({
                 : objective.materially_improved
                   ? "objectiveMaterialEveryRepeat"
                   : "objectiveNonRegressedOnly";
+              const objectiveCaseNode = nodesById.get(`case:${objective.case_id}`);
+              const identityContent = (
+                <>
+                  <span>
+                    <strong>{caseTitle}</strong>
+                    <code>{objective.metric}</code>
+                  </span>
+                  <em>{t(statusKey)}</em>
+                </>
+              );
               return (
                 <article
                   className={`review-objective-row tone-${tone}`}
                   key={`${objective.case_id}:${objective.id}`}
                 >
-                  <div className="review-objective-identity">
-                    <span>
-                      <strong>{caseTitle}</strong>
-                      <code>{objective.metric}</code>
-                    </span>
-                    <em>{t(statusKey)}</em>
-                  </div>
+                  {objectiveCaseNode ? (
+                    <button
+                      type="button"
+                      className="review-objective-identity is-clickable"
+                      aria-label={t("openObjectiveCaseEvidence", {
+                        title: caseTitle,
+                      })}
+                      onClick={() => onOpenEvidence(objectiveCaseNode)}
+                    >
+                      {identityContent}
+                    </button>
+                  ) : (
+                    <div className="review-objective-identity">
+                      {identityContent}
+                    </div>
+                  )}
                   <dl>
+                    {typeof objective.baseline === "number" && (
+                      <div>
+                        <dt>{t("objectiveBaselineValue")}</dt>
+                        <dd>{formatObjectiveValue(locale, objective.baseline)}</dd>
+                      </div>
+                    )}
+                    {typeof objective.candidate === "number" && (
+                      <div>
+                        <dt>{t("objectiveCandidateValue")}</dt>
+                        <dd>{formatObjectiveValue(locale, objective.candidate)}</dd>
+                      </div>
+                    )}
                     <div>
                       <dt>{t("objectiveMeanDelta")}</dt>
                       <dd>{formatObjectiveDelta(locale, objective.delta)}</dd>
@@ -384,7 +485,12 @@ export function ReviewOverview({
                           {objective.paired_deltas
                             .map((value) => formatObjectiveDelta(locale, value))
                             .join(" · ")}
-                        </code>
+                        </code>{" "}
+                        <small className="review-objective-repeats">
+                          {t("objectiveRepeatCount", {
+                            count: objective.repeat_count,
+                          })}
+                        </small>
                       </dd>
                     </div>
                     <div>
@@ -426,7 +532,7 @@ export function ReviewOverview({
             <small>{t("problemsToFix")}</small>
             <strong>
               {primaryBlocker
-                ? t("releaseBlockerCount", { count: data.review.blockers.length })
+                ? new Intl.NumberFormat(locale).format(data.review.blockers.length)
                 : noBlockersReady
                   ? t("noKnownRisk")
                   : t("evidenceIncomplete")}
@@ -501,7 +607,8 @@ export function ReviewOverview({
             <CircleAlert size={17} aria-hidden="true" />
           </header>
 
-          {data.review.blockers.map((blocker) => {
+          {data.review.blockers.map((blocker, blockerIndex) => {
+            const isPrimaryBlocker = blockerIndex === 0;
             const criterion = blocker.criterion_ids
               .map((criterionId) =>
                 data.action_center.acceptance.criteria.find(
@@ -514,15 +621,24 @@ export function ReviewOverview({
               .filter((node): node is SpineNode => Boolean(node));
             if (blocker.kind === "criterion") {
               const primaryCriterionEvidence = criterionEvidence[0];
+              const criterionTitle = criterion
+                ? t(`criterion_${criterion.id}`)
+                : blocker.id;
               return (
-                <article className="review-blocker-card is-criterion" key={blocker.id}>
+                <BlockerContainer
+                  key={blocker.id}
+                  collapsed={!isPrimaryBlocker}
+                  summary={`${criterionTitle} · ${localizeStatus(locale, blocker.status)}`}
+                >
+                <article className="review-blocker-card is-criterion">
                   <header>
                     <div>
-                      <span>
-                        {criterion
-                          ? t(`criterion_${criterion.id}`)
-                          : blocker.id}
-                      </span>
+                      {isPrimaryBlocker && (
+                        <span className="review-blocker-primary-tag">
+                          {t("primaryBlockerLabel")}
+                        </span>
+                      )}
+                      <span>{criterionTitle}</span>
                       <p>
                         {criterion
                           ? t(`criterion_${criterion.id}_description`)
@@ -585,6 +701,7 @@ export function ReviewOverview({
                     </button>
                   )}
                 </article>
+                </BlockerContainer>
               );
             }
             const item = blocker.case_id
@@ -619,10 +736,25 @@ export function ReviewOverview({
               : primaryGate
                 ? describeEvidenceNode(locale, primaryGate, data.cases).description
                 : caseSemantic?.description;
+            const scenarioIsDisagreement =
+              !primaryFailedCheck && !primaryGate && blocker.status === "disagreement";
+            const disagreementCopy = scenarioIsDisagreement
+              ? describeReviewStatus(locale, "disagreement")
+              : null;
             return (
-              <article className="review-blocker-card" key={blocker.id}>
+              <BlockerContainer
+                key={blocker.id}
+                collapsed={!isPrimaryBlocker}
+                summary={`${caseSemantic?.title ?? blocker.id} · ${localizeStatus(locale, blocker.status)}`}
+              >
+              <article className="review-blocker-card">
                 <header>
                   <div>
+                    {isPrimaryBlocker && (
+                      <span className="review-blocker-primary-tag">
+                        {t("primaryBlockerLabel")}
+                      </span>
+                    )}
                     <span>{caseSemantic?.title ?? blocker.id}</span>
                     <p>{caseSemantic?.description}</p>
                   </div>
@@ -642,9 +774,15 @@ export function ReviewOverview({
                         ? describeEvidenceNode(locale, primaryFailedCheck, data.cases).title
                         : primaryGate
                           ? describeEvidenceNode(locale, primaryGate, data.cases).title
-                          : t("scenarioDidNotPass")}
+                          : disagreementCopy
+                            ? disagreementCopy.title
+                            : t("scenarioDidNotPass")}
                     </strong>
-                    <p>{primaryReason ?? t("noFailedCheckRecorded")}</p>
+                    <p>
+                      {disagreementCopy
+                        ? disagreementCopy.description
+                        : primaryReason ?? t("noFailedCheckRecorded")}
+                    </p>
                   </div>
                   <div>
                     <span>{t("issueNextStep")}</span>
@@ -676,6 +814,7 @@ export function ReviewOverview({
                   </button>
                 )}
               </article>
+              </BlockerContainer>
             );
           })}
           {data.review.blockers.length === 0 && (

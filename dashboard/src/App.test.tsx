@@ -771,15 +771,15 @@ describe("EvidenceDashboard", () => {
     renderWithPreferences(<App />);
 
     expect(
-      (await screen.findAllByText("Independent issues to address: 1")).length,
-    ).toBeGreaterThan(0);
+      await screen.findByText("Independent issues to address: 1"),
+    ).toBeInTheDocument();
     fireEvent.click(
       screen.getByRole("button", { name: "Refresh dashboard now" }),
     );
     expect(await screen.findByText("Last refresh failed")).toBeInTheDocument();
     expect(
-      screen.getAllByText("Independent issues to address: 1").length,
-    ).toBeGreaterThan(0);
+      screen.getByText("Independent issues to address: 1"),
+    ).toBeInTheDocument();
     expect(screen.getByText("Stale")).toBeInTheDocument();
     fireEvent.click(
       screen.getByRole("button", { name: "Refresh dashboard now" }),
@@ -925,6 +925,61 @@ describe("EvidenceDashboard", () => {
     expect(
       within(objective).getByText("Material gain in every paired repeat"),
     ).toBeInTheDocument();
+  });
+
+  it("expands only the primary blocker and collapses the remaining blockers", () => {
+    const multiData = structuredClone(data);
+    multiData.review = {
+      ...multiData.review,
+      blockers: [
+        multiData.review.blockers[0],
+        {
+          ...multiData.review.blockers[0],
+          id: "blocker:criterion:material_improvement",
+          kind: "criterion",
+          case_id: null,
+          criterion_ids: ["material_improvement"],
+          evidence_ids: ["case:selection-quality"],
+          attribution: "skill",
+        },
+      ],
+    };
+
+    const { container } = renderWithPreferences(
+      <EvidenceDashboard data={multiData} connectionState="live" />,
+    );
+
+    expect(screen.getByText("Primary blocker")).toBeInTheDocument();
+    const rest = container.querySelector("details.review-blocker-rest");
+    expect(rest).not.toBeNull();
+    expect(rest?.hasAttribute("open")).toBe(false);
+    expect(rest?.textContent).toContain(
+      "Repeat-consistent material improvement",
+    );
+  });
+
+  it("navigates from validity chain steps and objective rows to their evidence", () => {
+    renderWithPreferences(
+      <EvidenceDashboard data={data} connectionState="live" />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Open the evidence behind Evidence integrity",
+      }),
+    );
+    expect(
+      screen.getByRole("dialog", { name: "Evidence inspector" }),
+    ).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    fireEvent.click(
+      screen.getAllByRole("button", { name: /Open the evidence for / })[0],
+    );
+    expect(
+      screen.getByRole("dialog", { name: "Evidence inspector" }),
+    ).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
   });
 
   it("uses four task-based views and reserves raw evidence navigation for the evidence archive", () => {
@@ -2440,8 +2495,8 @@ describe("EvidenceDashboard", () => {
     );
 
     expect(
-      (await screen.findAllByText("Independent issues to address: 1")).length,
-    ).toBeGreaterThan(0);
+      await screen.findByText("Independent issues to address: 1"),
+    ).toBeInTheDocument();
     expect(window.location.hash).not.toContain("run=");
   });
 

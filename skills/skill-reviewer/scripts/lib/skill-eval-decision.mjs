@@ -52,6 +52,7 @@ const CANDIDATE_AUTHORIZATION_FIELDS = new Set([
   "change",
   "change_digest",
   "continuity",
+  "continuity_reason",
   "continuity_epoch",
 ]);
 const AUDIT_AUTHORIZATION_FIELDS = new Set([
@@ -152,7 +153,7 @@ function computeDecisionCore({ plan, evidence, iteration, phase }) {
     id: "measurement:valid",
     passed: measurementValid,
     reason: measurementValid
-      ? "oracle calibration and paired sampling are valid"
+      ? "oracle calibration is valid"
       : `measurement is ${measurementStatus}; candidate quality cannot be attributed`,
   });
   const opaqueHoldout = phase === "audit" && plainObject(plan.holdout) && plan.holdout.visibility === "opaque";
@@ -286,6 +287,10 @@ function computeDecisionCore({ plan, evidence, iteration, phase }) {
     && objectiveResults.every((item) => item.non_regressed);
   const materialImprovement = objectiveResults.some((item) => item.primary && item.materially_improved);
   const evidenceInconclusive = evidence.level === "inconclusive";
+  const directionMixed = (plan.cases ?? []).some((evalCase) => {
+    const result = evidenceCases.get(String(none(evalCase.id)));
+    return plainObject(result) && result.direction_disagreement === true;
+  });
   let accepted = measurementValid
     && !evidenceInconclusive
     && hardGatesPassed
@@ -302,8 +307,11 @@ function computeDecisionCore({ plan, evidence, iteration, phase }) {
     rejected: "candidate failed a hard gate or regressed on a declared objective",
     "no-change": "candidate produced no material primary-objective improvement",
     inconclusive: "retained evidence cannot support an acceptance decision",
-    invalid: "the oracle or paired sampling is invalid, so this experiment cannot judge candidate quality",
+    invalid: "the oracle is invalid, so this experiment cannot judge candidate quality",
   };
+  if (status === "rejected" && !objectiveNonRegression && directionMixed) {
+    reasons.rejected = "candidate regressed in at least one paired repeat while paired repeat effects varied in direction; repeat consistency is insufficient at the declared repeat budget";
+  }
   return {
     contract: ACCEPTANCE_CONTRACT,
     run_id: none(plan.run_id),
@@ -317,6 +325,7 @@ function computeDecisionCore({ plan, evidence, iteration, phase }) {
     // non-regression gate, not a Pareto-frontier search result.
     pareto_admissible: objectiveNonRegression,
     material_improvement: materialImprovement,
+    repeat_consistency: directionMixed ? "direction-mixed" : "consistent",
     release_eligible: phase === "audit" && accepted && opaqueHoldout,
     measurement_validity: measurementStatus,
     hard_gates: hardGates,
@@ -472,8 +481,19 @@ function candidateAuthorization({
     change: { added: change.added, removed: change.removed, modified: change.modified },
     change_digest: change.digest,
     continuity,
+    continuity_reason: continuityReason({ roundNumber, continuity, change }),
     continuity_epoch: continuityEpoch,
   };
+}
+
+// Deterministic, structured rationale for the continue/reset enum so lineage
+// records explain themselves without free-form operator text.
+function continuityReason({ roundNumber, continuity, change }) {
+  if (roundNumber === 1) return "initial";
+  if (continuity !== "reset") return "continue";
+  return change.added.length > 0 || change.removed.length > 0
+    ? "topology-reset"
+    : "operator-reset";
 }
 
 function auditAuthorization({ plan, planPath, roundNumber }) {
@@ -534,6 +554,9 @@ export function initializeEvolution({ planPath, workspace }) {
     initialized_from_plan: planPath,
     control_workspace: workspace,
     max_rounds: 3,
+    // Governance rationale: the cap is a predeclared cost/safety budget, not a
+    // convergence or statistical-sufficiency claim.
+    max_rounds_basis: "predeclared-cost-cap",
     current_round: 1,
     status: "optimizing",
     next_action: "run_authorized_selection",
@@ -741,6 +764,7 @@ export function advanceEvolution({ statePath, decisionPath }) {
         candidate_digest: none(plan.subject?.digest),
         status: none(decision.status),
         reason: none(decision.reason),
+        repeat_consistency: none(decision.repeat_consistency),
         decision_digest: decisionDigest,
         objective_deltas: (decision.objectives ?? [])
           .filter((objective) => plainObject(objective))
@@ -951,6 +975,14 @@ function validateCandidateLineage({
     if (!["continue", "reset"].includes(continuity) || !Number.isInteger(epoch)) {
       throw new ManifestError(`${label} continuity is invalid`);
     }
+    const expectedReason = continuityReason({
+      roundNumber: expectedRound,
+      continuity,
+      change,
+    });
+    if (record.continuity_reason !== expectedReason) {
+      throw new ManifestError(`${label} continuity reason is invalid`);
+    }
     if (index === 0) {
       if (continuity !== "continue" || epoch !== 1) throw new ManifestError("initial candidate must start continuity epoch 1");
     } else if (continuity === "reset") {
@@ -1025,6 +1057,9 @@ function validateEvolutionState(state, plan, statePath, planPath) {
   if (!same(state.baseline, baseline)) throw new ManifestError("dashboard state baseline does not match the current run");
   if (state.execution_profile_digest !== executionProfileDigest) throw new ManifestError("dashboard state execution profile does not match the current run");
   if (state.max_rounds !== 3) throw new ManifestError("dashboard state max_rounds must be 3");
+  if (state.max_rounds_basis !== "predeclared-cost-cap") {
+    throw new ManifestError("dashboard state max_rounds_basis must be predeclared-cost-cap");
+  }
   const expectedEvolutionId = `evo-${sha256Json({ authority: authorityDigest, baseline: none(baseline.digest) }).slice(0, 20)}`;
   if (state.evolution_id !== expectedEvolutionId) throw new ManifestError("dashboard state evolution id is invalid");
 
@@ -1236,7 +1271,7 @@ function validateEvolutionState(state, plan, statePath, planPath) {
           terminal: false,
           selected_subject_digest: none(decisionPlan.subject?.digest),
         });
-      } else if (projection.current_round >= 3) {
+      } else if (projection.current_round >= Number(state.max_rounds ?? 3)) {
         Object.assign(projection, { status: "exhausted", next_action: "stop", terminal: true });
       } else {
         projection.current_round += 1;
@@ -1249,6 +1284,7 @@ function validateEvolutionState(state, plan, statePath, planPath) {
           candidate_digest: none(decisionPlan.subject?.digest),
           status: none(decision.status),
           reason: none(decision.reason),
+          repeat_consistency: none(decision.repeat_consistency),
           decision_digest: sha256File(decisionPath),
           objective_deltas: (decision.objectives ?? [])
             .filter((objective) => plainObject(objective))
