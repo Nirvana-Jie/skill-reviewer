@@ -22,7 +22,9 @@ Freeze for the full run:
 The external proposal mechanism may edit the candidate package but cannot edit
 those authorities or grade itself. The Runtime does not claim to implement an
 optimizer: it authorizes queries, verifies retained decisions, and journals
-state transitions. Development cases may improve diagnosis under a separate
+state transitions. Candidate generation happens outside the Runtime; the
+Runtime freezes, digests, and validates each candidate against its parent, but
+it does not attest who or what produced the candidate. Development cases may improve diagnosis under a separate
 digest; they never redefine acceptance.
 
 Continue automatically while authority, permissions, dependencies, cost, and

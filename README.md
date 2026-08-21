@@ -42,7 +42,7 @@ code review.
 | --- | --- | --- |
 | **Review** (default) | Audit triggers, instructions, resources, scripts, safety, and maintainability; return actionable rewrites | Read-only; no Eval worker |
 | **Verify** (explicit) | Run declared candidate and baseline Evals and retain observable evidence | Starts only when requested |
-| **Evolve** (explicit) | Generate bounded candidates from retained failures and verify each one | Eval authority stays fixed; a person decides release |
+| **Evolve** (explicit) | Generate candidates within a bounded round budget from retained failures and verify each one | Eval authority stays fixed; a person decides release |
 
 ## Quick start
 

@@ -319,9 +319,16 @@ export interface DashboardDecisionSupport {
       metric: string;
       direction: "maximize" | "minimize";
       primary: boolean;
+      candidate?: number | null;
+      baseline?: number | null;
       delta: number | null;
       paired_deltas: number[];
+      delta_min?: number | null;
+      delta_max?: number | null;
       repeat_count: number;
+      aggregation_policy?: string;
+      regression_repeats?: number[];
+      material_improvement_repeats?: number[];
       non_regression_tolerance: number;
       min_material_delta: number;
       non_regressed: boolean;
@@ -376,6 +383,8 @@ export interface DashboardReviewOutline {
     attribution: DecisionAttributionId | null;
     next_action: string;
   }>;
+  // Retained for external consumers and reproduction tooling; the review
+  // screen intentionally leads with blockers rather than passed safeguards.
   safeguards: {
     passed_gate_ids: string[];
     passed_case_ids: string[];

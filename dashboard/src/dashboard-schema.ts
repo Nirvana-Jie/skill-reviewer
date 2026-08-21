@@ -631,8 +631,20 @@ function validateDecisionSupport(value: unknown, path: string): void {
           "minimize",
         ] as const);
         requireBoolean(objective.primary, `${itemPath}.primary`);
+        if (objective.candidate !== undefined && objective.candidate !== null) {
+          requireFiniteNumber(objective.candidate, `${itemPath}.candidate`);
+        }
+        if (objective.baseline !== undefined && objective.baseline !== null) {
+          requireFiniteNumber(objective.baseline, `${itemPath}.baseline`);
+        }
         if (objective.delta !== null) {
           requireFiniteNumber(objective.delta, `${itemPath}.delta`);
+        }
+        if (objective.delta_min !== undefined && objective.delta_min !== null) {
+          requireFiniteNumber(objective.delta_min, `${itemPath}.delta_min`);
+        }
+        if (objective.delta_max !== undefined && objective.delta_max !== null) {
+          requireFiniteNumber(objective.delta_max, `${itemPath}.delta_max`);
         }
         const pairedDeltas = requireArrayOf(
           objective.paired_deltas,
@@ -1683,7 +1695,7 @@ function validateProjectionInvariants(
     (item) => item.status === "passed",
   ).length;
   const candidateFailed = caseRecords.filter((item) =>
-    ["failed", "incomplete"].includes(String(item.status)),
+    ["failed", "incomplete", "disagreement"].includes(String(item.status)),
   ).length;
   if (summary.candidate_passed !== candidatePassed) {
     throw new DashboardCompatibilityError(

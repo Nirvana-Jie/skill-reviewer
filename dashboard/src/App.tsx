@@ -125,7 +125,6 @@ function statusTone(status: string): "good" | "bad" | "warn" | "neutral" {
       "audit-failed",
       "invalid",
       "stale",
-      "disagreement",
       "blocked",
     ].some((value) => normalized.includes(value))
   ) {
@@ -140,6 +139,10 @@ function statusTone(status: string): "good" | "bad" | "warn" | "neutral" {
       "missing",
       "no-change",
       "exhausted",
+      // Instability and not-yet-proved states are warnings, not candidate
+      // failures: repeat-direction disagreement and uncalibrated measurement.
+      "disagreement",
+      "unverified",
     ].some((value) => normalized.includes(value))
   ) {
     return "warn";
@@ -1810,12 +1813,16 @@ export function EvidenceDashboard({
               {t(connectionState)}
             </span>
             <code>{data.run.id}</code>
+            <span className="chip-kicker">{t("verificationLevelLabel")}</span>
             <StatusChip
               status={data.run.verification_level}
               className="run-verification"
             />
             {data.run.status !== data.run.verification_level && (
-              <StatusChip status={data.run.status} className="run-status" />
+              <>
+                <span className="chip-kicker">{t("runStateLabel")}</span>
+                <StatusChip status={data.run.status} className="run-status" />
+              </>
             )}
             <span className="readonly-pill">
               <LockKeyhole size={12} /> {t("readOnly")}
@@ -2847,9 +2854,8 @@ export function EvidenceDashboard({
           </div>
         )}
         <span className="statusbar-spacer" />
-        <span><FileText size={12} /> {t("retainedJsonArtifacts")}</span>
-        <span title={data.contract}>
-          <FileText size={12} /> {t("evidenceDataLoaded")}
+        <span>
+          <FileText size={12} /> <code>{data.contract}</code>
         </span>
       </footer>
 
