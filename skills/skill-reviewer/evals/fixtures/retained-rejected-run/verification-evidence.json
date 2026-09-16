@@ -1,0 +1,152 @@
+{
+  "contract": "skill-reviewer.verification",
+  "run_id": "run-3f9c2a17b0d4e8c1a5f6",
+  "subject": {
+    "path": "/work/note-taker-candidate",
+    "digest": "9b1e6d0a4c2f8e7d3a5b6c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f"
+  },
+  "baseline": {
+    "kind": "old_skill",
+    "path": "/work/note-taker-accepted",
+    "digest": "0c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d"
+  },
+  "level": "regression-verified",
+  "cases": [
+    {
+      "id": "needs-revision-calibration",
+      "split": "selection",
+      "regressed": true,
+      "direction_disagreement": false,
+      "missing_objective_metrics": [],
+      "measurement": {
+        "status": "valid",
+        "oracle": {
+          "status": "valid",
+          "required_text_assertions": 10,
+          "calibrated_text_assertions": 10,
+          "reasons": []
+        },
+        "sampling": {
+          "status": "valid",
+          "repeats": 3,
+          "pairing": "paired",
+          "source": "explicit",
+          "basis": "predeclared-replicate-budget",
+          "direction_disagreement": false
+        },
+        "reasons": []
+      },
+      "semantic_assertions": [],
+      "with_skill": {
+        "arm": "with_skill",
+        "complete": true,
+        "passed": false,
+        "required_pass_rate": 0.9166666666666666,
+        "forbidden_actions": [],
+        "side_effects": [],
+        "binding_errors": [],
+        "repeats": [
+          {
+            "repeat": 1,
+            "status": "completed",
+            "required_pass_rate": 1,
+            "metrics": {}
+          },
+          {
+            "repeat": 2,
+            "status": "completed",
+            "required_pass_rate": 0.75,
+            "metrics": {}
+          },
+          {
+            "repeat": 3,
+            "status": "completed",
+            "required_pass_rate": 1,
+            "metrics": {}
+          }
+        ],
+        "artifacts": []
+      },
+      "old_skill": {
+        "arm": "old_skill",
+        "complete": true,
+        "passed": true,
+        "required_pass_rate": 1,
+        "forbidden_actions": [],
+        "side_effects": [],
+        "binding_errors": [],
+        "repeats": [
+          {
+            "repeat": 1,
+            "status": "completed",
+            "required_pass_rate": 1,
+            "metrics": {}
+          },
+          {
+            "repeat": 2,
+            "status": "completed",
+            "required_pass_rate": 1,
+            "metrics": {}
+          },
+          {
+            "repeat": 3,
+            "status": "completed",
+            "required_pass_rate": 1,
+            "metrics": {}
+          }
+        ],
+        "artifacts": []
+      }
+    }
+  ],
+  "measurement": {
+    "status": "valid",
+    "cases": [
+      {
+        "case_id": "needs-revision-calibration",
+        "status": "valid",
+        "oracle": {
+          "status": "valid",
+          "required_text_assertions": 10,
+          "calibrated_text_assertions": 10,
+          "reasons": []
+        },
+        "sampling": {
+          "status": "valid",
+          "repeats": 3,
+          "pairing": "paired",
+          "source": "explicit",
+          "basis": "predeclared-replicate-budget",
+          "direction_disagreement": false
+        },
+        "reasons": []
+      }
+    ],
+    "reasons": []
+  },
+  "limitations": [],
+  "integrity": {
+    "locked": true,
+    "verified": true,
+    "run_lock": "/work/runs/selection-1/run-lock.json",
+    "run_lock_digest": "5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f",
+    "plan_digest": "7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b",
+    "authority_digest": "3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d"
+  },
+  "execution_profile": {
+    "adapter_id": "example.agent.cli",
+    "isolation": "local-unattested",
+    "sampling": {
+      "mode": "agent-default",
+      "paired": true
+    }
+  },
+  "holdout": {
+    "visibility": "public",
+    "issuer": null,
+    "source_path": null,
+    "digest": null
+  },
+  "evidence_scope": "public-calibration",
+  "release_eligible": false
+}

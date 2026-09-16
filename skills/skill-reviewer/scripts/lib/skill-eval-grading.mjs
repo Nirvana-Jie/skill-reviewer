@@ -41,7 +41,10 @@ import {
   SEMANTIC_JUDGMENT_CONTRACT,
   TRACE_EVENT_CONTRACT,
   VERIFICATION_CONTRACT,
+  SEMANTIC_JUDGE_RUN_CONTRACT,
 } from "./skill-eval-contracts.mjs";
+import { evaluateVersionPolicy } from "./agent-version-policy.mjs";
+import { builtInAgentRegistryPath, loadAgentRegistry, resolveAgentAdapter } from "./agent-registry.mjs";
 import { declaredAssertionArtifacts } from "./skill-eval-evidence.mjs";
 import {
   assessRuntimeMeasurement,
@@ -500,6 +503,7 @@ function validateSourceTrace({
   expectedBinding,
 }) {
   const errors = [];
+  const observations = { agent_version: null, version_drift: null };
   const lockedArtifact = assignment.source_trace_artifact;
   const expectedArtifact = lockedArtifact !== undefined && lockedArtifact !== null
     ? validateArtifactPath(lockedArtifact, "assignment.source_trace_artifact")
@@ -561,13 +565,31 @@ function validateSourceTrace({
         if (runtimeBinding.registry_entry_digest !== expectedBinding.registry_entry_digest) errors.push("Agent runtime binding registry digest is stale");
         if (runtimeBinding.agent_version !== descriptor.agent_version) errors.push("source trace agent_version does not match the Agent runtime binding");
         if (runtimeBinding.executable_digest !== descriptor.executable_digest) errors.push("source trace executable_digest does not match the Agent runtime binding");
-        const expectedVersion = expectedBinding.executable_version;
         const observedVersion = runtimeBinding.agent_version;
-        const versionPattern = typeof expectedVersion === "string"
-          ? new RegExp(`(?:^|[^0-9A-Za-z.])${escapeRegExp(expectedVersion)}(?:$|[^0-9A-Za-z.])`)
-          : null;
-        if (typeof expectedVersion !== "string" || typeof observedVersion !== "string" || !versionPattern.test(observedVersion)) {
-          errors.push("Agent runtime binding version is outside the locked adapter contract");
+        if (typeof observedVersion === "string" && observedVersion.trim() !== "") observations.agent_version = observedVersion;
+        if (!plainObject(expectedBinding.version_policy) || typeof expectedBinding.canary_verified_version !== "string") {
+          errors.push("locked adapter binding predates the version policy contract; recompile the plan against the current registry");
+        } else {
+          let evaluation = null;
+          try {
+            evaluation = evaluateVersionPolicy(expectedBinding.version_policy, observedVersion);
+          } catch (error) {
+            errors.push(`locked adapter binding version policy is invalid: ${error.message}`);
+          }
+          if (evaluation !== null) {
+            if (evaluation.canary_verified !== expectedBinding.canary_verified_version || evaluation.canary_verified !== expectedBinding.executable_version) {
+              errors.push("locked adapter binding canary-verified version is inconsistent with its version policy");
+            }
+            if (!evaluation.satisfied) {
+              errors.push(`Agent runtime binding version is outside the locked adapter contract: ${evaluation.reason}`);
+            } else if (evaluation.drifted) {
+              observations.version_drift = {
+                adapter: expectedAdapter,
+                observed: evaluation.observed,
+                canary_verified: evaluation.canary_verified,
+              };
+            }
+          }
         }
         for (const field of ["registry_entry_digest", "executable_digest", "environment_names_digest"]) {
           if (typeof runtimeBinding[field] !== "string" || !/^[a-f0-9]{64}$/.test(runtimeBinding[field])) {
@@ -669,7 +691,16 @@ function validateSourceTrace({
     && SOURCE_TRACE_OPTIONAL_FIELDS.filter((field) => Object.hasOwn(descriptor, field)).every((field) => jsonEqual(event.details[field], descriptor[field])))) {
     errors.push("source trace descriptor is not bound to its artifact event");
   }
-  return [{ ...descriptor, digest: actualDigest }, errors];
+  return [{ ...descriptor, digest: actualDigest }, errors, observations];
+}
+
+function firstObservedModel(traceEvents) {
+  for (const event of traceEvents) {
+    if (!plainObject(event) || !plainObject(event.details)) continue;
+    const model = event.details.model;
+    if (typeof model === "string" && model.trim() !== "") return model;
+  }
+  return null;
 }
 
 function validateAgentTrace({
@@ -1041,10 +1072,6 @@ function failedAssertion(assertionId, assertionType, severity, reason) {
   return { id: assertionId, type: assertionType, severity, passed: false, evidence: { reason } };
 }
 
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 export function gradeAssertion(assertion, repeatRoot) {
   const assertionId = requireString(assertion.id, "assertion.id");
   const assertionType = requireString(assertion.type, "assertion.type");
@@ -1143,7 +1170,9 @@ export function gradeAssertion(assertion, repeatRoot) {
         const record = JSON.parse(line);
         requireFiniteJson(record, `event log line ${index + 1}`);
         if (!plainObject(record)) throw new Error(`line ${index + 1} is not an object`);
+        // Worker-written logs use {"event": ...}; canonical Agent Trace lines use {"kind": ...}.
         if (typeof record.event === "string") observed.push(record.event);
+        if (typeof record.kind === "string") observed.push(record.kind);
       }
     } catch (error) {
       return failedAssertion(assertionId, assertionType, severity, `invalid JSONL event log: ${error.message}`);
@@ -1277,7 +1306,7 @@ export function gradeArm({
       sourceTraceRequired: plainObject(executionProfile.trace?.source),
     });
     repeatBindingErrors.push(...traceErrors);
-    const [sourceTraceDescriptor, sourceTraceErrors] = validateSourceTrace({
+    const [sourceTraceDescriptor, sourceTraceErrors, sourceObservations = {}] = validateSourceTrace({
       workspace,
       repeatRoot,
       descriptor: execution.source_trace,
@@ -1385,6 +1414,9 @@ export function gradeArm({
       assertions,
       required_pass_rate: repeatPassRate,
       metrics,
+      agent_version: sourceObservations.agent_version ?? null,
+      agent_version_drift: sourceObservations.version_drift ?? null,
+      agent_model: firstObservedModel(traceEvents),
     });
   }
   const requiredPassRate = requiredTotal > 0 ? requiredPassed / requiredTotal : 1;
@@ -1447,7 +1479,7 @@ function applyPairedDispatchValidation({ case: evalCase, graded }) {
   }
 }
 
-function semanticJudgmentBinding({
+export function semanticJudgmentBinding({
   runId,
   authority,
   case: evalCase,
@@ -1498,9 +1530,56 @@ function semanticJudgmentBinding({
   };
 }
 
+function semanticProvenanceError({ judgment, executionProfile, caseRoot }) {
+  const judge = judgment.judge;
+  if (!plainObject(judge)) return "semantic judgment lacks judge-run provenance";
+  if (judge.contract !== SEMANTIC_JUDGE_RUN_CONTRACT) return "semantic judgment judge-run contract is invalid";
+  if (typeof judge.adapter_id !== "string" || judge.adapter_id === "") return "semantic judgment judge adapter id is invalid";
+  if (typeof judge.registry_entry_digest !== "string" || !/^[a-f0-9]{64}$/.test(judge.registry_entry_digest)) return "semantic judgment judge registry digest is invalid";
+  if (typeof judge.agent_version !== "string" || judge.agent_version.trim() === "") return "semantic judgment judge version is invalid";
+  const policy = judge.agent_version_policy;
+  if (!plainObject(policy) || typeof policy.drifted !== "boolean" || typeof policy.canary_verified !== "string" || (policy.observed !== null && typeof policy.observed !== "string")) {
+    return "semantic judgment judge version policy evaluation is invalid";
+  }
+  const lockedAdapterId = plainObject(executionProfile) ? executionProfile.adapter_id : undefined;
+  const lockedRegistryDigest = plainObject(executionProfile) && plainObject(executionProfile.adapter_binding)
+    ? executionProfile.adapter_binding.registry_entry_digest
+    : undefined;
+  let expectedRegistryDigest = null;
+  if (judge.adapter_id === lockedAdapterId && typeof lockedRegistryDigest === "string") {
+    expectedRegistryDigest = lockedRegistryDigest;
+  } else {
+    try {
+      const registry = loadAgentRegistry({ registryPath: builtInAgentRegistryPath });
+      expectedRegistryDigest = resolveAgentAdapter(registry, judge.adapter_id, { requireExecution: true }).registry_entry_digest;
+    } catch {
+      return `semantic judgment judge adapter ${judge.adapter_id} is not an implemented registry adapter`;
+    }
+  }
+  if (judge.registry_entry_digest !== expectedRegistryDigest) return "semantic judgment judge registry digest does not match the registry entry";
+  for (const [index, record] of judgment.judgments.entries()) {
+    const provenance = plainObject(record) ? record.provenance : null;
+    if (!plainObject(provenance)) return `semantic judgment ${index + 1} lacks provenance`;
+    if (provenance.judge_adapter_id !== judge.adapter_id) return `semantic judgment ${index + 1} provenance names a different judge adapter`;
+    for (const [artifactField, digestField] of [["prompt_artifact", "prompt_artifact_digest"], ["raw_output_artifact", "raw_output_digest"]]) {
+      let retainedPath;
+      try {
+        retainedPath = safeArtifact(caseRoot, requireString(provenance[artifactField], `semantic judgment ${index + 1}.${artifactField}`));
+      } catch (error) {
+        if (!(error instanceof ManifestError)) throw error;
+        return `semantic judgment ${index + 1} ${artifactField} is invalid`;
+      }
+      if (!isFile(retainedPath)) return `semantic judgment ${index + 1} retained ${artifactField} is missing`;
+      if (sha256File(retainedPath) !== provenance[digestField]) return `semantic judgment ${index + 1} retained ${artifactField} does not match its recorded digest`;
+    }
+  }
+  return null;
+}
+
 export function gradeSemanticAssertion({
   runId,
   authority,
+  executionProfile = null,
   case: evalCase,
   assertion,
   caseRoot,
@@ -1534,6 +1613,16 @@ export function gradeSemanticAssertion({
   if (judgment.contract !== SEMANTIC_JUDGMENT_CONTRACT || judgment.blind !== true || !Array.isArray(judgments) || judgments.length !== 2) {
     return { ...base, status: "invalid", passed: false, preference: null, reason: "semantic evidence must contain two blind swapped-order judgments" };
   }
+  const provenanceError = semanticProvenanceError({ judgment, executionProfile, caseRoot });
+  if (provenanceError !== null) return { ...base, status: "invalid", passed: false, preference: null, reason: provenanceError };
+  const policy = judgment.judge.agent_version_policy;
+  base = {
+    ...base,
+    judge_adapter_id: judgment.judge.adapter_id,
+    judge_version_drift: policy.drifted
+      ? { observed: policy.observed, canary_verified: policy.canary_verified, adapter: judgment.judge.adapter_id }
+      : null,
+  };
   const resolved = [];
   const mappings = [];
   const expected = new Set([candidateArm, baselineArm]);
@@ -1681,6 +1770,7 @@ export function gradeRun({ planPath, workspace, persist = true }) {
       .map((assertion) => gradeSemanticAssertion({
         runId: String(plan.run_id),
         authority: plan.authority ?? {},
+        executionProfile: plan.execution_profile ?? null,
         case: evalCase,
         assertion,
         caseRoot: join(workspace, "cases", String(evalCase.id)),
@@ -1688,7 +1778,17 @@ export function gradeRun({ planPath, workspace, persist = true }) {
         baselineArm: String(baselineArm),
       }));
     anyIncomplete = anyIncomplete || Object.values(graded).some((result) => !result.complete);
+    const observedModels = new Set();
     for (const [arm, armResult] of Object.entries(graded)) {
+      for (const repeatResult of armResult.repeats ?? []) {
+        if (!plainObject(repeatResult)) continue;
+        if (typeof repeatResult.agent_model === "string") observedModels.add(repeatResult.agent_model);
+        const drift = repeatResult.agent_version_drift;
+        if (plainObject(drift)) {
+          const limitation = `agent version ${drift.observed} differs from canary-verified ${drift.canary_verified} for adapter ${drift.adapter}`;
+          if (!limitations.includes(limitation)) limitations.push(limitation);
+        }
+      }
       if (!armResult.complete) limitations.push(`execution incomplete for case ${evalCase.id} arm ${arm}`);
       if (armResult.forbidden_actions.length > 0) {
         limitations.push(`forbidden action recorded for case ${evalCase.id} arm ${arm}`);
@@ -1700,6 +1800,9 @@ export function gradeRun({ planPath, workspace, persist = true }) {
       }
       if (armResult.binding_errors.length > 0) limitations.push(`execution binding invalid for case ${evalCase.id} arm ${arm}`);
     }
+    if (observedModels.size > 1) {
+      limitations.push(`agent model differs across cells in case ${evalCase.id}: ${[...observedModels].sort().join(", ")}`);
+    }
     if (missingObjectiveMetrics.length > 0) {
       anyIncomplete = true;
       limitations.push(`objective metric missing in case ${evalCase.id}`);
@@ -1707,6 +1810,11 @@ export function gradeRun({ planPath, workspace, persist = true }) {
     if (directionDisagreement) limitations.push(`paired repeat effects vary in direction for case ${evalCase.id}`);
     for (const reason of measurement.reasons ?? []) limitations.push(`measurement validity failed in case ${evalCase.id}: ${reason}`);
     for (const semanticResult of semanticAssertions) {
+      const judgeDrift = semanticResult.judge_version_drift;
+      if (plainObject(judgeDrift)) {
+        const limitation = `semantic judge version ${judgeDrift.observed} differs from canary-verified ${judgeDrift.canary_verified} for adapter ${judgeDrift.adapter} in case ${evalCase.id}`;
+        if (!limitations.includes(limitation)) limitations.push(limitation);
+      }
       if (semanticResult.passed) continue;
       if (semanticResult.status === "disagreement") limitations.push(`semantic judge disagreement in case ${evalCase.id}`);
       else if (semanticResult.status === "missing") limitations.push(`semantic evidence missing in case ${evalCase.id}`);

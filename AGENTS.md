@@ -47,15 +47,23 @@ be proven by direct inspection instead of a dedicated test file.
 - For `skill-reviewer` PRs, focus on trigger reliability, safety constraints,
   immutable run-contract stability, fixture drift, and whether the executable
   manifest remains accepted by the Runtime compile and grade interfaces.
-- Treat changes to `skills/skill-reviewer/SKILL.md`,
-  `skills/skill-reviewer/references/review-rubric.md`,
-  `skills/skill-reviewer/references/output-contract.md`,
-  `skills/skill-reviewer/references/verification-workflow.md`,
-  `skills/skill-reviewer/references/evolution-workflow.md`,
+- Treat changes to any of these paths as eval-risk changes:
+  `skills/skill-reviewer/SKILL.md`, `skills/skill-reviewer/references/**`,
+  `skills/skill-reviewer/evals/**`,
   `skills/skill-reviewer/assets/agent-adapter-registry.json`,
-  `skills/skill-reviewer/evals/evals.json`, or
-  `skills/skill-reviewer/evals/fixtures/**` as eval-risk
-  changes.
+  `skills/skill-reviewer/assets/semantic-grader-contract.md`,
+  `skills/skill-reviewer/scripts/lib/skill-eval-*.mjs`,
+  `skills/skill-reviewer/scripts/lib/agent-registry.mjs`,
+  `skills/skill-reviewer/scripts/lib/agent-version-policy.mjs`,
+  `skills/skill-reviewer/scripts/lib/agent-prompt.mjs`,
+  `skills/skill-reviewer/scripts/lib/agent-execution.mjs`, and
+  `skills/skill-reviewer/scripts/lib/agent-adapters/**`. They decide what
+  passes, what is observed, or what the worker is told.
+- An eval-risk PR fills in the eval-risk checklist of
+  `.github/PULL_REQUEST_TEMPLATE.md`. `pnpm test` already compiles all three
+  splits and pushes realistic responses through every `must_pass` predicate;
+  a real self-eval run is recorded in the `docs/validation.md` ledger by
+  following `docs/self-eval-runbook.md`.
 - Run or account for the validation commands above before recommending merge.
 - Do not suggest adding `OPENAI_API_KEY`, `openai/codex-action`,
   `pull_request_target`, or model-backed GitHub Actions unless the repository

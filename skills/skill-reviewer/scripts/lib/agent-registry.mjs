@@ -2,6 +2,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { canonicalJson, sha256 } from "./agent-digest.mjs";
+import {
+  describeVersionPolicy,
+  evaluateVersionPolicy,
+  parseVersionPolicy,
+} from "./agent-version-policy.mjs";
 import { readUtf8File } from "./strict-utf8.mjs";
 
 const REGISTRY_CONTRACT = "skill-reviewer.agent-adapter-registry";
@@ -80,13 +85,11 @@ function validateImplementedRuntime(entry, label) {
   ) {
     fail(`${label}.runtime.version_policy must be an object`);
   }
-  if (runtime.version_policy.kind !== "exact-token") {
-    fail(`${label}.runtime.version_policy.kind must be exact-token`);
+  try {
+    parseVersionPolicy(runtime.version_policy, `${label}.runtime.version_policy`);
+  } catch (error) {
+    fail(error.message);
   }
-  requireString(
-    runtime.version_policy.value,
-    `${label}.runtime.version_policy.value`,
-  );
   if (
     !Array.isArray(runtime.inherited_environment) ||
     runtime.inherited_environment.some(
@@ -257,18 +260,25 @@ export function resolveAgentAdapter(
   return adapter;
 }
 
+/**
+ * Enforce the adapter version policy against an observed `--version` line.
+ * Returns the evaluation ({ satisfied, observed, canary_verified, drifted })
+ * so callers can record in-range drift from the canary-verified version.
+ */
 export function assertSupportedAgentVersion(adapter, observedVersion) {
-  const policy = adapter.runtime?.version_policy;
-  if (policy?.kind !== "exact-token" || typeof policy.value !== "string") {
-    throw new Error(`agent adapter ${adapter.id} has no enforceable version policy`);
-  }
-  const escaped = policy.value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const token = new RegExp(
-    `(?:^|[^0-9A-Za-z.+-])${escaped}(?:$|[^0-9A-Za-z.+-])`,
-  );
-  if (!token.test(observedVersion)) {
+  let policy;
+  try {
+    policy = parseVersionPolicy(adapter.runtime?.version_policy);
+  } catch (error) {
     throw new Error(
-      `Agent version ${JSON.stringify(observedVersion)} does not satisfy the pinned adapter version ${policy.value}`,
+      `agent adapter ${adapter.id} has no enforceable version policy: ${error.message}`,
     );
   }
+  const evaluation = evaluateVersionPolicy(policy, observedVersion);
+  if (!evaluation.satisfied) {
+    throw new Error(
+      `Agent version ${JSON.stringify(observedVersion)} does not satisfy the adapter version policy (${describeVersionPolicy(policy)}): ${evaluation.reason}`,
+    );
+  }
+  return evaluation;
 }

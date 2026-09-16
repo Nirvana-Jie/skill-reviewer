@@ -31,8 +31,10 @@
         "default_executable": "codex",
         "inherited_environment": ["CODEX_HOME"],
         "version_policy": {
-          "kind": "exact-token",
-          "value": "0.144.5"
+          "kind": "compatible-range",
+          "canary_verified": "0.144.5",
+          "minimum": "0.144.5",
+          "maximum_exclusive": "1.0.0"
         }
       },
       "profile": {
@@ -93,8 +95,10 @@
         "default_executable": "claude",
         "inherited_environment": ["CLAUDE_CONFIG_DIR"],
         "version_policy": {
-          "kind": "exact-token",
-          "value": "2.1.215"
+          "kind": "compatible-range",
+          "canary_verified": "2.1.215",
+          "minimum": "2.1.215",
+          "maximum_exclusive": "3.0.0"
         }
       },
       "profile": {

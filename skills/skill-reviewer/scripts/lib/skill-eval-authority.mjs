@@ -21,6 +21,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { fileURLToPath } from "node:url";
 
 import { CANONICAL_JSON_CONTRACT, canonicalJson } from "./agent-digest.mjs";
+import { canaryVerifiedVersion, parseVersionPolicy } from "./agent-version-policy.mjs";
 import {
   ASSIGNMENT_CONTRACT,
   DETERMINISTIC_ASSERTION_TYPES,
@@ -426,7 +427,7 @@ export function validateAssertions(assertions, label) {
     throw new ManifestError(`${label} must be a non-empty array`);
   }
   const seen = new Set();
-  return assertions.map((rawAssertion, index) => {
+  const normalized = assertions.map((rawAssertion, index) => {
     const assertionLabel = `${label}[${index}]`;
     if (!plainObject(rawAssertion)) throw new ManifestError(`${assertionLabel} must be an object`);
     let assertion = { ...rawAssertion };
@@ -523,6 +524,25 @@ export function validateAssertions(assertions, label) {
     }
     return { ...assertion, artifact, severity };
   });
+  // A semantic judgment artifact is written once per assertion by the judge
+  // runner; two assertions sharing a path would overwrite each other and leave
+  // one binding stale, and a path shared with a deterministic artifact would
+  // let a worker output masquerade as a judgment.
+  const semanticArtifacts = new Set();
+  const deterministicArtifacts = new Set(
+    normalized.filter((item) => !SEMANTIC_ASSERTION_TYPES.has(item.type)).map((item) => item.artifact),
+  );
+  for (const item of normalized) {
+    if (!SEMANTIC_ASSERTION_TYPES.has(item.type)) continue;
+    if (semanticArtifacts.has(item.artifact)) {
+      throw new ManifestError(`${label}: semantic artifact ${item.artifact} is declared by more than one assertion`);
+    }
+    if (deterministicArtifacts.has(item.artifact)) {
+      throw new ManifestError(`${label}: semantic artifact ${item.artifact} collides with a deterministic assertion artifact`);
+    }
+    semanticArtifacts.add(item.artifact);
+  }
+  return normalized;
 }
 
 export function validateObjectives(objectives, label) {
@@ -852,6 +872,14 @@ function loadExecutionProfile(path, { protectedRoots }) {
     throw new ManifestError("execution_profile.sampling must be a non-empty object");
   }
   requireFiniteJson(raw.sampling, "execution_profile.sampling");
+  let adapterVersionPolicy = null;
+  if (adapterEntry) {
+    try {
+      adapterVersionPolicy = parseVersionPolicy(adapterEntry.runtime?.version_policy, "registered adapter runtime.version_policy");
+    } catch (error) {
+      throw new ManifestError(`registered agent adapter version policy is invalid: ${error.message}`);
+    }
+  }
   const adapterBinding = adapterEntry ? {
     source_agent: adapterEntry.source_agent.id,
     source_format: adapterEntry.source_format.id,
@@ -860,7 +888,11 @@ function loadExecutionProfile(path, { protectedRoots }) {
     official_sources: adapterEntry.source_format.official_sources,
     evidence_authority: adapterEntry.evidence_authority,
     implementation_maturity: adapterEntry.implementation.maturity,
-    executable_version: adapterEntry.runtime.version_policy.value,
+    // executable_version stays the canary-verified version for Dashboard compatibility;
+    // version_policy carries the enforceable compatible range.
+    executable_version: canaryVerifiedVersion(adapterVersionPolicy),
+    version_policy: { ...adapterVersionPolicy },
+    canary_verified_version: canaryVerifiedVersion(adapterVersionPolicy),
     registry_entry_digest: sha256Json(adapterEntry),
   } : null;
   const normalized = {
@@ -1490,6 +1522,13 @@ function addDirectoryPrefixes(records, relativePath) {
   }
 }
 
+function assertAdapterBindingContract(adapterBinding) {
+  if (adapterBinding === undefined) return;
+  if (!plainObject(adapterBinding) || !plainObject(adapterBinding.version_policy) || typeof adapterBinding.canary_verified_version !== "string") {
+    throw new ManifestError("execution plan adapter binding predates the version policy contract; recompile the plan against the current registry");
+  }
+}
+
 export function verifyLockedInputs({ planPath, workspace, plan }) {
   const resolvedWorkspace = realpathSync(resolve(workspace));
   const resolvedPlanPath = realpathSync(resolve(planPath));
@@ -1511,6 +1550,7 @@ export function verifyLockedInputs({ planPath, workspace, plan }) {
   const authority = buildAuthority(subjectPath, manifestPath);
   if (!deepEqual(plan.authority, authority)) throw new ManifestError("locked eval or grader authority changed after compilation");
   if (!plainObject(plan.execution_profile)) throw new ManifestError("execution plan is missing the execution profile");
+  assertAdapterBindingContract(plan.execution_profile.adapter_binding);
   let baselinePath = null;
   let baselineDigest = null;
   let expectedBaseline;
@@ -1737,6 +1777,7 @@ export function prepareAgentCell({ assignmentPath, workspace, adapterId }) {
   const entry = loadRegisteredAgentAdapter(adapterId);
   const adapterProfile = entry.profile;
   const adapterBinding = profile.adapter_binding;
+  assertAdapterBindingContract(adapterBinding);
   if (!plainObject(adapterBinding) || adapterBinding.registry_entry_digest !== sha256Json(entry)) {
     throw new ManifestError("locked execution profile agent adapter binding is stale");
   }

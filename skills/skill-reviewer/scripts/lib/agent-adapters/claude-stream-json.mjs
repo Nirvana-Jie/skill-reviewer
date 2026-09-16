@@ -189,7 +189,27 @@ export const adapter = {
           executor: context.adapter.profile.harness,
           agent_version: context.agentVersion,
           safe_mode: true,
+          // --safe-mode attestation (from the CLI help text): user customizations
+          // are disabled; admin-managed (policy) settings still apply and are
+          // not attested here.
+          customizations_disabled: true,
+          managed_settings_still_apply: true,
+          customizations_disabled_by: "--safe-mode",
+          customizations_disabled_scope: [
+            "project-instructions",
+            "skills",
+            "plugins",
+            "hooks",
+            "mcp-servers",
+            "custom-commands",
+            "custom-agents",
+            "output-styles",
+            "workflows",
+          ],
           slash_commands_disabled: true,
+          browser_disabled: true,
+          mcp_config_empty: true,
+          session_persistence_disabled: true,
           allowed_tools: ["Read"],
           isolation_claim: context.profile.isolation,
           agent_env_name_count: context.environment.passedNameCount,

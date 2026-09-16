@@ -137,7 +137,7 @@ export async function runAgentCell({
     environment.values,
   );
   const agentVersion = probeVersion(executable.path, locked.repeat_root, environment.values);
-  assertSupportedAgentVersion(registryAdapter, agentVersion);
+  const versionEvaluation = assertSupportedAgentVersion(registryAdapter, agentVersion);
   const fullAccessCapability = registryAdapter.profile.full_access_capability;
   const fullAccess =
     typeof fullAccessCapability === "string" &&
@@ -178,6 +178,18 @@ export async function runAgentCell({
         summary: "Agent Eval execution started",
         status: "running",
         details: {},
+        artifact_refs: [],
+      },
+      {
+        kind: "tool_call",
+        summary: "Execution harness verified the Agent version policy",
+        status: "completed",
+        details: {
+          adapter_id: adapterId,
+          agent_version_observed: versionEvaluation.observed,
+          agent_version_canary_verified: versionEvaluation.canary_verified,
+          agent_version_drifted: versionEvaluation.drifted,
+        },
         artifact_refs: [],
       },
       ...prepared.initialEvents,

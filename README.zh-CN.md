@@ -93,6 +93,19 @@ Trace UI 不与 Codex 绑定。真实执行能力通过显式 Adapter 接入并�
 Codex CLI 和 Claude Code 已通过 canary 验证；只完成协议调研的 Agent 不会被展示为
 可执行支持。
 
+## 运行要求
+
+- Node.js `^20.19.0 || >=22.12.0`。Review 模式不需要其它依赖。
+- Verify 和 Evolve 会通过已注册的 adapter 调度本机安装的 Agent CLI。
+  `skills/skill-reviewer/assets/agent-adapter-registry.json` 为每个 adapter 记录了通过 canary 验证的
+  CLI 版本和兼容版本区间。区间之外会在派发前失败关闭；区间之内但与 canary
+  版本不同的 CLI 可以运行，差异会作为局限写入验证证据。可用 `--agent-bin`
+  指定具体可执行文件。
+- 公开的 audit fixtures 只用于校准。可用于发布判断的证据需要仓库之外的 opaque
+  holdout pack，见[验证流程](./skills/skill-reviewer/references/verification-workflow.md)。
+- 要用这个 Skill 评测它自己，请按 [docs/self-eval-runbook.md](./docs/self-eval-runbook.md)
+  操作；结果记录在[验证账本](./docs/validation.md)中。
+
 ## 本地 Dashboard
 
 Dashboard 是只读的决策界面：

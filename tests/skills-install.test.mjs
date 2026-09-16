@@ -112,6 +112,7 @@ function makeRemoteFixture(root) {
   const ignoredTopLevel = new Set([
     ".git",
     ".agents",
+    ".claude",
     ".playwright-cli",
     "build",
     "coverage",

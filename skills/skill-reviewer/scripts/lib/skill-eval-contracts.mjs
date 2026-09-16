@@ -8,6 +8,7 @@ export const EXECUTION_CONTRACT = "skill-reviewer.executor-execution";
 export const DISPATCH_RECEIPT_CONTRACT = "skill-reviewer.dispatch-receipt";
 export const TRACE_EVENT_CONTRACT = "skill-reviewer.agent-trace-event";
 export const SEMANTIC_JUDGMENT_CONTRACT = "skill-reviewer.semantic-judgment";
+export const SEMANTIC_JUDGE_RUN_CONTRACT = "skill-reviewer.semantic-judge-run";
 export const DASHBOARD_CONTRACT = "skill-reviewer.dashboard-data";
 export const DASHBOARD_DIFF_CONTRACT = "skill-reviewer.dashboard-diff";
 export const DASHBOARD_SESSION_CONTRACT = "skill-reviewer.dashboard-session";

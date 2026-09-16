@@ -13,6 +13,7 @@ coverage/
 # Local agent and skill-manager state
 /.agent/
 /.agents/
+/.claude/
 /skills-lock.json
 
 # Python caches
@@ -42,5 +43,6 @@ skill-reviewer-workspace/
 !/docs/architecture.md
 !/docs/validation.md
 !/docs/agent-trace-protocols.md
+!/docs/self-eval-runbook.md
 /diagrams/
 /output/

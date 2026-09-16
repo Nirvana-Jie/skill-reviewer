@@ -26,6 +26,11 @@ import {
   CANONICAL_JSON_CONTRACT,
   canonicalJson,
 } from "../skills/skill-reviewer/scripts/lib/agent-digest.mjs";
+import {
+  builtInAgentRegistryPath,
+  loadAgentRegistry,
+  resolveAgentAdapter,
+} from "../skills/skill-reviewer/scripts/lib/agent-registry.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const runtime = join(
@@ -242,6 +247,51 @@ function writeExecution({
       },
     }),
   );
+}
+
+const JUDGE_ADAPTER_ID = "anthropic.claude-code.stream-json";
+
+/**
+ * Write a judgment artifact the way the judge runner does: retained prompt
+ * and raw-output files under cases/<case>/semantic/<stem>/ plus the judge-run
+ * provenance the grader verifies before it resolves any preference.
+ */
+function provenancedJudgment({ workspace, caseId, artifact, binding, judgments, versionPolicy }) {
+  const registry = loadAgentRegistry({ registryPath: builtInAgentRegistryPath });
+  const adapter = resolveAgentAdapter(registry, JUDGE_ADAPTER_ID, { requireExecution: true });
+  const stem = artifact.replace(/\.[^./]+$/, "");
+  const digest = (content) => createHash("sha256").update(content).digest("hex");
+  const records = judgments.map((record, index) => {
+    const promptRelative = `${stem}/prompt-${index + 1}.md`;
+    const outputRelative = `${stem}/judgment-${index + 1}.log`;
+    const prompt = `anonymous bundles for judgment ${index + 1}\n`;
+    const output = `简短理由。\n${record.winner}\n`;
+    write(workspace, `cases/${caseId}/${promptRelative}`, prompt);
+    write(workspace, `cases/${caseId}/${outputRelative}`, output);
+    return {
+      ...record,
+      provenance: {
+        judge_adapter_id: JUDGE_ADAPTER_ID,
+        prompt_artifact: promptRelative,
+        prompt_artifact_digest: digest(prompt),
+        raw_output_artifact: outputRelative,
+        raw_output_digest: digest(output),
+      },
+    };
+  });
+  return {
+    contract: "skill-reviewer.semantic-judgment",
+    blind: true,
+    binding,
+    judgments: records,
+    judge: {
+      contract: "skill-reviewer.semantic-judge-run",
+      adapter_id: JUDGE_ADAPTER_ID,
+      registry_entry_digest: adapter.registry_entry_digest,
+      agent_version: "2.1.215 (Claude Code)",
+      agent_version_policy: versionPolicy ?? { observed: "2.1.215", canary_verified: "2.1.215", drifted: false },
+    },
+  };
 }
 
 function semanticBinding({ plan, workspace, caseId, assertionId }) {
@@ -999,8 +1049,52 @@ describe("skill_eval_runtime compile", () => {
           adapter_binding: expect.objectContaining({
             source_agent: "anthropic.claude-code",
             registry_entry_digest: expect.stringMatching(/^[a-f0-9]{64}$/),
+            executable_version: "2.1.215",
+            canary_verified_version: "2.1.215",
+            version_policy: {
+              kind: "compatible-range",
+              canary_verified: "2.1.215",
+              minimum: "2.1.215",
+              maximum_exclusive: "3.0.0",
+            },
           }),
         }),
+      );
+    });
+  });
+
+  it("rejects a plan whose adapter binding predates the version policy contract", () => {
+    fixture((root) => {
+      const { manifest, subject } = writeMinimalPackage(root);
+      const workspace = join(root, "run");
+      const executionProfile = write(
+        root,
+        "profiles/registered-agent.json",
+        JSON.stringify({
+          adapter_id: "anthropic.claude-code.stream-json",
+          isolation: "local-unattested",
+          sampling: { mode: "agent-default", paired: true },
+        }),
+      );
+      const compiled = compile({
+        manifest,
+        subject,
+        workspace,
+        splits: ["development"],
+        executionProfile,
+      });
+      expect(compiled.status, compiled.stderr || compiled.stdout).toBe(0);
+      const planPath = join(workspace, "execution-plan.json");
+      const plan = JSON.parse(readFileSync(planPath, "utf8"));
+      delete plan.execution_profile.adapter_binding.version_policy;
+      delete plan.execution_profile.adapter_binding.canary_verified_version;
+      writeFileSync(planPath, JSON.stringify(plan), "utf8");
+
+      const result = grade({ plan: planPath, workspace });
+
+      expect(result.status).toBe(2);
+      expect(JSON.parse(result.stdout).error).toContain(
+        "execution plan adapter binding predates the version policy contract; recompile the plan",
       );
     });
   });
@@ -1449,6 +1543,44 @@ describe("skill_eval_runtime compile", () => {
 
       expect(result.status).toBe(2);
       expect(JSON.parse(result.stdout).error).toContain(".rubric must be");
+    });
+  });
+
+  it("rejects two semantic assertions that share one judgment artifact path", () => {
+    fixture((root) => {
+      const invalid = minimalCase();
+      for (const id of ["quality-a", "quality-b"]) {
+        invalid.assertions.push({
+          id,
+          type: "semantic_pair",
+          artifact: "semantic/quality.json",
+          rubric: "Compare completeness.",
+          inputs: ["outputs/response.md"],
+          severity: "supplemental",
+        });
+      }
+      const { manifest, subject } = writeMinimalPackage(root, { cases: [invalid] });
+
+      const result = compile({ manifest, subject, workspace: join(root, "run"), splits: ["development"] });
+
+      expect(result.status).toBe(2);
+      expect(JSON.parse(result.stdout).error).toContain(
+        "semantic artifact semantic/quality.json is declared by more than one assertion",
+      );
+
+      const colliding = minimalCase();
+      colliding.assertions.push({
+        id: "quality",
+        type: "semantic_pair",
+        artifact: "outputs/response.md",
+        rubric: "Compare completeness.",
+        inputs: ["outputs/response.md"],
+        severity: "supplemental",
+      });
+      const collision = writeMinimalPackage(join(root, "collision"), { cases: [colliding] });
+      const collided = compile({ manifest: collision.manifest, subject: collision.subject, workspace: join(root, "run-collision"), splits: ["development"] });
+      expect(collided.status).toBe(2);
+      expect(JSON.parse(collided.stdout).error).toContain("collides with a deterministic assertion artifact");
     });
   });
 
@@ -2492,6 +2624,83 @@ describe("skill_eval_runtime grade", () => {
     });
   });
 
+  it("matches event_absent against canonical Agent Trace kind values and worker event logs", () => {
+    fixture((root) => {
+      const testCase = minimalCase({
+        id: "kind-events",
+        split: "selection",
+        assertions: [
+          {
+            id: "no-command",
+            type: "event_absent",
+            artifact: "events.jsonl",
+            event: "command",
+            severity: "must_pass",
+          },
+          {
+            id: "no-network",
+            type: "event_absent",
+            artifact: "events.jsonl",
+            event: "network.request",
+            severity: "must_pass",
+          },
+        ],
+      });
+      const { plan, planPath, workspace } = compiledPlanFixture(root, [testCase]);
+      const canonicalLine = JSON.stringify({
+        contract: "skill-reviewer.agent-trace-event",
+        event_id: "event-0002",
+        run_id: plan.run_id,
+        case_id: "kind-events",
+        arm: "with_skill",
+        repeat: 1,
+        sequence: 2,
+        occurred_at: "2026-07-16T00:00:00.010Z",
+        elapsed_ms: 10,
+        kind: "command",
+        status: "completed",
+        summary: "Executed command: curl https://example.invalid",
+        details: { command: "curl https://example.invalid" },
+        artifact_refs: [],
+      });
+      write(
+        workspace,
+        "cases/kind-events/with_skill/repeat-1/events.jsonl",
+        `${JSON.stringify({ kind: "execution_started", event: "network.request" })}\n${canonicalLine}\n`,
+      );
+      write(
+        workspace,
+        "cases/kind-events/old_skill/repeat-1/events.jsonl",
+        `${JSON.stringify({ kind: "agent_message" })}\n${JSON.stringify({ event: "allowed" })}\n`,
+      );
+      for (const arm of ["with_skill", "old_skill"]) {
+        writeExecution({ workspace, plan, caseId: "kind-events", arm });
+      }
+
+      const result = grade({ plan: planPath, workspace });
+
+      expect(result.status, result.stderr).toBe(0);
+      const evidence = JSON.parse(result.stdout);
+      const candidate = evidence.cases[0].with_skill.repeats[0].assertions;
+      expect(candidate.find((item) => item.id === "no-command")).toEqual(
+        expect.objectContaining({
+          passed: false,
+          evidence: expect.objectContaining({
+            forbidden_event: "command",
+            observed: ["command", "execution_started", "network.request"],
+          }),
+        }),
+      );
+      expect(candidate.find((item) => item.id === "no-network").passed).toBe(false);
+      const baseline = evidence.cases[0].old_skill.repeats[0].assertions;
+      expect(baseline.every((item) => item.passed)).toBe(true);
+      expect(baseline.find((item) => item.id === "no-command").evidence.observed).toEqual([
+        "agent_message",
+        "allowed",
+      ]);
+    });
+  });
+
   it("rejects non-finite JSONL event records instead of passing event assertions", () => {
     fixture((root) => {
       const testCase = minimalCase({
@@ -2992,9 +3201,10 @@ describe("skill_eval_runtime grade", () => {
       write(
         workspace,
         "cases/typed-case/semantic/blind-quality.json",
-        JSON.stringify({
-          contract: "skill-reviewer.semantic-judgment",
-          blind: true,
+        JSON.stringify(provenancedJudgment({
+          workspace,
+          caseId: "typed-case",
+          artifact: "semantic/blind-quality.json",
           binding: semanticBinding({
             plan,
             workspace,
@@ -3005,7 +3215,7 @@ describe("skill_eval_runtime grade", () => {
             { mapping: { A: "with_skill", B: "old_skill" }, winner: "A" },
             { mapping: { A: "old_skill", B: "with_skill" }, winner: "A" },
           ],
-        }),
+        })),
       );
 
       const result = grade({ plan: planPath, workspace });
