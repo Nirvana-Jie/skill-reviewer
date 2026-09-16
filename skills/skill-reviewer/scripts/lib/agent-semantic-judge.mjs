@@ -44,6 +44,7 @@ import {
   PLAN_CONTRACT,
   SEMANTIC_ASSERTION_TYPES,
   SEMANTIC_JUDGMENT_CONTRACT,
+  SEMANTIC_JUDGE_RUN_CONTRACT,
 } from "./skill-eval-contracts.mjs";
 import {
   gradeSemanticAssertion,
@@ -51,7 +52,7 @@ import {
 } from "./skill-eval-grading.mjs";
 
 export const SEMANTIC_JUDGE_SUMMARY_CONTRACT = "skill-reviewer.semantic-judge-summary";
-export const SEMANTIC_JUDGE_RUN_CONTRACT = "skill-reviewer.semantic-judge-run";
+export { SEMANTIC_JUDGE_RUN_CONTRACT };
 export const JUDGE_VERDICTS = new Set(["A", "B", "tie"]);
 const CANDIDATE_ARM = "with_skill";
 const DEFAULT_TIMEOUT_SECONDS = 300;
@@ -288,6 +289,7 @@ async function runOneJudgment({
     model: typeof parsed.model === "string" ? redactText(parsed.model, credentials) : null,
     prompt_artifact: promptRelative,
     prompt_digest: promptDigest,
+    prompt_artifact_digest: sha256(`${redactedPrompt}\n`),
     raw_output_artifact: outputRelative,
     raw_output_digest: sha256(redactedStdout),
     argv_digest: sha256(canonicalJson([judge.executable.path, ...prepared.args])),
@@ -357,7 +359,12 @@ export async function runSemanticJudge({
     environment.values,
   );
   const agentVersion = probeVersion(executable.path, resolvedWorkspace, environment.values);
-  assertSupportedAgentVersion(registryAdapter, agentVersion);
+  const versionEvaluation = assertSupportedAgentVersion(registryAdapter, agentVersion);
+  const agentVersionPolicy = {
+    observed: versionEvaluation?.observed ?? null,
+    canary_verified: versionEvaluation?.canary_verified ?? null,
+    drifted: versionEvaluation?.drifted === true,
+  };
   const judge = {
     registryAdapter,
     implementation,
@@ -386,6 +393,10 @@ export async function runSemanticJudge({
       (assertion) => plainObject(assertion) && SEMANTIC_ASSERTION_TYPES.has(assertion.type),
     );
     if (semanticAssertions.length === 0) continue;
+    const declaredArtifacts = semanticAssertions.map((assertion) => String(assertion.artifact));
+    if (new Set(declaredArtifacts).size !== declaredArtifacts.length) {
+      throw new ManifestError(`case ${caseId} declares the same semantic artifact for more than one assertion`);
+    }
     const caseRoot = safeArtifact(resolvedWorkspace, `cases/${caseId}`);
     for (const assertion of semanticAssertions) {
       const entry = { case: caseId, assertion: String(assertion.id), artifact: String(assertion.artifact) };
@@ -478,6 +489,7 @@ export async function runSemanticJudge({
           timeout_seconds: judge.timeoutSeconds,
           cost_limit_usd: costLimitUsd ?? null,
           semantic_grader_contract_digest: binding.semantic_grader_contract_digest,
+          agent_version_policy: agentVersionPolicy,
           presentation: "anonymous-bundles-order-swapped",
           started_at: runStartedAt,
           finished_at: now(),
@@ -486,6 +498,7 @@ export async function runSemanticJudge({
       const graded = gradeSemanticAssertion({
         runId: String(plan.run_id),
         authority: plan.authority ?? {},
+        executionProfile: plan.execution_profile ?? null,
         case: evalCase,
         assertion,
         caseRoot,

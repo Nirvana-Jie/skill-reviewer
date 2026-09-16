@@ -427,7 +427,7 @@ export function validateAssertions(assertions, label) {
     throw new ManifestError(`${label} must be a non-empty array`);
   }
   const seen = new Set();
-  return assertions.map((rawAssertion, index) => {
+  const normalized = assertions.map((rawAssertion, index) => {
     const assertionLabel = `${label}[${index}]`;
     if (!plainObject(rawAssertion)) throw new ManifestError(`${assertionLabel} must be an object`);
     let assertion = { ...rawAssertion };
@@ -524,6 +524,25 @@ export function validateAssertions(assertions, label) {
     }
     return { ...assertion, artifact, severity };
   });
+  // A semantic judgment artifact is written once per assertion by the judge
+  // runner; two assertions sharing a path would overwrite each other and leave
+  // one binding stale, and a path shared with a deterministic artifact would
+  // let a worker output masquerade as a judgment.
+  const semanticArtifacts = new Set();
+  const deterministicArtifacts = new Set(
+    normalized.filter((item) => !SEMANTIC_ASSERTION_TYPES.has(item.type)).map((item) => item.artifact),
+  );
+  for (const item of normalized) {
+    if (!SEMANTIC_ASSERTION_TYPES.has(item.type)) continue;
+    if (semanticArtifacts.has(item.artifact)) {
+      throw new ManifestError(`${label}: semantic artifact ${item.artifact} is declared by more than one assertion`);
+    }
+    if (deterministicArtifacts.has(item.artifact)) {
+      throw new ManifestError(`${label}: semantic artifact ${item.artifact} collides with a deterministic assertion artifact`);
+    }
+    semanticArtifacts.add(item.artifact);
+  }
+  return normalized;
 }
 
 export function validateObjectives(objectives, label) {

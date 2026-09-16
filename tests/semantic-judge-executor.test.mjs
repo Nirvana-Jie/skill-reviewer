@@ -428,13 +428,17 @@ describe("blind semantic judge runner", () => {
         expect(record.provenance.raw_output_digest).toBe(
           createHash("sha256").update(rawOutput).digest("hex"),
         );
-        expect(existsSync(join(artifactBase, record.provenance.prompt_artifact))).toBe(true);
+        const retainedPrompt = readFileSync(join(artifactBase, record.provenance.prompt_artifact));
+        expect(record.provenance.prompt_artifact_digest).toBe(
+          createHash("sha256").update(retainedPrompt).digest("hex"),
+        );
       });
       expect(judgment.judge).toEqual(
         expect.objectContaining({
           contract: "skill-reviewer.semantic-judge-run",
           adapter_id: "anthropic.claude-code.stream-json",
           presentation: "anonymous-bundles-order-swapped",
+          agent_version_policy: { observed: "2.1.215", canary_verified: "2.1.215", drifted: false },
         }),
       );
 
@@ -749,6 +753,54 @@ describe("blind semantic judge runner", () => {
         }),
       );
       expect(existsSync(judgmentArtifact(workspace))).toBe(false);
+    });
+  }, 60_000);
+  it("records in-range judge version drift and grades it as a limitation", () => {
+    fixture("skill-reviewer-judge-drift-", (root) => {
+      const { workspace, judgeBin, judgeDir } = preparedRun(root);
+      const driftedJudge = join(root, "drifted-fake-judge.mjs");
+      writeFileSync(driftedJudge, readFileSync(judgeBin, "utf8").replace("2.1.215 (Claude Code)", "2.1.273 (Claude Code)"));
+      chmodSync(driftedJudge, 0o755);
+
+      expectSuccess(judge({ workspace, judgeBin: driftedJudge, judgeDir, answers: "A,B" }), "drifted semantic judge");
+
+      const judgment = JSON.parse(readFileSync(judgmentArtifact(workspace), "utf8"));
+      expect(judgment.judge.agent_version_policy).toEqual({ observed: "2.1.273", canary_verified: "2.1.215", drifted: true });
+      const evidence = grade(workspace);
+      expect(evidence.cases[0].semantic_assertions[0]).toEqual(
+        expect.objectContaining({
+          status: "agreement",
+          judge_version_drift: { observed: "2.1.273", canary_verified: "2.1.215", adapter: "anthropic.claude-code.stream-json" },
+        }),
+      );
+      expect(evidence.limitations).toContain(
+        `semantic judge version 2.1.273 differs from canary-verified 2.1.215 for adapter anthropic.claude-code.stream-json in case ${CASE_ID}`,
+      );
+    });
+  }, 60_000);
+
+  it("invalidates a judgment whose retained provenance was removed or replaced", () => {
+    fixture("skill-reviewer-judge-provenance-", (root) => {
+      const { workspace, judgeBin, judgeDir } = preparedRun(root);
+      expectSuccess(judge({ workspace, judgeBin, judgeDir, answers: "A,B" }), "semantic judge");
+      const scratch = join(workspace, "cases", CASE_ID, "semantic/blind-quality");
+
+      writeFileSync(join(scratch, "judgment-1.log"), "edited after judging\n");
+      expect(grade(workspace).cases[0].semantic_assertions[0]).toEqual(
+        expect.objectContaining({ status: "invalid", reason: "semantic judgment 1 retained raw_output_artifact does not match its recorded digest" }),
+      );
+
+      rmSync(join(scratch, "prompt-2.md"));
+      const evidence = grade(workspace);
+      expect(evidence.cases[0].semantic_assertions[0].status).toBe("invalid");
+      expect(evidence.limitations).toContain(`semantic evidence invalid in case ${CASE_ID}`);
+
+      const handcrafted = JSON.parse(readFileSync(judgmentArtifact(workspace), "utf8"));
+      delete handcrafted.judge;
+      writeFileSync(judgmentArtifact(workspace), JSON.stringify(handcrafted));
+      expect(grade(workspace).cases[0].semantic_assertions[0]).toEqual(
+        expect.objectContaining({ status: "invalid", reason: "semantic judgment lacks judge-run provenance" }),
+      );
     });
   }, 60_000);
 });

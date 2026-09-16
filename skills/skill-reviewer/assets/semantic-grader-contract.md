@@ -18,5 +18,7 @@ this file or model-facing Skill references.
   the official mapped judgment and binds it to run, case, assertion, authority
   digest, contract digest, rubric digest, declared paths, paired repeats,
   artifact digests, and producing Trace event IDs.
-- Missing, stale, malformed, unbound, non-blind, or non-swapped evidence cannot
-  support a semantic preference.
+- Missing, stale, malformed, unbound, unprovenanced, non-blind, or non-swapped
+  evidence cannot support a semantic preference: the grader verifies the judge
+  run contract, registry digest, and retained prompt and raw-output digests,
+  and records judge version drift as a limitation.

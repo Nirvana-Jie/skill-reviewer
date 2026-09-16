@@ -157,7 +157,11 @@ static quality or self-generated tasks as downstream utility; and
 repeat variability rather than only a mean. `semantic_pair` remains an
 order-swapped advisory explanation because LLM judges are not ground truth; a
 missing, stale, or disagreeing supplemental judgment adds a limitation but does
-not override complete deterministic paired evidence.
+not override complete deterministic paired evidence. The grader accepts a
+judgment only with the judge runner's provenance (judge-run contract, registry
+entry digest, retained prompt and raw-output digests), rejects two semantic
+assertions that share one artifact path at compile time, and records judge
+version drift from the canary-verified CLI as a limitation.
 
 ### Dashboard interface
 

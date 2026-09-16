@@ -128,7 +128,8 @@ produced by the judge runner after every paired cell executed, before `grade`:
 node scripts/run_semantic_judge.mjs --workspace <workspace> --adapter <id>
 ```
 
-Disagreement or stale binding cannot support a preference. It is always
+Disagreement, stale binding, or missing judge provenance cannot support a
+preference; judge version drift is retained as a limitation. It is always
 supplemental: failure adds a limitation but never weakens complete
 deterministic paired evidence or enters the mechanical release gate.
 

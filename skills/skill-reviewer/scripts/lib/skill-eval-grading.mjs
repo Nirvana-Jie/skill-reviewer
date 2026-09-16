@@ -41,8 +41,10 @@ import {
   SEMANTIC_JUDGMENT_CONTRACT,
   TRACE_EVENT_CONTRACT,
   VERIFICATION_CONTRACT,
+  SEMANTIC_JUDGE_RUN_CONTRACT,
 } from "./skill-eval-contracts.mjs";
 import { evaluateVersionPolicy } from "./agent-version-policy.mjs";
+import { builtInAgentRegistryPath, loadAgentRegistry, resolveAgentAdapter } from "./agent-registry.mjs";
 import { declaredAssertionArtifacts } from "./skill-eval-evidence.mjs";
 import {
   assessRuntimeMeasurement,
@@ -1528,9 +1530,56 @@ export function semanticJudgmentBinding({
   };
 }
 
+function semanticProvenanceError({ judgment, executionProfile, caseRoot }) {
+  const judge = judgment.judge;
+  if (!plainObject(judge)) return "semantic judgment lacks judge-run provenance";
+  if (judge.contract !== SEMANTIC_JUDGE_RUN_CONTRACT) return "semantic judgment judge-run contract is invalid";
+  if (typeof judge.adapter_id !== "string" || judge.adapter_id === "") return "semantic judgment judge adapter id is invalid";
+  if (typeof judge.registry_entry_digest !== "string" || !/^[a-f0-9]{64}$/.test(judge.registry_entry_digest)) return "semantic judgment judge registry digest is invalid";
+  if (typeof judge.agent_version !== "string" || judge.agent_version.trim() === "") return "semantic judgment judge version is invalid";
+  const policy = judge.agent_version_policy;
+  if (!plainObject(policy) || typeof policy.drifted !== "boolean" || typeof policy.canary_verified !== "string" || (policy.observed !== null && typeof policy.observed !== "string")) {
+    return "semantic judgment judge version policy evaluation is invalid";
+  }
+  const lockedAdapterId = plainObject(executionProfile) ? executionProfile.adapter_id : undefined;
+  const lockedRegistryDigest = plainObject(executionProfile) && plainObject(executionProfile.adapter_binding)
+    ? executionProfile.adapter_binding.registry_entry_digest
+    : undefined;
+  let expectedRegistryDigest = null;
+  if (judge.adapter_id === lockedAdapterId && typeof lockedRegistryDigest === "string") {
+    expectedRegistryDigest = lockedRegistryDigest;
+  } else {
+    try {
+      const registry = loadAgentRegistry({ registryPath: builtInAgentRegistryPath });
+      expectedRegistryDigest = resolveAgentAdapter(registry, judge.adapter_id, { requireExecution: true }).registry_entry_digest;
+    } catch {
+      return `semantic judgment judge adapter ${judge.adapter_id} is not an implemented registry adapter`;
+    }
+  }
+  if (judge.registry_entry_digest !== expectedRegistryDigest) return "semantic judgment judge registry digest does not match the registry entry";
+  for (const [index, record] of judgment.judgments.entries()) {
+    const provenance = plainObject(record) ? record.provenance : null;
+    if (!plainObject(provenance)) return `semantic judgment ${index + 1} lacks provenance`;
+    if (provenance.judge_adapter_id !== judge.adapter_id) return `semantic judgment ${index + 1} provenance names a different judge adapter`;
+    for (const [artifactField, digestField] of [["prompt_artifact", "prompt_artifact_digest"], ["raw_output_artifact", "raw_output_digest"]]) {
+      let retainedPath;
+      try {
+        retainedPath = safeArtifact(caseRoot, requireString(provenance[artifactField], `semantic judgment ${index + 1}.${artifactField}`));
+      } catch (error) {
+        if (!(error instanceof ManifestError)) throw error;
+        return `semantic judgment ${index + 1} ${artifactField} is invalid`;
+      }
+      if (!isFile(retainedPath)) return `semantic judgment ${index + 1} retained ${artifactField} is missing`;
+      if (sha256File(retainedPath) !== provenance[digestField]) return `semantic judgment ${index + 1} retained ${artifactField} does not match its recorded digest`;
+    }
+  }
+  return null;
+}
+
 export function gradeSemanticAssertion({
   runId,
   authority,
+  executionProfile = null,
   case: evalCase,
   assertion,
   caseRoot,
@@ -1564,6 +1613,16 @@ export function gradeSemanticAssertion({
   if (judgment.contract !== SEMANTIC_JUDGMENT_CONTRACT || judgment.blind !== true || !Array.isArray(judgments) || judgments.length !== 2) {
     return { ...base, status: "invalid", passed: false, preference: null, reason: "semantic evidence must contain two blind swapped-order judgments" };
   }
+  const provenanceError = semanticProvenanceError({ judgment, executionProfile, caseRoot });
+  if (provenanceError !== null) return { ...base, status: "invalid", passed: false, preference: null, reason: provenanceError };
+  const policy = judgment.judge.agent_version_policy;
+  base = {
+    ...base,
+    judge_adapter_id: judgment.judge.adapter_id,
+    judge_version_drift: policy.drifted
+      ? { observed: policy.observed, canary_verified: policy.canary_verified, adapter: judgment.judge.adapter_id }
+      : null,
+  };
   const resolved = [];
   const mappings = [];
   const expected = new Set([candidateArm, baselineArm]);
@@ -1711,6 +1770,7 @@ export function gradeRun({ planPath, workspace, persist = true }) {
       .map((assertion) => gradeSemanticAssertion({
         runId: String(plan.run_id),
         authority: plan.authority ?? {},
+        executionProfile: plan.execution_profile ?? null,
         case: evalCase,
         assertion,
         caseRoot: join(workspace, "cases", String(evalCase.id)),
@@ -1750,6 +1810,11 @@ export function gradeRun({ planPath, workspace, persist = true }) {
     if (directionDisagreement) limitations.push(`paired repeat effects vary in direction for case ${evalCase.id}`);
     for (const reason of measurement.reasons ?? []) limitations.push(`measurement validity failed in case ${evalCase.id}: ${reason}`);
     for (const semanticResult of semanticAssertions) {
+      const judgeDrift = semanticResult.judge_version_drift;
+      if (plainObject(judgeDrift)) {
+        const limitation = `semantic judge version ${judgeDrift.observed} differs from canary-verified ${judgeDrift.canary_verified} for adapter ${judgeDrift.adapter} in case ${evalCase.id}`;
+        if (!limitations.includes(limitation)) limitations.push(limitation);
+      }
       if (semanticResult.passed) continue;
       if (semanticResult.status === "disagreement") limitations.push(`semantic judge disagreement in case ${evalCase.id}`);
       else if (semanticResult.status === "missing") limitations.push(`semantic evidence missing in case ${evalCase.id}`);

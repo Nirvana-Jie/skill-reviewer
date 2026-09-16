@@ -26,6 +26,11 @@ import {
   CANONICAL_JSON_CONTRACT,
   canonicalJson,
 } from "../skills/skill-reviewer/scripts/lib/agent-digest.mjs";
+import {
+  builtInAgentRegistryPath,
+  loadAgentRegistry,
+  resolveAgentAdapter,
+} from "../skills/skill-reviewer/scripts/lib/agent-registry.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const runtime = join(
@@ -242,6 +247,51 @@ function writeExecution({
       },
     }),
   );
+}
+
+const JUDGE_ADAPTER_ID = "anthropic.claude-code.stream-json";
+
+/**
+ * Write a judgment artifact the way the judge runner does: retained prompt
+ * and raw-output files under cases/<case>/semantic/<stem>/ plus the judge-run
+ * provenance the grader verifies before it resolves any preference.
+ */
+function provenancedJudgment({ workspace, caseId, artifact, binding, judgments, versionPolicy }) {
+  const registry = loadAgentRegistry({ registryPath: builtInAgentRegistryPath });
+  const adapter = resolveAgentAdapter(registry, JUDGE_ADAPTER_ID, { requireExecution: true });
+  const stem = artifact.replace(/\.[^./]+$/, "");
+  const digest = (content) => createHash("sha256").update(content).digest("hex");
+  const records = judgments.map((record, index) => {
+    const promptRelative = `${stem}/prompt-${index + 1}.md`;
+    const outputRelative = `${stem}/judgment-${index + 1}.log`;
+    const prompt = `anonymous bundles for judgment ${index + 1}\n`;
+    const output = `简短理由。\n${record.winner}\n`;
+    write(workspace, `cases/${caseId}/${promptRelative}`, prompt);
+    write(workspace, `cases/${caseId}/${outputRelative}`, output);
+    return {
+      ...record,
+      provenance: {
+        judge_adapter_id: JUDGE_ADAPTER_ID,
+        prompt_artifact: promptRelative,
+        prompt_artifact_digest: digest(prompt),
+        raw_output_artifact: outputRelative,
+        raw_output_digest: digest(output),
+      },
+    };
+  });
+  return {
+    contract: "skill-reviewer.semantic-judgment",
+    blind: true,
+    binding,
+    judgments: records,
+    judge: {
+      contract: "skill-reviewer.semantic-judge-run",
+      adapter_id: JUDGE_ADAPTER_ID,
+      registry_entry_digest: adapter.registry_entry_digest,
+      agent_version: "2.1.215 (Claude Code)",
+      agent_version_policy: versionPolicy ?? { observed: "2.1.215", canary_verified: "2.1.215", drifted: false },
+    },
+  };
 }
 
 function semanticBinding({ plan, workspace, caseId, assertionId }) {
@@ -1493,6 +1543,44 @@ describe("skill_eval_runtime compile", () => {
 
       expect(result.status).toBe(2);
       expect(JSON.parse(result.stdout).error).toContain(".rubric must be");
+    });
+  });
+
+  it("rejects two semantic assertions that share one judgment artifact path", () => {
+    fixture((root) => {
+      const invalid = minimalCase();
+      for (const id of ["quality-a", "quality-b"]) {
+        invalid.assertions.push({
+          id,
+          type: "semantic_pair",
+          artifact: "semantic/quality.json",
+          rubric: "Compare completeness.",
+          inputs: ["outputs/response.md"],
+          severity: "supplemental",
+        });
+      }
+      const { manifest, subject } = writeMinimalPackage(root, { cases: [invalid] });
+
+      const result = compile({ manifest, subject, workspace: join(root, "run"), splits: ["development"] });
+
+      expect(result.status).toBe(2);
+      expect(JSON.parse(result.stdout).error).toContain(
+        "semantic artifact semantic/quality.json is declared by more than one assertion",
+      );
+
+      const colliding = minimalCase();
+      colliding.assertions.push({
+        id: "quality",
+        type: "semantic_pair",
+        artifact: "outputs/response.md",
+        rubric: "Compare completeness.",
+        inputs: ["outputs/response.md"],
+        severity: "supplemental",
+      });
+      const collision = writeMinimalPackage(join(root, "collision"), { cases: [colliding] });
+      const collided = compile({ manifest: collision.manifest, subject: collision.subject, workspace: join(root, "run-collision"), splits: ["development"] });
+      expect(collided.status).toBe(2);
+      expect(JSON.parse(collided.stdout).error).toContain("collides with a deterministic assertion artifact");
     });
   });
 
@@ -3113,9 +3201,10 @@ describe("skill_eval_runtime grade", () => {
       write(
         workspace,
         "cases/typed-case/semantic/blind-quality.json",
-        JSON.stringify({
-          contract: "skill-reviewer.semantic-judgment",
-          blind: true,
+        JSON.stringify(provenancedJudgment({
+          workspace,
+          caseId: "typed-case",
+          artifact: "semantic/blind-quality.json",
           binding: semanticBinding({
             plan,
             workspace,
@@ -3126,7 +3215,7 @@ describe("skill_eval_runtime grade", () => {
             { mapping: { A: "with_skill", B: "old_skill" }, winner: "A" },
             { mapping: { A: "old_skill", B: "with_skill" }, winner: "A" },
           ],
-        }),
+        })),
       );
 
       const result = grade({ plan: planPath, workspace });
