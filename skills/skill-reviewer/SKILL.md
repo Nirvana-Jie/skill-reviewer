@@ -183,11 +183,15 @@ Before returning, ensure that:
 - `references/verification-workflow.md` — explicit behavior verification and
   optional Dashboard launch.
 - `references/evolution-workflow.md` — bounded candidate search and audit.
-- `evals/evals.json` — executable cases and objectives.
+- `evals/evals.json` — compile-time Eval authority: executable cases,
+  assertions, and objectives. It is deliberately absent from Eval-worker
+  snapshots; a worker never reads it.
 - `scripts/skill_eval_runtime.mjs` — compile, grade, decide, evolve, and project.
 - `assets/agent-adapter-registry.json` — source identity, protocol evidence,
   executable support, and locked adapter profiles.
 - `scripts/run_agent_eval.mjs` — generic local Agent plan/cell execution.
+- `scripts/run_semantic_judge.mjs` — blind, order-swapped `semantic_pair`
+  judgments; advisory only.
 - `assets/dashboard-ui-bundle.json` — pinned optional UI artifact.
 
 When prose and an executable contract disagree, the executable contract blocks

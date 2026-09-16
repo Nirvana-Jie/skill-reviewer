@@ -137,7 +137,7 @@ import { writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
 const wait = (milliseconds) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 if (args.length === 1 && args[0] === "--version") {
-  process.stdout.write("2.1.215 (Claude Code)\n");
+  process.stdout.write((process.env.FAKE_CLAUDE_VERSION ?? "2.1.215 (Claude Code)") + "\n");
   process.exit(0);
 }
 if (process.env.FAKE_CLAUDE_ARGV) writeFileSync(process.env.FAKE_CLAUDE_ARGV, JSON.stringify(args));
@@ -147,7 +147,7 @@ if (process.env.FAKE_CLAUDE_COMPLETED) writeFileSync(process.env.FAKE_CLAUDE_COM
 
 const credential = process.env.SKILL_REVIEWER_TEST_CREDENTIAL;
 const events = [
-  { type: "system", subtype: "init", session_id: "session-real-stream", model: "claude-test", tools: ["Read"] },
+  { type: "system", subtype: "init", session_id: "session-real-stream", model: process.env.FAKE_CLAUDE_MODEL ?? "claude-test", tools: ["Read"] },
   { type: "assistant", message: { content: [
     { type: "thinking", thinking: "PRIVATE_CHAIN_OF_THOUGHT" },
     { type: "tool_use", id: "tool-1", name: "Read", input: { file_path: "SKILL.md" } },
@@ -330,6 +330,28 @@ describe("local Claude Code eval executor", () => {
           "--disable-slash-commands",
         ]),
       );
+      const traceEvents = trace.split("\n").filter(Boolean).map((line) => JSON.parse(line));
+      const isolationEvent = traceEvents.find(
+        (event) => event.summary === "Execution harness configured Agent isolation",
+      );
+      expect(isolationEvent.details).toEqual(
+        expect.objectContaining({
+          safe_mode: true,
+          customizations_disabled: true,
+          customizations_disabled_by: "--safe-mode",
+          managed_settings_still_apply: true,
+          allowed_tools: ["Read"],
+          isolation_claim: "local-unattested",
+        }),
+      );
+      expect(isolationEvent.details.customizations_disabled_scope).toEqual(
+        expect.arrayContaining(["skills", "hooks", "mcp-servers", "plugins"]),
+      );
+      const prompt = JSON.parse(readFileSync(argvLog, "utf8")).at(-1);
+      expect(prompt).not.toContain("不要递归启动完整的 review/evolution 流程");
+      expect(prompt).toContain("包括用户任务要求的完整 review");
+      expect(prompt).toContain("不要嵌套启动 Verify/Evolve 评测流程");
+      expect(prompt).toContain("outputs/response.md，你的最终可见答复本身就是该产物");
 
       const graded = run(node, [
         runtime,
@@ -343,6 +365,115 @@ describe("local Claude Code eval executor", () => {
       const evidence = JSON.parse(graded.stdout);
       expect(evidence.cases[0].with_skill.passed).toBe(true);
       expect(evidence.cases[0].without_skill.passed).toBe(true);
+      for (const arm of ["with_skill", "without_skill"]) {
+        expect(evidence.cases[0][arm].repeats[0]).toEqual(
+          expect.objectContaining({
+            agent_version: "2.1.215 (Claude Code)",
+            agent_version_drift: null,
+            agent_model: "claude-test",
+          }),
+        );
+      }
+      expect(evidence.limitations.filter((item) => /^agent (?:version|model) /.test(item))).toEqual([]);
+    } finally {
+      makeWritable(root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("runs an in-range drifted Agent version and records drift and model provenance", () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-claude-drift-"));
+    try {
+      const { workspace } = compileRun(root);
+      const fakeClaude = makeFakeClaude(root);
+      for (const [arm, model] of [["with_skill", "model-a"], ["without_skill", "model-b"]]) {
+        const result = run(
+          node,
+          [
+            executor,
+            "--workspace",
+            workspace,
+            "--assignment",
+            assignment(workspace, arm),
+            "--agent-bin",
+            fakeClaude,
+            "--pass-env",
+            "FAKE_CLAUDE_VERSION",
+            "--pass-env",
+            "FAKE_CLAUDE_MODEL",
+          ],
+          { env: { FAKE_CLAUDE_VERSION: "2.1.273 (Claude Code)", FAKE_CLAUDE_MODEL: model } },
+        );
+        expectSuccess(result, `${arm} drifted Claude execution`);
+      }
+      const graded = run(node, [
+        runtime,
+        "grade",
+        "--plan",
+        join(workspace, "execution-plan.json"),
+        "--workspace",
+        workspace,
+      ]);
+      expectSuccess(graded, "grade drifted Claude run");
+      const evidence = JSON.parse(graded.stdout);
+      // Drift must not invalidate the binding: the cell stays complete and passing.
+      expect(evidence.cases[0].with_skill.complete).toBe(true);
+      expect(evidence.cases[0].with_skill.binding_errors).toEqual([]);
+      expect(evidence.cases[0].with_skill.passed).toBe(true);
+      expect(evidence.limitations.filter((item) => item.startsWith("execution binding invalid"))).toEqual([]);
+      expect(evidence.cases[0].with_skill.repeats[0]).toEqual(
+        expect.objectContaining({
+          agent_version: "2.1.273 (Claude Code)",
+          agent_version_drift: {
+            adapter: "anthropic.claude-code.stream-json",
+            observed: "2.1.273",
+            canary_verified: "2.1.215",
+          },
+          agent_model: "model-a",
+        }),
+      );
+      expect(evidence.cases[0].without_skill.repeats[0].agent_model).toBe("model-b");
+      expect(evidence.limitations).toContain(
+        "agent version 2.1.273 differs from canary-verified 2.1.215 for adapter anthropic.claude-code.stream-json",
+      );
+      expect(evidence.limitations).toContain(
+        "agent model differs across cells in case observable-agent-trace: model-a, model-b",
+      );
+    } finally {
+      makeWritable(root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("fails closed before dispatch for a prerelease or out-of-range Agent version", () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-claude-bad-version-"));
+    try {
+      const { workspace } = compileRun(root);
+      const fakeClaude = makeFakeClaude(root);
+      for (const version of ["2.1.215-beta.1 (Claude Code)", "3.0.0 (Claude Code)", "2.1.214 (Claude Code)"]) {
+        const result = run(
+          node,
+          [
+            executor,
+            "--workspace",
+            workspace,
+            "--assignment",
+            assignment(workspace, "with_skill"),
+            "--agent-bin",
+            fakeClaude,
+            "--pass-env",
+            "FAKE_CLAUDE_VERSION",
+          ],
+          { env: { FAKE_CLAUDE_VERSION: version } },
+        );
+        expect(result.status, version).toBe(2);
+        expect(result.stderr, version).toContain(
+          "does not satisfy the adapter version policy (compatible range [2.1.215, 3.0.0) canary-verified 2.1.215)",
+        );
+      }
+      expect(
+        existsSync(join(workspace, "cases/observable-agent-trace/with_skill/repeat-1/dispatch-receipt.json")),
+      ).toBe(false);
     } finally {
       makeWritable(root);
       rmSync(root, { recursive: true, force: true });

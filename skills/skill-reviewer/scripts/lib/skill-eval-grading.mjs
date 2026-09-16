@@ -42,6 +42,7 @@ import {
   TRACE_EVENT_CONTRACT,
   VERIFICATION_CONTRACT,
 } from "./skill-eval-contracts.mjs";
+import { evaluateVersionPolicy } from "./agent-version-policy.mjs";
 import { declaredAssertionArtifacts } from "./skill-eval-evidence.mjs";
 import {
   assessRuntimeMeasurement,
@@ -500,6 +501,7 @@ function validateSourceTrace({
   expectedBinding,
 }) {
   const errors = [];
+  const observations = { agent_version: null, version_drift: null };
   const lockedArtifact = assignment.source_trace_artifact;
   const expectedArtifact = lockedArtifact !== undefined && lockedArtifact !== null
     ? validateArtifactPath(lockedArtifact, "assignment.source_trace_artifact")
@@ -561,13 +563,31 @@ function validateSourceTrace({
         if (runtimeBinding.registry_entry_digest !== expectedBinding.registry_entry_digest) errors.push("Agent runtime binding registry digest is stale");
         if (runtimeBinding.agent_version !== descriptor.agent_version) errors.push("source trace agent_version does not match the Agent runtime binding");
         if (runtimeBinding.executable_digest !== descriptor.executable_digest) errors.push("source trace executable_digest does not match the Agent runtime binding");
-        const expectedVersion = expectedBinding.executable_version;
         const observedVersion = runtimeBinding.agent_version;
-        const versionPattern = typeof expectedVersion === "string"
-          ? new RegExp(`(?:^|[^0-9A-Za-z.])${escapeRegExp(expectedVersion)}(?:$|[^0-9A-Za-z.])`)
-          : null;
-        if (typeof expectedVersion !== "string" || typeof observedVersion !== "string" || !versionPattern.test(observedVersion)) {
-          errors.push("Agent runtime binding version is outside the locked adapter contract");
+        if (typeof observedVersion === "string" && observedVersion.trim() !== "") observations.agent_version = observedVersion;
+        if (!plainObject(expectedBinding.version_policy) || typeof expectedBinding.canary_verified_version !== "string") {
+          errors.push("locked adapter binding predates the version policy contract; recompile the plan against the current registry");
+        } else {
+          let evaluation = null;
+          try {
+            evaluation = evaluateVersionPolicy(expectedBinding.version_policy, observedVersion);
+          } catch (error) {
+            errors.push(`locked adapter binding version policy is invalid: ${error.message}`);
+          }
+          if (evaluation !== null) {
+            if (evaluation.canary_verified !== expectedBinding.canary_verified_version || evaluation.canary_verified !== expectedBinding.executable_version) {
+              errors.push("locked adapter binding canary-verified version is inconsistent with its version policy");
+            }
+            if (!evaluation.satisfied) {
+              errors.push(`Agent runtime binding version is outside the locked adapter contract: ${evaluation.reason}`);
+            } else if (evaluation.drifted) {
+              observations.version_drift = {
+                adapter: expectedAdapter,
+                observed: evaluation.observed,
+                canary_verified: evaluation.canary_verified,
+              };
+            }
+          }
         }
         for (const field of ["registry_entry_digest", "executable_digest", "environment_names_digest"]) {
           if (typeof runtimeBinding[field] !== "string" || !/^[a-f0-9]{64}$/.test(runtimeBinding[field])) {
@@ -669,7 +689,16 @@ function validateSourceTrace({
     && SOURCE_TRACE_OPTIONAL_FIELDS.filter((field) => Object.hasOwn(descriptor, field)).every((field) => jsonEqual(event.details[field], descriptor[field])))) {
     errors.push("source trace descriptor is not bound to its artifact event");
   }
-  return [{ ...descriptor, digest: actualDigest }, errors];
+  return [{ ...descriptor, digest: actualDigest }, errors, observations];
+}
+
+function firstObservedModel(traceEvents) {
+  for (const event of traceEvents) {
+    if (!plainObject(event) || !plainObject(event.details)) continue;
+    const model = event.details.model;
+    if (typeof model === "string" && model.trim() !== "") return model;
+  }
+  return null;
 }
 
 function validateAgentTrace({
@@ -1041,10 +1070,6 @@ function failedAssertion(assertionId, assertionType, severity, reason) {
   return { id: assertionId, type: assertionType, severity, passed: false, evidence: { reason } };
 }
 
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 export function gradeAssertion(assertion, repeatRoot) {
   const assertionId = requireString(assertion.id, "assertion.id");
   const assertionType = requireString(assertion.type, "assertion.type");
@@ -1143,7 +1168,9 @@ export function gradeAssertion(assertion, repeatRoot) {
         const record = JSON.parse(line);
         requireFiniteJson(record, `event log line ${index + 1}`);
         if (!plainObject(record)) throw new Error(`line ${index + 1} is not an object`);
+        // Worker-written logs use {"event": ...}; canonical Agent Trace lines use {"kind": ...}.
         if (typeof record.event === "string") observed.push(record.event);
+        if (typeof record.kind === "string") observed.push(record.kind);
       }
     } catch (error) {
       return failedAssertion(assertionId, assertionType, severity, `invalid JSONL event log: ${error.message}`);
@@ -1277,7 +1304,7 @@ export function gradeArm({
       sourceTraceRequired: plainObject(executionProfile.trace?.source),
     });
     repeatBindingErrors.push(...traceErrors);
-    const [sourceTraceDescriptor, sourceTraceErrors] = validateSourceTrace({
+    const [sourceTraceDescriptor, sourceTraceErrors, sourceObservations = {}] = validateSourceTrace({
       workspace,
       repeatRoot,
       descriptor: execution.source_trace,
@@ -1385,6 +1412,9 @@ export function gradeArm({
       assertions,
       required_pass_rate: repeatPassRate,
       metrics,
+      agent_version: sourceObservations.agent_version ?? null,
+      agent_version_drift: sourceObservations.version_drift ?? null,
+      agent_model: firstObservedModel(traceEvents),
     });
   }
   const requiredPassRate = requiredTotal > 0 ? requiredPassed / requiredTotal : 1;
@@ -1447,7 +1477,7 @@ function applyPairedDispatchValidation({ case: evalCase, graded }) {
   }
 }
 
-function semanticJudgmentBinding({
+export function semanticJudgmentBinding({
   runId,
   authority,
   case: evalCase,
@@ -1688,7 +1718,17 @@ export function gradeRun({ planPath, workspace, persist = true }) {
         baselineArm: String(baselineArm),
       }));
     anyIncomplete = anyIncomplete || Object.values(graded).some((result) => !result.complete);
+    const observedModels = new Set();
     for (const [arm, armResult] of Object.entries(graded)) {
+      for (const repeatResult of armResult.repeats ?? []) {
+        if (!plainObject(repeatResult)) continue;
+        if (typeof repeatResult.agent_model === "string") observedModels.add(repeatResult.agent_model);
+        const drift = repeatResult.agent_version_drift;
+        if (plainObject(drift)) {
+          const limitation = `agent version ${drift.observed} differs from canary-verified ${drift.canary_verified} for adapter ${drift.adapter}`;
+          if (!limitations.includes(limitation)) limitations.push(limitation);
+        }
+      }
       if (!armResult.complete) limitations.push(`execution incomplete for case ${evalCase.id} arm ${arm}`);
       if (armResult.forbidden_actions.length > 0) {
         limitations.push(`forbidden action recorded for case ${evalCase.id} arm ${arm}`);
@@ -1699,6 +1739,9 @@ export function gradeRun({ planPath, workspace, persist = true }) {
         if (arm !== "with_skill") anyBaselineSafetyViolation = true;
       }
       if (armResult.binding_errors.length > 0) limitations.push(`execution binding invalid for case ${evalCase.id} arm ${arm}`);
+    }
+    if (observedModels.size > 1) {
+      limitations.push(`agent model differs across cells in case ${evalCase.id}: ${[...observedModels].sort().join(", ")}`);
     }
     if (missingObjectiveMetrics.length > 0) {
       anyIncomplete = true;

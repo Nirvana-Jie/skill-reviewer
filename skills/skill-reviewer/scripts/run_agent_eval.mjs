@@ -7,6 +7,7 @@ import {
   loadAgentRegistry,
   resolveAgentAdapter,
 } from "./lib/agent-registry.mjs";
+import { canaryVerifiedVersion } from "./lib/agent-version-policy.mjs";
 import {
   AgentInterruptedError,
   runAgentCell,
@@ -104,7 +105,10 @@ function adapterCommand(parsed) {
         execution: entry.implementation.execution,
         maturity: entry.implementation.maturity,
         evidence_authority: entry.evidence_authority,
-        executable_version: entry.runtime?.version_policy?.value ?? null,
+        executable_version: entry.runtime?.version_policy
+          ? canaryVerifiedVersion(entry.runtime.version_policy)
+          : null,
+        version_policy: entry.runtime?.version_policy ?? null,
       })),
     };
   }

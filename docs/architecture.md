@@ -50,7 +50,10 @@ branch:
 - bounded evolution workflow.
 
 Machine manifests, source-Agent contracts, Dashboard transport, and long examples
-are not model references.
+are not model references. The output contract also defines the bilingual verdict
+and dimension labels and the `json review-summary` block an Eval worker appends
+to a full review, so every string a `must_pass` predicate requires is learnable
+from the worker-visible snapshot.
 
 The four-file split is intentional progressive disclosure, not a completeness
 inventory: review loads the rubric; response rendering loads the output
@@ -96,8 +99,11 @@ slice has four boundaries:
 
 Adapters are resolved by exact ID from the bundled registry. Arbitrary dynamic
 imports, protocol guessing, and fallback to a lookalike Agent are forbidden.
-Each executable adapter carries an exact, canary-qualified CLI version token;
-version mismatch fails before dispatch. The first cell atomically establishes
+Each executable adapter carries a canary-verified CLI version plus a compatible
+semver range (`version_policy`); a version outside the range, a prerelease or
+build-suffixed token, or a near-match fails before dispatch, while an in-range
+version that differs from the canary-verified one runs and is recorded as a
+limitation in `verification-evidence.json`. The first cell atomically establishes
 `agent-runtime-binding.json` (executable path/digest/version, environment-name
 digest, timeout, and cost limit), and every later cell in that run must match it.
 Hooks remain source-specific supplemental channels and are never merged with a
@@ -203,6 +209,10 @@ false claim that every normal long-running local Agent execution is anomalous.
 | Measurement policy | `lib/skill-eval-measurement.mjs` |
 | Artifact ownership | `lib/skill-eval-evidence.mjs` |
 | Semantic grader machine contract | `assets/semantic-grader-contract.md` |
+| Blind semantic judge runner | `run_semantic_judge.mjs`, `lib/agent-semantic-judge.mjs`, `lib/agent-adapters/<source>-judge.mjs` |
+| Agent CLI version policy (canary-verified + compatible range) | `lib/agent-version-policy.mjs`, registry `runtime.version_policy` |
+| Manifest conformance safety net | `tests/evals-manifest-vectors.test.mjs`, `tests/evals-manifest-compile.test.mjs` |
+| Real-execution record for this package | `docs/validation.md` ledger, `docs/self-eval-runbook.md` |
 | Dashboard bundle identity | `assets/dashboard-ui-bundle.json` |
 | Project Release and Dashboard version identity | `package.json` and `publish-dashboard-bundle.yml` |
 | Dashboard presentation validation | `dashboard-schema.ts` and tests |
@@ -237,8 +247,9 @@ replaced by a pointer to its authority.
   registry entry before an adapter; do not add another top-level runner.
 - Distinguish `researched`, `implemented`, fixture-verified, and canary-verified
   support. Documentation must not collapse these states into “supported”.
-- Re-run the real canary and update the exact version policy before retaining
-  `canary-verified` after an Agent CLI upgrade.
+- Re-run the real canary and advance `canary_verified` in the registry version
+  policy before retaining `canary-verified` after an Agent CLI upgrade; until
+  then in-range drift stays visible as an evidence limitation.
 - Change an authority domain only behind golden contract tests; keep one writer
   per artifact and update the façade and direct-import seam in the same change.
 - A UI migration must fail closed; it cannot invent positive evidence.

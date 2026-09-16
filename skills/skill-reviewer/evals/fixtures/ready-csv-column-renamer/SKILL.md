@@ -26,11 +26,12 @@ If the user wants to filter rows, change values, or convert types, decline and s
 ## Workflow
 
 1. Confirm the target file path and the exact old → new column mappings. If any mapping is ambiguous (e.g. two columns both called `id`), ask exactly once which one they mean.
-2. Read the file's header row only.
+2. Read the file's header row only for validation; the rewrite in step 5 copies every data row unchanged (same delimiter, quoting, and line endings) and replaces only the header line.
 3. Verify every "old name" exists in the header. If any is missing, stop and list the actual header so the user can correct the mapping.
 4. Produce the new header by substituting names positionally; do not reorder columns.
 5. Write the output:
    - If the user said "in place", overwrite the original file.
+   - If the user pasted the CSV content instead of a file, return the renamed CSV in the reply; "in place" and `.bak` do not apply.
    - Otherwise, write to the path the user specified, or to `<original>.renamed.csv` if unspecified.
 6. Report the diff: `old_header → new_header` and the output path.
 

@@ -34,6 +34,22 @@ node -e 'JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(require("no
   skills/skill-reviewer/evals/evals.json
 ```
 
+## Eval-Risk Changes
+
+Paths that decide what passes, what is observed, or what an Eval worker is told
+are eval-risk paths; `AGENTS.md` lists them. For such a change:
+
+1. Keep every `must_pass` text predicate calibrated with at least two boundary
+   pass examples and two boundary fail examples, and add a realistic response
+   for each affected case to `tests/evals-manifest-vectors.test.mjs`.
+2. Run `pnpm test`; it compiles all three splits and grades the vectors.
+3. When the change can alter real worker behavior or grading, run the self-eval
+   runbook (`docs/self-eval-runbook.md`) and append a ledger entry to
+   `docs/validation.md` with run ids, CLI version, model, cell counts, pass
+   rates, and the decision. State `not run` in the pull request when you did
+   not run it; never describe a compile or a static test as a behavior result.
+4. Fill in the eval-risk checklist of the pull request template.
+
 ## Dashboard Release Changes
 
 The Skill Runtime and Dashboard are one versioned compatibility unit. When a

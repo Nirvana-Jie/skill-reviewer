@@ -792,7 +792,7 @@ describe("local Codex eval executor", () => {
 
       expect(result.status).toBe(2);
       expect(result.stderr).toContain(
-        "does not satisfy the pinned adapter version 0.144.5",
+        "does not satisfy the adapter version policy (compatible range [0.144.5, 1.0.0) canary-verified 0.144.5)",
       );
       expect(
         existsSync(
@@ -802,6 +802,85 @@ describe("local Codex eval executor", () => {
           ),
         ),
       ).toBe(false);
+    } finally {
+      makeWritable(root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("executes an in-range Agent version and records drift from the canary as a limitation", () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-reviewer-agent-version-drift-"));
+    try {
+      const { workspace } = compileRun({ root });
+      const fakeAgent = makeFakeCodex(root);
+      for (const arm of ["with_skill", "without_skill"]) {
+        const result = run(
+          node,
+          [
+            executor,
+            "--workspace",
+            workspace,
+            "--assignment",
+            assignment(workspace, arm),
+            "--agent-bin",
+            fakeAgent,
+            "--pass-env",
+            "FAKE_CODEX_VERSION",
+          ],
+          { env: { FAKE_CODEX_VERSION: "codex-cli 0.154.0" } },
+        );
+        expectSuccess(result, `${arm} drifted-version execution`);
+      }
+      const trace = readFileSync(
+        join(workspace, "cases/observable-cli-trace/with_skill/repeat-1/agent-trace.jsonl"),
+        "utf8",
+      )
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+      expect(
+        trace.find((event) => event.summary === "Execution harness verified the Agent version policy"),
+      ).toEqual(
+        expect.objectContaining({
+          kind: "tool_call",
+          status: "completed",
+          details: {
+            adapter_id: "openai.codex-cli.exec-jsonl",
+            agent_version_observed: "0.154.0",
+            agent_version_canary_verified: "0.144.5",
+            agent_version_drifted: true,
+          },
+        }),
+      );
+
+      const graded = run(node, [
+        runtime,
+        "grade",
+        "--plan",
+        join(workspace, "execution-plan.json"),
+        "--workspace",
+        workspace,
+      ]);
+      expectSuccess(graded, "grade drifted-version run");
+      const evidence = JSON.parse(graded.stdout);
+      // Drift must not invalidate the binding: the cell stays complete and passing.
+      expect(evidence.cases[0].with_skill.complete).toBe(true);
+      expect(evidence.cases[0].with_skill.passed).toBe(true);
+      expect(evidence.cases[0].with_skill.binding_errors).toEqual([]);
+      expect(evidence.limitations.filter((item) => item.startsWith("execution binding invalid"))).toEqual([]);
+      expect(evidence.limitations).toContain(
+        "agent version 0.154.0 differs from canary-verified 0.144.5 for adapter openai.codex-cli.exec-jsonl",
+      );
+      expect(evidence.limitations.filter((item) => item.startsWith("agent version "))).toHaveLength(1);
+      const repeat = evidence.cases[0].with_skill.repeats[0];
+      expect(repeat.agent_version).toBe("codex-cli 0.154.0");
+      expect(repeat.agent_version_drift).toEqual({
+        adapter: "openai.codex-cli.exec-jsonl",
+        observed: "0.154.0",
+        canary_verified: "0.144.5",
+      });
+      // The pinned exec JSONL contract carries no model field.
+      expect(repeat.agent_model).toBeNull();
     } finally {
       makeWritable(root);
       rmSync(root, { recursive: true, force: true });

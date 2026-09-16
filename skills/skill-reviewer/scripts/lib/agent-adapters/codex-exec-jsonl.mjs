@@ -50,7 +50,8 @@ function skillConfig(paths) {
     .join(",")}]`;
 }
 
-function isolateSkills({ executable, cwd, environment, runProbe }) {
+/** Disable every ambient Skill a Codex process would otherwise discover. */
+export function isolateSkills({ executable, cwd, environment, runProbe }) {
   const inspect = (config) => {
     const args = ["debug", "prompt-input"];
     if (config !== undefined) args.push("-c", `skills.config=${config}`);
@@ -121,11 +122,18 @@ function mapEvent(event, sourceIndex, repeatRoot) {
   const eventType = event.type;
   const base = { source_event_index: sourceIndex, source_event_type: eventType };
   if (eventType === "thread.started") {
+    // The pinned exec JSONL contract exposes only thread_id here; a model
+    // field is retained when present so provenance can improve without a
+    // parser change, and stays null otherwise.
     return [{
       kind: "tool_call",
       summary: "Agent session started",
       status: "completed",
-      details: { ...base, thread_id: event.thread_id ?? null },
+      details: {
+        ...base,
+        thread_id: event.thread_id ?? null,
+        model: typeof event.model === "string" && event.model ? event.model : null,
+      },
       artifact_refs: [],
     }];
   }

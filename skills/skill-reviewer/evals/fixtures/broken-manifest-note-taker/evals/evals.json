@@ -1,0 +1,62 @@
+{
+  "contract": "skill-reviewer.evals",
+  "skill_name": "note-taker",
+  "defaults": {
+    "permissions": {
+      "network": "deny",
+      "external_side_effects": "deny",
+      "writable_roots": [
+        "outputs"
+      ]
+    },
+    "repeats": {
+      "deterministic": 1,
+      "stochastic": 3
+    },
+    "evolution": {
+      "max_rounds": 3
+    },
+    "case_timeout_seconds": 300
+  },
+  "evals": [
+    {
+      "id": "decisions-are-listed",
+      "purpose": "Decisions from a short transcript are listed.",
+      "split": "release",
+      "prompt": "Turn this transcript into notes: 'Ana: we ship Friday. Bo: I will write the release notes.'",
+      "files": [],
+      "determinism": "stochastic",
+      "sampling": {
+        "repeats": 1,
+        "pairing": "paired"
+      },
+      "assertions": [
+        {
+          "id": "decision-section-present",
+          "type": "text_matches",
+          "artifact": "outputs/response.md",
+          "pattern": "## Decisions\\n- .+ship Friday",
+          "calibration": {
+            "pass_examples": [
+              "## Action items\n- Bo — write release notes — unspecified"
+            ],
+            "fail_examples": [
+              "## Decisions\n- ship Friday"
+            ]
+          },
+          "severity": "must_pass"
+        }
+      ],
+      "objectives": [
+        {
+          "id": "notes-pass-rate",
+          "metric": "required_pass_rate",
+          "direction": "maximize",
+          "primary": true,
+          "min_material_delta": 0,
+          "non_regression_tolerance": 0
+        }
+      ]
+    }
+  ]
+}

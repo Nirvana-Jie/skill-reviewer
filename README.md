@@ -98,6 +98,23 @@ The Trace UI is not tied to Codex. Execution support is adapter-gated and
 source-attributed: Codex CLI and Claude Code are currently canary-verified;
 researched-only Agent formats are not presented as executable support.
 
+## Requirements
+
+- Node.js `^20.19.0 || >=22.12.0`. Review mode needs nothing else.
+- Verify and Evolve dispatch a locally installed Agent CLI through a registered
+  adapter. `skills/skill-reviewer/assets/agent-adapter-registry.json` records, per adapter, the
+  canary-verified CLI version and the compatible version range. Dispatch fails
+  closed outside the range; a version inside the range that differs from the
+  canary-verified one runs, and the difference is retained as a limitation in
+  the verification evidence. Point at a specific executable with
+  `--agent-bin`.
+- The public audit fixtures are calibration only. Release-eligible evidence
+  needs an opaque holdout pack kept outside the repository, as described in the
+  [verification workflow](./skills/skill-reviewer/references/verification-workflow.md).
+- To run this Skill's own Evals against itself, follow
+  [docs/self-eval-runbook.md](./docs/self-eval-runbook.md); results are recorded
+  in the [validation ledger](./docs/validation.md).
+
 ## Local Dashboard
 
 The Dashboard is a read-only decision surface:

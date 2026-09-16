@@ -38,7 +38,7 @@ Agent 是证据来源，不是模型供应商。比如 GitHub Copilot CLI 调用
 | GitHub Copilot CLI | `1.0.36` | 可发现 `--output-format` |
 | OpenCode | `1.1.25` | 可发现 `run --format json`；协议判断仍以固定提交源码为准 |
 
-“CLI 已安装”只证明可启动，不证明鉴权、配额、模型调用或每一种事件都已通过真实 canary。当前可执行 adapter 只接受表中完成真实 canary 的精确版本；升级后必须先失败关闭，再更新 fixture、真实 canary 与注册表版本策略。
+“CLI 已安装”只证明可启动，不证明鉴权、配额、模型调用或每一种事件都已通过真实 canary。当前可执行 adapter 的注册表版本策略是“canary 已验证版本 + 兼容 semver 范围”（`version_policy.kind = compatible-range`）：范围外、预发布/构建后缀或近似匹配的版本在派发前失败关闭；范围内但不同于 `canary_verified` 的版本可以执行，但 grade 会在 `verification-evidence.json` 的 limitations 中记录版本漂移。重新跑通真实 canary 后才可推进 `canary_verified`。模型溯源：grader 从保留的 Agent Trace 中读取初始化事件的 `details.model`，作为每个 repeat 的 `agent_model`（Claude stream-json 的 `system.init` 提供该字段；Codex exec JSONL 当前协议不携带模型字段，记录为 `null`）；同一 case 内各 cell 观察到不同模型时也会记录为 limitation。
 
 ## 各来源的稳定边界
 

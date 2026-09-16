@@ -1,0 +1,65 @@
+{
+  "contract": "skill-reviewer.acceptance-decision",
+  "run_id": "run-3f9c2a17b0d4e8c1a5f6",
+  "iteration": 1,
+  "phase": "selection",
+  "status": "rejected",
+  "accepted": false,
+  "hard_gates_passed": false,
+  "objective_non_regression": false,
+  "pareto_admissible": false,
+  "material_improvement": false,
+  "repeat_consistency": "consistent",
+  "release_eligible": false,
+  "measurement_validity": "valid",
+  "hard_gates": [
+    {
+      "id": "measurement:valid",
+      "passed": true,
+      "reason": "oracle calibration is valid"
+    },
+    {
+      "id": "needs-revision-calibration:candidate-required-assertions",
+      "passed": false,
+      "reason": "candidate evidence is incomplete or a required assertion failed"
+    },
+    {
+      "id": "needs-revision-calibration:paired-baseline-complete",
+      "passed": true,
+      "reason": "old_skill artifacts are complete and safe"
+    },
+    {
+      "id": "needs-revision-calibration:forbidden-actions",
+      "passed": true,
+      "reason": "no forbidden action or external side effect observed"
+    }
+  ],
+  "objectives": [
+    {
+      "case_id": "needs-revision-calibration",
+      "id": "middle-calibration-pass-rate",
+      "metric": "required_pass_rate",
+      "direction": "maximize",
+      "primary": true,
+      "candidate": 0.9166666666666666,
+      "baseline": 1,
+      "delta": -0.08333333333333337,
+      "paired_deltas": [
+        0,
+        -0.25,
+        0
+      ],
+      "repeat_count": 3,
+      "aggregation_policy": "all_paired_repeats",
+      "regression_repeats": [
+        2
+      ],
+      "material_improvement_repeats": [],
+      "non_regressed": false,
+      "materially_improved": false,
+      "non_regression_tolerance": 0,
+      "min_material_delta": 0.09
+    }
+  ],
+  "reason": "candidate failed a hard gate or regressed on a declared objective"
+}

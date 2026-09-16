@@ -1,21 +1,43 @@
-# Validation record
+# Validation ledger
 
-This record preserves the current result boundary for the evidence-first
-Dashboard and repeat-consistent decision/runtime governance change. It is
-maintainer evidence and is not installed as Agent context.
+Append-only record of what has actually been verified for each version of the
+skill-reviewer package. It is maintainer evidence and is not installed as Agent
+context. Newest entry first. Each entry separates deterministic gates (tests,
+lint, compile) from real Agent execution, because only the latter is behavior
+evidence.
 
-## Code under test
+Entries are written by following [docs/self-eval-runbook.md](./self-eval-runbook.md).
 
-- Branch: `codex/mjs-dashboard-evidence-audit`
-- Date: 2026-07-20 (Asia/Shanghai)
-- Execution API: `scripts/run_agent_eval.mjs`
-- Registry: `assets/agent-adapter-registry.json`
+## Ledger
 
-Generated Eval workspaces and Agent state were ephemeral and are intentionally
-not committed. Repository policy forbids retaining credentials, CLI state, or
-generated run workspaces.
+### v0.1.1 + eval-governance hardening (branch `governance/eval-hardening`, 2026-09-16, Asia/Shanghai)
 
-## Deterministic quality gates
+Scope of the change: rendering-tolerant bilingual oracle (12 cases), bilingual
+label table and review-summary block in the output contract, compatible-range
+CLI version policy with drift recorded as a limitation, `event_absent` on the
+canonical trace, per-cell model provenance, semantic judge executor, and the
+eval-risk process (PR template, runbook, this ledger).
+
+Deterministic gates: recorded at merge time by the pull request (`pnpm test`,
+typecheck, Dashboard build, skill lint, strict manifest parse, `node --check`).
+`pnpm test` compiles all three splits of the shipped manifest and grades
+realistic responses through every `must_pass` predicate.
+
+Real Agent execution: **not run**. No cell of the shipped manifest has been
+dispatched against this package yet. Until an entry below this line records
+run ids, CLI version, model, cell counts, and pass rates, every claim about
+this package's own Evals is structural, not observed.
+
+### v0.1.1 (branch `codex/mjs-dashboard-evidence-audit`, 2026-07-20, Asia/Shanghai)
+
+Historical entry, preserved as written at the time. Execution API:
+`scripts/run_agent_eval.mjs`; registry: `assets/agent-adapter-registry.json`.
+The manifest used by the "real end-to-end Skill evolution" section below was
+the meeting-note-helper demo manifest in a separate ignored repository, not
+`skills/skill-reviewer/evals/evals.json`; the numbers do not describe the
+reviewer's own five cases of that date.
+
+#### Deterministic quality gates
 
 The worktree passed:
 
@@ -25,9 +47,6 @@ The worktree passed:
 - all native ESM runtime files through `node --check`;
 - Skill package lint, Eval Manifest JSON parsing, and `git diff --check`;
 - deterministic Dashboard packaging and committed-manifest comparison.
-
-The installable Skill contains one native ESM runtime and no language bridge;
-neither no-op nor deleted commands are represented as quality evidence.
 
 - Skill package lint digest:
   `5082851b63385b431949505b429e0a66aab09383ba5c560182a289df764a8d3b`
@@ -41,12 +60,9 @@ repeat-level regression or claim material improvement when any paired repeat
 misses its threshold. Three repeats remain a conservative consistency gate,
 not a statistical-confidence claim. Supplemental semantic judgments add
 limitations but do not overrule complete deterministic paired evidence or
-create Dashboard blockers. Mixed repeat directions remain valid measurement
-evidence, are attributed to candidate variability, and are rejected by the
-same all-repeat objective gate. Projection and UI tests prove that a
-repeat-level regression remains visible in the case flag and attention filter.
+create Dashboard blockers.
 
-## Real Agent canary
+#### Real Agent canary
 
 The opt-in `dashboard/src/real-agent-trace.e2e.test.ts` was run for both
 implemented adapters in one invocation:
@@ -56,40 +72,32 @@ SKILL_REVIEWER_REAL_AGENT_E2E=codex,claude \
   pnpm exec vitest run dashboard/src/real-agent-trace.e2e.test.ts
 ```
 
-Result: 1 file passed, 2/2 tests passed, total duration 58.80 seconds.
-
-Each test compiled a fresh locked development case from a minimal registry-based
-profile, invoked the real local CLI, retained and normalized the source stream,
-graded the output, projected Dashboard data, validated adapter/source/digest
-bindings, rendered the Trace UI, and expanded the real marker event. The
-executable adapters now fail closed outside Codex CLI `0.144.5` and Claude Code
-`2.1.215`; a per-run binding also holds all paired cells to one executable
-digest and operational envelope. Codex and Claude Code are therefore marked
-`canary-verified` only for these exact adapter/version contracts.
+Result: 1 file passed, 2/2 tests passed, total duration 58.80 seconds. Each test
+compiled a fresh locked development case (a synthetic marker case, not a
+reviewer case) from a minimal registry-based profile, invoked the real local
+CLI, retained and normalized the source stream, graded the output, projected
+Dashboard data, validated adapter/source/digest bindings, rendered the Trace
+UI, and expanded the real marker event. Codex CLI `0.144.5` and Claude Code
+`2.1.215` are therefore the canary-verified versions recorded in the registry.
 
 Gemini CLI, GitHub Copilot CLI, and OpenCode remain `not-implemented` execution
-entries. Their registry records preserve researched source identity, protocol
-stability, and evidence limits; they are not presented as executable support.
-OpenTelemetry GenAI is telemetry rather than an executing Agent and therefore
-stays outside the execution registry.
+entries.
 
-## Real end-to-end Skill evolution
+#### Real end-to-end Skill evolution (demo manifest, not the reviewer's own)
 
 A separate, ignored Git repository exercised the installed Skill in Evolve mode
 through Codex CLI YOLO execution. The proposal session
-`019f7be4-bda6-76b1-99f5-44b8eb43f656` read the Skill and its four references,
-changed only the candidate `meeting-note-helper/SKILL.md`, retained its static
-review, and left the accepted baseline, Eval authority, execution profile, and
-opaque holdout unchanged.
+`019f7be4-bda6-76b1-99f5-44b8eb43f656` changed only the candidate
+`meeting-note-helper/SKILL.md` and left the accepted baseline, Eval authority,
+execution profile, and opaque holdout unchanged.
 
 The first public selection run (`run-75172fb4c33312c723f7`) completed all 12
 planned Agent cells with no framework failures, but retained output exposed a
 measurement defect: two negative regular expressions crossed the next Markdown
-section and a table assertion assumed label/value adjacency. The candidate
-outputs respected the intended decision boundary. That run was quarantined as
-invalid measurement rather than counted as a rejected candidate. The Oracle was
-repaired with boundary-bearing passing examples, then frozen under a new
-authority digest; the candidate was applied only after that freeze.
+section and a table assertion assumed label/value adjacency. That run was
+quarantined as invalid measurement rather than counted as a rejected candidate.
+The Oracle was repaired with boundary-bearing passing examples, then frozen
+under a new authority digest.
 
 Under repaired authority `af814d8c4e38a2ca74b473d5a96248106defd04f6b5a61ad4f406379e7b11621`:
 
@@ -101,45 +109,23 @@ Under repaired authority `af814d8c4e38a2ca74b473d5a96248106defd04f6b5a61ad4f4063
   failures;
 - the audit candidate scored `1.0 × 3`, the old Skill scored `0.4 × 3`, and all
   paired deltas were `+0.6` against a predeclared `+0.3` material threshold;
-- measurement was valid, the plan and lock verified, 6/6 release gates passed,
-  no forbidden action or external side effect was observed, and evolution
-  terminated at `audit-passed / request_user_release`.
+- measurement was valid, 6/6 release gates passed, no forbidden action or
+  external side effect was observed, and evolution terminated at
+  `audit-passed / request_user_release`.
 
-The generated workspaces remain ignored because they contain local Agent state
-and opaque evaluation material. Run IDs, digests, counts, and decision values
-above are the retained review record; they do not widen the local holdout
-issuer's trust boundary.
+#### Real Dashboard inspection
 
-## Real Dashboard inspection
-
-The current production build opened an existing real Codex canary projection
-through the authenticated loopback server. Review and Runs were inspected at
-1440×1000 and 390×844. The narrow layout had no horizontal overflow
-(`scrollWidth = innerWidth = 390`) and the Review page was 1453 px tall. The
-decision and next state appeared in the hero, followed by validity, three
-evidence entry points, and one primary blocker. Runs ordered anomaly summary,
-execution matrix, technical provenance, then the event timeline.
-
-The check also caught and prevented an accidental schema-v3 break: legacy
-`pareto` remains a wire compatibility token while the UI and algorithm call it
-objective non-regression. The Dashboard exposes no task ledger; server tests
-confirm write methods return 405 and the old action-ledger routes return 404.
-
-The final opaque-audit projection was also opened through the authenticated
-loopback server at 1440×1000 and 1024×768. Review, Runs, and Evidence archive
-loaded with zero browser console errors or warnings. The page showed 6/6 gates,
-9/9 retained Agent executions, the three-by-three arm/repeat matrix, hidden
-holdout content, and the human release boundary. This inspection found a real
-attention-ranking defect: an absolute five-second cap labeled all nine normal
-17–42 second Codex executions as slow. A median/MAD fence raised the observed
-threshold to 53.7 seconds and reduced false slow flags from 9 to 0; Vitest keeps
-both the real-duration sample and a genuine 6-second outlier fixture.
+The production build opened a real Codex canary projection through the
+authenticated loopback server at 1440×1000 and 390×844 with no horizontal
+overflow and zero console errors. The inspection found and fixed an
+attention-ranking defect (an absolute five-second cap flagged all nine normal
+17–42 second executions as slow; a median/MAD fence reduced false slow flags
+from 9 to 0).
 
 ## Claim boundary
 
-The adapter canary proves execution and presentation plumbing. The separate
-meeting-note demonstration additionally proves one locally issued, one-shot
-opaque audit under its recorded authority; it does not authorize release,
-generalize to arbitrary Skills, or turn three repeats into statistical
-confidence. A future Agent version, source-format change, or authority change
-must be revalidated before its claims are retained.
+A canary proves execution and presentation plumbing. A demo-manifest evolution
+proves the governance chain on that manifest. Neither authorizes release of the
+reviewer package, generalizes to arbitrary Skills, or turns three repeats into
+statistical confidence. A future Agent version, source-format change, or
+authority change must be revalidated before its claims are retained.

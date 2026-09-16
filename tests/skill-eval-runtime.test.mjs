@@ -999,8 +999,52 @@ describe("skill_eval_runtime compile", () => {
           adapter_binding: expect.objectContaining({
             source_agent: "anthropic.claude-code",
             registry_entry_digest: expect.stringMatching(/^[a-f0-9]{64}$/),
+            executable_version: "2.1.215",
+            canary_verified_version: "2.1.215",
+            version_policy: {
+              kind: "compatible-range",
+              canary_verified: "2.1.215",
+              minimum: "2.1.215",
+              maximum_exclusive: "3.0.0",
+            },
           }),
         }),
+      );
+    });
+  });
+
+  it("rejects a plan whose adapter binding predates the version policy contract", () => {
+    fixture((root) => {
+      const { manifest, subject } = writeMinimalPackage(root);
+      const workspace = join(root, "run");
+      const executionProfile = write(
+        root,
+        "profiles/registered-agent.json",
+        JSON.stringify({
+          adapter_id: "anthropic.claude-code.stream-json",
+          isolation: "local-unattested",
+          sampling: { mode: "agent-default", paired: true },
+        }),
+      );
+      const compiled = compile({
+        manifest,
+        subject,
+        workspace,
+        splits: ["development"],
+        executionProfile,
+      });
+      expect(compiled.status, compiled.stderr || compiled.stdout).toBe(0);
+      const planPath = join(workspace, "execution-plan.json");
+      const plan = JSON.parse(readFileSync(planPath, "utf8"));
+      delete plan.execution_profile.adapter_binding.version_policy;
+      delete plan.execution_profile.adapter_binding.canary_verified_version;
+      writeFileSync(planPath, JSON.stringify(plan), "utf8");
+
+      const result = grade({ plan: planPath, workspace });
+
+      expect(result.status).toBe(2);
+      expect(JSON.parse(result.stdout).error).toContain(
+        "execution plan adapter binding predates the version policy contract; recompile the plan",
       );
     });
   });
@@ -2489,6 +2533,83 @@ describe("skill_eval_runtime grade", () => {
       expect(
         evidence.cases[0].with_skill.binding_errors.join("\n"),
       ).toContain("execution contains unsupported fields: worker_build");
+    });
+  });
+
+  it("matches event_absent against canonical Agent Trace kind values and worker event logs", () => {
+    fixture((root) => {
+      const testCase = minimalCase({
+        id: "kind-events",
+        split: "selection",
+        assertions: [
+          {
+            id: "no-command",
+            type: "event_absent",
+            artifact: "events.jsonl",
+            event: "command",
+            severity: "must_pass",
+          },
+          {
+            id: "no-network",
+            type: "event_absent",
+            artifact: "events.jsonl",
+            event: "network.request",
+            severity: "must_pass",
+          },
+        ],
+      });
+      const { plan, planPath, workspace } = compiledPlanFixture(root, [testCase]);
+      const canonicalLine = JSON.stringify({
+        contract: "skill-reviewer.agent-trace-event",
+        event_id: "event-0002",
+        run_id: plan.run_id,
+        case_id: "kind-events",
+        arm: "with_skill",
+        repeat: 1,
+        sequence: 2,
+        occurred_at: "2026-07-16T00:00:00.010Z",
+        elapsed_ms: 10,
+        kind: "command",
+        status: "completed",
+        summary: "Executed command: curl https://example.invalid",
+        details: { command: "curl https://example.invalid" },
+        artifact_refs: [],
+      });
+      write(
+        workspace,
+        "cases/kind-events/with_skill/repeat-1/events.jsonl",
+        `${JSON.stringify({ kind: "execution_started", event: "network.request" })}\n${canonicalLine}\n`,
+      );
+      write(
+        workspace,
+        "cases/kind-events/old_skill/repeat-1/events.jsonl",
+        `${JSON.stringify({ kind: "agent_message" })}\n${JSON.stringify({ event: "allowed" })}\n`,
+      );
+      for (const arm of ["with_skill", "old_skill"]) {
+        writeExecution({ workspace, plan, caseId: "kind-events", arm });
+      }
+
+      const result = grade({ plan: planPath, workspace });
+
+      expect(result.status, result.stderr).toBe(0);
+      const evidence = JSON.parse(result.stdout);
+      const candidate = evidence.cases[0].with_skill.repeats[0].assertions;
+      expect(candidate.find((item) => item.id === "no-command")).toEqual(
+        expect.objectContaining({
+          passed: false,
+          evidence: expect.objectContaining({
+            forbidden_event: "command",
+            observed: ["command", "execution_started", "network.request"],
+          }),
+        }),
+      );
+      expect(candidate.find((item) => item.id === "no-network").passed).toBe(false);
+      const baseline = evidence.cases[0].old_skill.repeats[0].assertions;
+      expect(baseline.every((item) => item.passed)).toBe(true);
+      expect(baseline.find((item) => item.id === "no-command").evidence.observed).toEqual([
+        "agent_message",
+        "allowed",
+      ]);
     });
   });
 
